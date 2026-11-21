@@ -28,10 +28,15 @@ pub(crate) struct Metrics {
     pub dateline: Pixels,
     /// The room above a dateline that is not the column's first row.
     pub dateline_margin: Pixels,
-    /// The row of a gap with hidden blocks, with one column gap.
+    /// The row of a gap with hidden blocks, with one column gap. It sits
+    /// above a piece's crumbs, or under the last piece of a note.
     pub gap_row: Pixels,
+    /// How far that row moves up toward the piece above it.
+    pub gap_pull: Pixels,
     /// The crumbs row above a piece.
     pub crumbs: Pixels,
+    /// The up row of a gap, between a piece's crumbs and its text.
+    pub up_row: Pixels,
     /// What the piece's editor adds below its rows.
     pub inset: Pixels,
     /// The space between two pieces in the column.
@@ -42,8 +47,12 @@ pub(crate) struct Metrics {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Shape {
     pub dateline: bool,
-    /// The gap above the piece hides blocks, so it draws a row.
-    pub gap_hidden: bool,
+    /// The gap above the piece hides blocks and has a block above it: a
+    /// row above the crumbs with the down button.
+    pub lead_row: bool,
+    /// The gap above the piece hides blocks: an up row between the crumbs
+    /// and the text.
+    pub up_row: bool,
     /// The gap after the last piece of a note hides blocks: a row under it.
     pub tail_hidden: bool,
 }
@@ -189,20 +198,25 @@ impl Heights {
         if shape.dateline {
             height += m.dateline;
         }
-        if shape.gap_hidden {
+        if shape.lead_row {
             height += m.gap_row;
         }
+        if shape.up_row {
+            height += m.up_row;
+        }
         if shape.tail_hidden {
-            height += m.gap_row;
+            height += m.gap_row - m.gap_pull;
         }
         height
     }
 
-    /// The room above piece `i` besides the column gap: a dateline's
-    /// margin, except on the column's first row.
+    /// The room above piece `i` besides the column gap, except on the
+    /// column's first row: a dateline's margin, or less the pull of a lead
+    /// gap row (a negative room). A piece has one or the other, never both.
     fn margin_of(&self, i: usize) -> Pixels {
         match self.shapes.get(i) {
             Some(shape) if i > 0 && shape.dateline => self.metrics.dateline_margin,
+            Some(shape) if i > 0 && shape.lead_row => -self.metrics.gap_pull,
             _ => px(0.),
         }
     }
@@ -242,11 +256,13 @@ impl Heights {
     }
 
     /// Where `j` and `k` bring piece `i`: to its dateline, else to its
-    /// crumbs, under the row of the gap above it.
+    /// crumbs. The row above the crumbs (the down button and the count)
+    /// is skipped, so the crumbs show at the top. The up row lies under
+    /// the crumbs, so it adds nothing here.
     pub(crate) fn step_top(&self, i: usize) -> Pixels {
         let top = self.top_of(i);
         match self.shapes.get(i) {
-            Some(shape) if !shape.dateline && shape.gap_hidden => top + self.metrics.gap_row,
+            Some(shape) if !shape.dateline && shape.lead_row => top + self.metrics.gap_row,
             _ => top,
         }
     }
@@ -261,20 +277,19 @@ impl Heights {
                 let top = self.total() + m.column_gap;
                 return (top, top + line);
             }
-            Row::Lead(i) | Row::Crumbs(i) | Row::Tail(i) => (i, self.top_of(i)),
+            Row::Lead(i) | Row::Crumbs(i) | Row::Up(i) | Row::Tail(i) => (i, self.top_of(i)),
         };
         let shape = self.shapes.get(i).copied().unwrap_or_default();
         let top = top + if shape.dateline { m.dateline } else { px(0.) };
+        let crumbs = top + if shape.lead_row { m.gap_row } else { px(0.) };
         match row {
             Row::Lead(_) => (top, top + line),
             Row::Tail(_) => {
                 let bottom = self.top_of(i) + self.height_of(i);
                 (bottom - line, bottom)
             }
-            _ => {
-                let top = top + if shape.gap_hidden { m.gap_row } else { px(0.) };
-                (top, top + m.crumbs)
-            }
+            Row::Up(_) => (crumbs + m.crumbs, crumbs + m.crumbs + m.up_row),
+            _ => (crumbs, crumbs + m.crumbs),
         }
     }
 
@@ -326,10 +341,12 @@ impl Heights {
 /// A row of the column that holds tab stops.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Row {
-    /// The gap row above piece `.0`.
+    /// The gap row above the crumbs of piece `.0`.
     Lead(usize),
     /// The crumbs row of piece `.0`.
     Crumbs(usize),
+    /// The up row of piece `.0`, between its crumbs and its text.
+    Up(usize),
     /// The gap row under piece `.0`, the last piece of its note.
     Tail(usize),
     /// The `Show more` row after the last piece.

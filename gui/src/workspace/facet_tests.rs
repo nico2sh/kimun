@@ -1446,18 +1446,18 @@ fn tab_reaches_every_pill_and_shows_a_focus_ring(cx: &mut TestAppContext) {
     let (view, cx, _events, _sub) = open(cx, NOTE, vec![tag("a")]);
     focus_view(&view, cx);
     // Reading order: the bar (the chips, the search chip, the picks, then
-    // the summary line), then the column (gap, piece crumbs, Open note,
-    // gap).
+    // the summary line), then the column (piece crumbs, Open note, the up
+    // row under them, the next gap's row above its crumbs).
     let want: Vec<SharedString> = vec![
         menu_id(ListKind::Tags),
         menu_id(ListKind::Sections),
         menu_id(ListKind::All),
         pill_id(&tag("a")),
         CLEAR_ID.into(),
-        gap_up_id(0),
-        show_all_id(0),
         crumb_id(0, 0),
         open_id(0),
+        gap_up_id(0),
+        show_all_id(0),
         gap_down_id(1),
         show_all_id(1),
     ];
@@ -2375,9 +2375,9 @@ pub(super) mod in_a_group {
     ) {
         use gpui_kit::test::TestEventExt as _;
         let view = facet(s, group, cx).expect("a facet view");
+        // The harness installs the Linux keymap, so the primary key is Ctrl on every OS.
         let held = gpui_kit::Modifiers {
-            control: !cfg!(target_os = "macos"),
-            platform: cfg!(target_os = "macos"),
+            control: true,
             ..Default::default()
         };
         cx.update_window(s.handle, |_, window, cx| {
@@ -2994,7 +2994,8 @@ pub(super) mod in_a_group {
 
 const TWO_SECTIONS: &str = "# A\n\nx #a\n\n# B\n\ny #b\n";
 const HINT: &str = "Pick a tag, link or section to narrow this note. \
-    / finds, j and k step, a click on a tag or link opens it.";
+    Press / to find. Press j or k to move between pieces. \
+    Click a tag or link to open it.";
 
 #[gpui_kit::test]
 fn an_empty_result_names_the_combination(cx: &mut TestAppContext) {

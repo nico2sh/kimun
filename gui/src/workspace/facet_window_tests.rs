@@ -5,15 +5,18 @@ use std::num::NonZeroU64;
 
 use gpui_kit::{Pixels, px};
 
-use super::facet::window::{Heights, Metrics, Shape, drawn_range, pinned};
+use super::facet::window::{Heights, Metrics, Row, Shape, drawn_range, pinned};
 
 const LINE: f32 = 20.0;
 const DATELINE: f32 = 30.0;
 const GAP_ROW: f32 = 18.0;
 const CRUMBS: f32 = 22.0;
+const UP_ROW: f32 = 26.0;
 const INSET: f32 = 8.0;
 const COLUMN_GAP: f32 = 12.0;
 const MARGIN: f32 = 6.0;
+/// How far a down gap row moves up toward the piece above it.
+const PULL: f32 = 4.0;
 
 fn stamp(n: u64) -> (NonZeroU64, (usize, usize)) {
     (NonZeroU64::new(n).unwrap(), (0, 0))
@@ -25,7 +28,9 @@ fn metrics() -> Metrics {
         dateline: px(DATELINE),
         dateline_margin: px(MARGIN),
         gap_row: px(GAP_ROW),
+        gap_pull: px(PULL),
         crumbs: px(CRUMBS),
+        up_row: px(UP_ROW),
         inset: px(INSET),
         column_gap: px(COLUMN_GAP),
     }
@@ -91,12 +96,12 @@ fn the_table_top_of_matches_the_sum_of_heights_and_gaps() {
     h.set_shapes(vec![
         Shape {
             dateline: true,
-            gap_hidden: false,
+            lead_row: false,
             ..Shape::default()
         },
         Shape {
             dateline: false,
-            gap_hidden: true,
+            lead_row: true,
             ..Shape::default()
         },
         Shape::default(),
@@ -108,10 +113,12 @@ fn the_table_top_of_matches_the_sum_of_heights_and_gaps() {
     let b = GAP_ROW + plain(5);
     let c = plain(1);
     assert_eq!(f(h.top_of(0)), 0.);
-    assert_eq!(f(h.top_of(1)), a + COLUMN_GAP);
-    assert_eq!(f(h.top_of(2)), a + b + 2. * COLUMN_GAP);
-    assert_eq!(f(h.total()), a + b + c + 2. * COLUMN_GAP);
-    assert_eq!(f(h.span(1..3)), b + c + COLUMN_GAP);
+    // The lead row of piece 1 moves up toward piece 0 by the pull.
+    assert_eq!(f(h.top_of(1)), a + COLUMN_GAP - PULL);
+    assert_eq!(f(h.top_of(2)), a + b + 2. * COLUMN_GAP - PULL);
+    assert_eq!(f(h.total()), a + b + c + 2. * COLUMN_GAP - PULL);
+    // A spacer starts after the column gap: it stands in for the pull too.
+    assert_eq!(f(h.span(1..3)), b + c + COLUMN_GAP - PULL);
     assert_eq!(f(h.span(2..2)), 0.);
 }
 
@@ -160,7 +167,7 @@ fn a_gap_with_nothing_hidden_adds_no_row_height() {
     h.set_shapes(vec![
         Shape {
             dateline: false,
-            gap_hidden: false,
+            lead_row: false,
             ..Shape::default()
         };
         2
@@ -169,7 +176,7 @@ fn a_gap_with_nothing_hidden_adds_no_row_height() {
     h.set_shapes(vec![
         Shape {
             dateline: false,
-            gap_hidden: true,
+            lead_row: true,
             ..Shape::default()
         },
         Shape::default(),
@@ -256,7 +263,8 @@ fn a_later_dateline_keeps_its_margin_and_a_tail_gap_adds_a_row() {
     // The first row of the column has no margin; a later dateline has.
     assert_eq!(f(h.top_of(0)), 0.);
     let a = DATELINE + plain(2);
-    let b = GAP_ROW + plain(2);
+    // The tail row moves up toward its piece by the pull.
+    let b = GAP_ROW - PULL + plain(2);
     assert_eq!(f(h.top_of(1)), a + COLUMN_GAP);
     assert_eq!(f(h.top_of(2)), a + b + 2. * COLUMN_GAP + MARGIN);
     // A spacer for the last piece stands in for its margin too.
@@ -304,4 +312,68 @@ fn the_first_known_width_keeps_the_rows_and_a_new_width_clears_them() {
     assert_eq!(h.rows(0, 0, stamp(1)), Some(4));
     assert!(h.set_width(px(420.)), "a new width");
     assert_eq!(h.rows(0, 0, stamp(1)), None);
+}
+
+/// A gap between two pieces draws two rows: one above the crumbs and the
+/// up row under them. A gap above a note's first piece draws the up row
+/// only.
+#[test]
+fn a_split_gap_adds_both_rows_and_a_first_gap_adds_the_up_row_only() {
+    let mut h = table(2, 3);
+    let flat = f(h.total());
+    let between = Shape {
+        lead_row: true,
+        up_row: true,
+        ..Shape::default()
+    };
+    h.set_shapes(vec![Shape::default(), between]);
+    assert_eq!(f(h.total()), flat + GAP_ROW + UP_ROW - PULL);
+    let first = Shape {
+        up_row: true,
+        ..Shape::default()
+    };
+    h.set_shapes(vec![first, Shape::default()]);
+    assert_eq!(f(h.total()), flat + UP_ROW);
+}
+
+/// `j` and `k` skip the row above the crumbs, never the up row: the up
+/// row lies under the crumbs.
+#[test]
+fn the_step_top_skips_the_row_above_the_crumbs_only() {
+    let mut h = table(3, 2);
+    let between = Shape {
+        lead_row: true,
+        up_row: true,
+        ..Shape::default()
+    };
+    let first = Shape {
+        up_row: true,
+        ..Shape::default()
+    };
+    h.set_shapes(vec![first, between, Shape::default()]);
+    assert_eq!(f(h.step_top(0)), 0.);
+    assert_eq!(f(h.step_top(1)), f(h.top_of(1)) + GAP_ROW);
+    assert_eq!(f(h.step_top(2)), f(h.top_of(2)));
+}
+
+/// The up row lies under the crumbs: the reveal scrolls to it there.
+#[test]
+fn the_up_row_spans_from_the_crumbs_to_the_text() {
+    let mut h = table(2, 2);
+    let between = Shape {
+        lead_row: true,
+        up_row: true,
+        ..Shape::default()
+    };
+    h.set_shapes(vec![Shape::default(), between]);
+    let top = f(h.top_of(1));
+    let (lead, lead_end) = h.row_span(Row::Lead(1));
+    assert_eq!((f(lead), f(lead_end)), (top, top + GAP_ROW - COLUMN_GAP));
+    let (crumbs, crumbs_end) = h.row_span(Row::Crumbs(1));
+    assert_eq!(
+        (f(crumbs), f(crumbs_end)),
+        (top + GAP_ROW, top + GAP_ROW + CRUMBS)
+    );
+    let (up, up_end) = h.row_span(Row::Up(1));
+    assert_eq!((f(up), f(up_end)), (f(crumbs_end), f(crumbs_end) + UP_ROW));
 }

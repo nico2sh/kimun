@@ -36,8 +36,8 @@ pub struct MemberInit {
 /// One note of the view.
 pub(crate) struct Member {
     pub(crate) path: VaultPath,
-    /// The note's title: drawn on its dateline in a collection (not drawn
-    /// for a single note).
+    /// The note's title: drawn on its dateline in a collection, and in the
+    /// view title row of a single-note view.
     pub(crate) title: String,
     pub(crate) text: String,
     pub(crate) facets: NoteFacets,
@@ -67,7 +67,7 @@ impl Member {
 
     /// The title of `text`, the note at `path`, as the index derives it
     /// (its first non-empty line), else the note's name.
-    fn title_of(path: &VaultPath, text: &str) -> String {
+    pub(crate) fn title_of(path: &VaultPath, text: &str) -> String {
         Member::named(path, NoteDetails::get_title_from_text(text))
     }
 

@@ -27,7 +27,19 @@ use crate::workspace::facet_ui::ring_room;
 #[derive(Clone, Copy, Default)]
 pub(super) struct PieceGaps {
     pub(super) lead: Option<usize>,
+    /// The lead gap has a block above it. Then its down button, its count
+    /// and `Show all` take a row above the crumbs. Else the count and
+    /// `Show all` join the up row ([`count_in_up_row`]).
+    pub(super) lead_above: bool,
     pub(super) tail: Option<usize>,
+}
+
+/// Whether a gap's count and `Show all` sit in its up row, from whether the
+/// gap has a block `above` it. A gap with a block above draws a row above
+/// the crumbs (or after the piece, for a tail gap), and they sit there.
+/// Else that row is not drawn, and they join the up row.
+pub(super) fn count_in_up_row(above: Option<usize>) -> bool {
+    above.is_none()
 }
 
 /// A drawn piece: its number, its editor, and its first and last item in
@@ -38,7 +50,7 @@ impl FacetView {
     /// The column's items: a spacer, the drawn pieces in order with the
     /// pinned ones at their place between split spacers, a spacer, then the
     /// empty message while no chunk is drawn. Each piece draws its
-    /// dateline, its gap row, its crumbs and its text.
+    /// dateline, its gap row, its crumbs, its up row and its text.
     pub(super) fn render_body(
         &mut self,
         title_size: Pixels,
@@ -103,8 +115,9 @@ impl FacetView {
     }
 
     /// Piece `i`'s items: its note's dateline when it is the note's first
-    /// piece, the gap above it, the piece, and the gap after a note's last
-    /// piece.
+    /// piece, the row of the gap above it (above the crumbs), the piece
+    /// (with the gap's up row under its crumbs), and the gap after a note's
+    /// last piece.
     fn render_piece(
         &self,
         i: usize,
@@ -117,11 +130,17 @@ impl FacetView {
         if let Some(g) = gaps.lead {
             let gap = self.members.gaps[g];
             body.extend(self.render_dateline(gap, i > 0, title_size, t));
-            body.extend(self.render_gap(g, t, cx).map(IntoElement::into_any_element));
+            body.extend(
+                self.render_gap(g, i > 0, t, cx)
+                    .map(IntoElement::into_any_element),
+            );
         }
-        body.push(self.render_chunk(i, t, cx));
+        body.push(self.render_chunk(i, gaps.lead, t, cx));
         if let Some(g) = gaps.tail {
-            body.extend(self.render_gap(g, t, cx).map(IntoElement::into_any_element));
+            body.extend(
+                self.render_gap(g, true, t, cx)
+                    .map(IntoElement::into_any_element),
+            );
         }
     }
 
@@ -141,7 +160,10 @@ impl FacetView {
         let mut out = vec![PieceGaps::default(); n];
         for (g, gap) in self.members.gaps.iter().enumerate() {
             match (gap.above, gap.below) {
-                (_, Some(below)) if below < n => out[below].lead = Some(g),
+                (above, Some(below)) if below < n => {
+                    out[below].lead = Some(g);
+                    out[below].lead_above = above.is_some();
+                }
                 (Some(above), None) if above < n => out[above].tail = Some(g),
                 _ => {}
             }
@@ -158,9 +180,11 @@ impl FacetView {
             && lead.is_some_and(|(_, gap)| {
                 gap.above.is_none() && self.members.list.get(gap.member).is_some()
             });
+        let lead_hidden = lead.is_some_and(|(g, _)| self.members.gap_hidden(g) > 0);
         Shape {
             dateline,
-            gap_hidden: lead.is_some_and(|(g, _)| self.members.gap_hidden(g) > 0),
+            lead_row: lead_hidden && gaps.lead_above,
+            up_row: lead_hidden,
             tail_hidden: gaps.tail.is_some_and(|g| self.members.gap_hidden(g) > 0),
         }
     }
@@ -190,7 +214,10 @@ impl FacetView {
             dateline: text_line(title_size).max(small) + column_gap,
             dateline_margin: to_px(rows::dateline_margin(), rem),
             gap_row: row + column_gap,
+            gap_pull: to_px(rows::gap_pull(), rem),
             crumbs: button + ring_room() * 2. + forged,
+            // Drawn as the crumbs row is: the room for a ring at both edges.
+            up_row: row + ring_room() * 2.,
             // The editor pane's padding and the measure's slack.
             inset: to_px(rows::pane_y(), rem) + px(SLACK),
             column_gap,
@@ -228,7 +255,7 @@ impl FacetView {
     fn pins(&self, gaps: &[PieceGaps], window: &Window, cx: &App) -> Vec<usize> {
         let stop = self.stops.borrow().focused(window);
         let of_stop = stop.and_then(|stop| match stop_row(&stop, gaps)? {
-            Row::Lead(i) | Row::Crumbs(i) | Row::Tail(i) => Some(i),
+            Row::Lead(i) | Row::Crumbs(i) | Row::Up(i) | Row::Tail(i) => Some(i),
             Row::End => None,
         });
         let of_editor = || self.focused_piece(window, cx);

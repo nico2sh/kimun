@@ -230,6 +230,10 @@ use kimun_notes::logic::task_slot::TaskSlot;
 
 #[cfg(test)]
 pub(crate) use chrome::FACET_ICON;
+#[cfg(test)]
+pub(crate) use facet::{GAP_DOWN_ICON as FACET_GAP_DOWN_ICON, GAP_UP_ICON as FACET_GAP_UP_ICON};
+#[cfg(test)]
+pub(crate) use facet_ui::BAR_ICONS as FACET_BAR_ICONS;
 use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
@@ -3830,6 +3834,7 @@ mod facet;
 pub(crate) use facet::init_keys as init_facet_keys;
 mod facet_group;
 mod facet_list;
+mod facet_pill;
 mod facet_ui;
 mod file_dialogs;
 mod file_ops;
@@ -3905,6 +3910,8 @@ mod drop_tests;
 #[cfg(test)]
 mod facet_chrome_tests;
 #[cfg(test)]
+mod facet_gap_rows_tests;
+#[cfg(test)]
 mod facet_line_tests;
 #[cfg(test)]
 mod facet_motion_edge_tests;
@@ -3918,6 +3925,8 @@ mod facet_rows_tests;
 mod facet_size_tests;
 #[cfg(test)]
 mod facet_tests;
+#[cfg(test)]
+mod facet_title_tests;
 #[cfg(test)]
 mod facet_undo_tests;
 #[cfg(test)]

@@ -164,6 +164,11 @@ impl Stops {
             .filter(|stop| self.before.as_ref() != Some(*stop))
     }
 
+    /// The window's rem size this frame.
+    pub(super) fn rem(&self) -> gpui_kit::Pixels {
+        self.rem
+    }
+
     /// Whether `stop` had the keyboard when this frame began.
     pub(super) fn holds(&self, stop: &Stop) -> bool {
         self.focused.as_ref() == Some(stop)

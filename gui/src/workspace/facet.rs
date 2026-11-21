@@ -27,10 +27,14 @@
 //! a read-only [`EditorView`] sized to its wrapped text, measured in the frame that draws it, with no frame, under a
 //! slim row: the headings that contain it as clickable crumbs, outer ones
 //! shortened first with an ellipsis when the row is narrow, and `Open
-//! note`. A gap row counts the hidden blocks (`3 blocks hidden`) and
-//! reveals one at a time next to the chunk above (`Show next block`) or
-//! below (`Show previous block`), or all of them with `Show all` when few
-//! are hidden.
+//! note`. A gap with hidden blocks splits in two rows. The row above the
+//! next chunk's crumbs counts the hidden blocks (`3 blocks hidden`) and
+//! reveals one at a time next to the chunk above (`Show next block`), or
+//! all of them with `Show all` when few are hidden. The up row sits under
+//! the crumbs, right above the text, and reveals one block next to that
+//! text (`Show previous block`). A gap with no block above it draws only
+//! the up row, and the count and `Show all` join it. Both buttons show the
+//! unfold icon: the place of the button gives the direction.
 //!
 //! **Colour.** Buttons (chips, `Clear`, `Undo`, `Show all`, `Show more`,
 //! crumbs, `Open note`) have their labels in the text colour. Meta text
@@ -82,12 +86,15 @@ use self::members::{Member, Members};
 use self::more::More;
 use self::undo::Undo;
 use crate::editor_view::EditorView;
+use crate::workspace::facet_ui::Strip;
 
 mod bar_motion;
 mod body;
 mod chunks;
 mod collection;
 mod collection_text;
+mod gaps;
+mod heading;
 mod ids;
 mod keys;
 mod line;
@@ -106,6 +113,12 @@ mod timed_tests;
 mod undo;
 pub(super) mod window;
 
+#[cfg(test)]
+pub(crate) use self::collection::dateline_title_size;
+#[cfg(test)]
+pub(crate) use self::gaps::{GAP_DOWN_ICON, GAP_UP_ICON};
+#[cfg(test)]
+pub(crate) use self::heading::{DATELINE_LEVEL, VIEW_TITLE_LEVEL, view_title_size};
 pub(crate) use self::ids::*;
 pub(crate) use self::keys::init as init_keys;
 #[cfg(test)]
@@ -180,9 +193,11 @@ impl ListKind {
 }
 
 const HINT_TEXT: &str = "Pick a tag, link or section to narrow this note. \
-    / finds, j and k step, a click on a tag or link opens it.";
+    Press / to find. Press j or k to move between pieces. \
+    Click a tag or link to open it.";
 const HINT_TEXT_NOTES: &str = "Pick a tag, link or section to narrow these notes. \
-    / finds, j and k step, a click on a tag or link opens it.";
+    Press / to find. Press j or k to move between pieces. \
+    Click a tag or link to open it.";
 
 /// The facet view. See the module docs.
 pub struct FacetView {
@@ -229,6 +244,8 @@ pub struct FacetView {
     stranded: Option<FocusHandle>,
     /// The rows of each piece at the layout width ([`mod@window`]).
     heights: Rc<RefCell<window::Heights>>,
+    /// The crumbs strip colours of this frame's theme.
+    strip: Strip,
     /// The pieces near the viewport the last frame drew; spacers stood in
     /// for the rest, pinned pieces aside ([`mod@body`]) (tests).
     #[cfg(test)]
@@ -267,7 +284,8 @@ impl FacetView {
     /// A view of `text`, the note at `source`, with `picks` (those the note
     /// does not hold are dropped: a restore can name facets the note lost).
     pub fn new(source: VaultPath, text: String, picks: Vec<Facet>, cx: &mut Context<Self>) -> Self {
-        let title = source.get_clean_name();
+        // The title the view title row shows, as new text derives it.
+        let title = Member::title_of(&source, &text);
         let members = Members::new(vec![Member::new(source, title, text)]);
         Self::build(members, None, picks, cx)
     }
@@ -305,6 +323,7 @@ impl FacetView {
             held_reveal: RefCell::default(),
             stranded: None,
             heights: Rc::default(),
+            strip: Strip::default(),
             #[cfg(test)]
             drawn: 0..0,
             #[cfg(test)]
@@ -452,12 +471,16 @@ impl FacetView {
     }
 
     /// What the picks show, while they show something: the picks in words
-    /// and the pieces, counting those the cap leaves out. The note numbers
-    /// of a collection are on its collection line, not here.
+    /// and, in a single-note view, the pieces, counting those the cap leaves
+    /// out. A collection says only the picks: its collection line holds the
+    /// counts.
     fn summary(&self) -> Option<String> {
         let drawn = self.members.len();
         if drawn == 0 {
             return None;
+        }
+        if self.collection.is_some() {
+            return self.bar.picks_text(&self.members.merged);
         }
         self.bar
             .summary(&self.members.merged, drawn + self.members.cut, None)

@@ -21,6 +21,15 @@ const SMALL_TEXT_REMS: f32 = 0.75;
 /// The height of a button and a pill, and a button's least width (was
 /// `h_6`, `min_w_6`, and `size_6` for an icon chip).
 const BUTTON_REMS: f32 = 1.5;
+/// How far a dateline's folder pulls the dot after it back, as a negative
+/// right margin: the row's gap less this is about one space.
+const META_JOIN_REMS: f32 = 0.25;
+/// A text button's padding at each side (was `px_1`).
+const TEXT_PAD_REMS: f32 = 0.25;
+/// How far a down gap row moves up toward the piece above it, as a negative
+/// top margin. The row adds text to that piece, so it sits closer to it
+/// than to the piece under it. Less than the column gap.
+const GAP_PULL_REMS: f32 = 0.5;
 
 /// The values a test can move with `set_override`, by their place.
 pub(crate) const BUTTON: usize = 0;
@@ -73,9 +82,34 @@ pub(crate) fn small_text() -> Rems {
     rems(SMALL_TEXT_REMS)
 }
 
+/// How far a down gap row moves up toward the piece above it.
+pub(crate) fn gap_pull() -> Rems {
+    rems(GAP_PULL_REMS)
+}
+
 /// The height of a button and a pill, and a button's least width.
 pub(crate) fn button() -> Rems {
     value(BUTTON, BUTTON_REMS)
+}
+
+/// How far a dateline's folder pulls the dot after it back. Horizontal
+/// only: the height table does not read it.
+pub(crate) fn meta_join() -> Rems {
+    rems(META_JOIN_REMS)
+}
+
+/// A text button's padding at each side.
+pub(crate) fn text_pad() -> Rems {
+    rems(TEXT_PAD_REMS)
+}
+
+/// The column's one left edge, from the edge of a piece: where its text
+/// starts (its editor pane's padding). A crumb's label and the edge of a
+/// gap button start here too. Horizontal only: the height table does not
+/// read it. A dateline's title is the one thing left of it (see
+/// [`mod@super::collection`]).
+pub(crate) fn spine() -> Rems {
+    rems(PANE_PAD_X_REMS)
 }
 
 /// How much narrower a piece's editor is than the piece: its pane's

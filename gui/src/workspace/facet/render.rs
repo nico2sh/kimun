@@ -3,7 +3,6 @@
 //! It owns how the facet view draws, and the order of its tab stops.
 //! It holds no state of its own.
 
-use gpui_kit::assets::IconName;
 use gpui_kit::base::{ObservedElement, TestSupportExt as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -11,19 +10,22 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, Window, div, relative,
 };
-use kimun_core::note::GAP_SHOW_ALL_MAX;
 use kimun_notes::settings::themes::Theme;
 
 use super::bar_motion::HintDraw;
+use super::heading;
 use super::keys::{Stop, keys};
 use super::rows;
 use super::{
     CLEAR_ID, COLUMN_ID, EMPTY_ID, FACET_BAR_ID, FACET_VIEW_ID, FacetView, HINT_ID, HINT_TEXT,
     HINT_TEXT_NOTES, REMOVE_LAST_ID, SHOW_MORE_COUNT_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id,
-    collection, crumb_id, gap_count_id, gap_down_id, gap_up_id, open_id, show_all_id,
+    collection, crumb_id, open_id,
 };
 use crate::theme;
-use crate::workspace::facet_ui::{chip, crumb as crumb_button, icon_chip, ring_room, text_button};
+use crate::workspace::facet_ui::{
+    Strip, chip, crumb as crumb_button, label_inset, ring_radius, ring_room, text_button,
+    text_button_on,
+};
 
 impl FacetView {
     /// The pinned bar above the column: the chips, the picks
@@ -119,58 +121,11 @@ impl FacetView {
         )
     }
 
-    /// Gap `g` ([`mod@super::members`]), or `None` when it hides nothing.
-    pub(super) fn render_gap(&self, g: usize, t: &Theme, cx: &mut Context<Self>) -> Option<Div> {
-        let gap = *self.members.gaps.get(g)?;
-        let hidden = self.members.gap_hidden(g);
-        if hidden == 0 {
-            return None;
-        }
-        let count = SharedString::from(match hidden {
-            1 => "1 block hidden".to_string(),
-            n => format!("{n} blocks hidden"),
-        });
-        let show_all = (hidden <= GAP_SHOW_ALL_MAX).then(|| {
-            self.button(
-                Stop::ShowAll(g),
-                text_button(show_all_id(g), "Show all", t),
-                t,
-                cx,
-            )
-        });
-        Some(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap_2()
-                .text_size(rows::small_text())
-                .text_color(theme::muted(t))
-                .when(gap.above.is_some(), |row| {
-                    let down = gap_down_id(g);
-                    let el = icon_chip(down, IconName::ChevronDown, "Show next block", t);
-                    row.child(self.button(Stop::GapDown(g), el, t, cx))
-                })
-                .when(gap.below.is_some(), |row| {
-                    let el = icon_chip(gap_up_id(g), IconName::ChevronUp, "Show previous block", t);
-                    row.child(self.button(Stop::GapUp(g), el, t, cx))
-                })
-                .child(
-                    div()
-                        .id(gap_count_id(g))
-                        .role(Role::Label)
-                        .aria_label(count.clone())
-                        .child(count)
-                        .test_support(),
-                )
-                .children(show_all),
-        )
-    }
-
     /// The slim row above chunk `i`, above its editor: the headings
     /// that contain it as clickable crumbs joined by ` › `, and `Open
     /// note` at the right end. Drawn with no crumbs too, so pieces line up.
     pub(super) fn render_crumbs(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> Div {
+        let strip = self.strip;
         let mut crumbs: Vec<AnyElement> = Vec::new();
         let plan_crumbs = self.members.chunk(i).map_or(&[][..], |plan| &plan.crumbs);
         for (index, crumb) in plan_crumbs.iter().enumerate() {
@@ -178,29 +133,42 @@ impl FacetView {
                 crumbs.push(
                     div()
                         .flex_none()
-                        .text_xs()
+                        .text_size(rows::small_text())
                         .text_color(theme::muted(t))
                         .child("\u{203a}")
                         .into_any_element(),
                 );
             }
             let last = index + 1 == plan_crumbs.len();
-            let el = crumb_button(crumb_id(i, index), crumb.label.clone(), last, t);
-            crumbs.push(
-                self.button(Stop::Crumb(i, index), el, t, cx)
-                    .into_any_element(),
-            );
+            let stop = Stop::Crumb(i, index);
+            let focused = self.stops.borrow().holds(&stop);
+            let picked = self.bar.picks().contains(&crumb.facet);
+            let id = crumb_id(i, index);
+            let state = (picked, focused);
+            let el = crumb_button(id, crumb.label.clone(), last, state, strip.fills, t);
+            crumbs.push(self.button(stop, el, t, cx).into_any_element());
         }
         // The piece clips, and so does the crumbs' own box: both keep room
         // for a focus ring at their edge. The crumbs' box reaches into the
         // row's room, so the crumbs sit where the row's other parts do.
         let room = ring_room();
+        // The first crumb's label starts at the column's one left edge.
+        let rem = self.stops.borrow().rem();
+        let lead = rows::spine().to_pixels(rem) - label_inset(rem);
+        // A faint strip, a step off the page ([`Strip`]), so the row reads
+        // as a header of the piece and not as a line of its text. It adds
+        // no height: the table keeps its row sizes.
         div()
             .flex()
             .flex_none()
             .items_center()
             .gap_2()
             .p(room)
+            .pl(lead)
+            // The strip's corners are the focus ring's, so a ring at its
+            // edge runs along it, and the stops inside sit concentric.
+            .rounded(ring_radius(rem))
+            .bg(strip.bg)
             .child(
                 div()
                     .flex()
@@ -215,26 +183,53 @@ impl FacetView {
             )
             .child(self.button(
                 Stop::Open(i),
-                text_button(open_id(i), "Open note", t),
+                text_button_on(open_id(i), "Open note", strip.fills, t),
                 t,
                 cx,
             ))
     }
 
-    /// Chunk `i`: its crumbs row, then its editor. The editor measures
-    /// its own height from its wrapped text, so the holder sets none.
-    pub(super) fn render_chunk(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    /// Chunk `i`: its crumbs row, the up row of the gap `lead` above it,
+    /// then its editor. The editor measures its own height from its wrapped
+    /// text, so the holder sets none.
+    pub(super) fn render_chunk(
+        &self,
+        i: usize,
+        lead: Option<usize>,
+        t: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        // Built in the order they are painted, so the stops track in Tab
+        // order.
+        let crumbs = self.render_crumbs(i, t, cx);
+        let up = lead.and_then(|g| self.render_up_row(g, t, cx));
         div()
             .id(chunk_id(i))
             .test_support()
             .role(Role::Group)
+            .aria_label(self.piece_name(i))
             .flex()
             .flex_col()
             .flex_none()
             .overflow_hidden()
-            .child(self.render_crumbs(i, t, cx))
+            .child(crumbs)
+            .children(up)
             .child(div().flex_none().child(self.chunks[i].clone()))
             .into_any_element()
+    }
+
+    /// The name a screen reader hears for piece `i`: its crumbs in a
+    /// single-note view, its note's title and its last crumb in a
+    /// collection. A piece with no crumbs takes its note's title.
+    fn piece_name(&self, i: usize) -> SharedString {
+        let crumbs = self.members.chunk(i).map_or(&[][..], |plan| &plan.crumbs);
+        let title = self.members.member_of(i).map(|m| m.title.as_str());
+        let parts: Vec<&str> = match (self.collection.is_some(), crumbs.last()) {
+            (_, None) => title.into_iter().collect(),
+            (true, Some(last)) => title.into_iter().chain([last.label.as_str()]).collect(),
+            (false, Some(_)) => crumbs.iter().map(|c| c.label.as_str()).collect(),
+        };
+        SharedString::from(parts.join(", "))
     }
 
     /// The message that stands where the pieces would be, with `Remove
@@ -285,7 +280,7 @@ impl FacetView {
                 .flex_none()
                 .px_4()
                 .pt_2()
-                .text_xs()
+                .text_size(rows::small_text())
                 .text_color(theme::muted(t))
                 .child(text)
                 .test_support()
@@ -377,7 +372,7 @@ pub(super) fn muted_note(
         .id(id)
         .role(role)
         .aria_label(text.clone())
-        .text_xs()
+        .text_size(rows::small_text())
         .text_color(theme::muted(t))
         .child(text)
         .test_support()
@@ -395,8 +390,11 @@ impl Render for FacetView {
         let t = &*theme;
         let title_size = collection::dateline_title_size(cx);
         self.stops.get_mut().begin(window);
+        // A search: taken once per frame, read by every piece's strip.
+        self.strip = Strip::of(t);
 
         // Drawn in this order: the tab stops follow it.
+        let title = self.render_view_title(heading::view_title_size(cx), t);
         let bar = self.render_bar(t, window, cx);
         let (body, check) = self.render_body(title_size, t, window, cx);
         let hint = self.render_hint(t, window, cx);
@@ -415,6 +413,7 @@ impl Render for FacetView {
             .size_full()
             .min_h_0()
             .bg(theme::background(t))
+            .children(title)
             .children(bar)
             .children(collection_line)
             .children(hint)

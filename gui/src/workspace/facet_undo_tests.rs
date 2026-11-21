@@ -286,12 +286,14 @@ fn the_focus_ring_has_three_to_one_contrast_in_every_builtin_theme() {
     }
 }
 
-/// A theme whose focus colour already reads keeps it.
+/// A theme whose focus colour already reads keeps it. It must read on the
+/// page and on the facet strip, where the crumbs and `Open note` sit.
 #[test]
 fn the_focus_ring_keeps_a_focus_colour_that_reads() {
     for t in Theme::builtins() {
         let own = theme::focus_border(&t);
-        if contrast(own, theme::background(&t)) >= 3.0 {
+        let strip = theme::facet_strip_background(&t);
+        if contrast(own, theme::background(&t)) >= 3.0 && contrast(own, strip) >= 3.0 {
             assert_eq!(theme::focus_ring(&t), own, "{}", t.name);
         }
     }

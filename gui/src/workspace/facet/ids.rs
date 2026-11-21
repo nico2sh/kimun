@@ -47,6 +47,12 @@ pub(crate) const LIST_EMPTY_ID: &str = "facet-list-empty";
 pub(crate) const COLUMN_ID: &str = "facet-column";
 /// A collection's `Refresh` text button, in its empty state.
 pub(crate) const REFRESH_ID: &str = "facet-refresh";
+/// The view title row at the top of the view: what the view shows.
+pub(crate) const VIEW_TITLE_ID: &str = "facet-view-title";
+/// The muted `Collection` word in the title row of a collection.
+pub(crate) const VIEW_TITLE_KIND_ID: &str = "facet-view-title-kind";
+/// The text of the title row: the query, or the note title.
+pub(crate) const VIEW_TITLE_TEXT_ID: &str = "facet-view-title-text";
 /// A collection's muted line under the bar ([`mod@super::collection`]).
 pub(crate) const COLLECTION_LINE_ID: &str = "facet-collection-line";
 /// The muted `100 of 340 pieces shown` beside `Show N more`.
@@ -68,19 +74,19 @@ pub(crate) fn pill_id(facet: &Facet) -> SharedString {
 /// The count on the picked pill of `facet`.
 #[cfg(test)]
 pub(crate) fn pill_count_id(facet: &Facet) -> SharedString {
-    crate::workspace::facet_ui::pill_count(&pill_id(facet))
+    crate::workspace::facet_pill::pill_count(&pill_id(facet))
 }
 
 /// The remove mark on the picked pill of `facet`.
 #[cfg(test)]
 pub(crate) fn remove_mark_id(facet: &Facet) -> SharedString {
-    crate::workspace::facet_ui::remove_mark(&pill_id(facet))
+    crate::workspace::facet_pill::remove_mark(&pill_id(facet))
 }
 
 /// The outline icon in front of the picked heading pill of `facet`.
 #[cfg(test)]
 pub(crate) fn outline_mark_id(facet: &Facet) -> SharedString {
-    crate::workspace::facet_ui::outline_mark(&pill_id(facet))
+    crate::workspace::facet_pill::outline_mark(&pill_id(facet))
 }
 
 /// The row of `facet` in an open list.
@@ -91,13 +97,13 @@ pub(crate) fn more_item_id(facet: &Facet) -> SharedString {
 /// The tick before the label of `facet`'s row, while it is picked.
 #[cfg(test)]
 pub(crate) fn row_tick_id(facet: &Facet) -> SharedString {
-    crate::workspace::facet_ui::row_tick(&more_item_id(facet))
+    crate::workspace::facet_pill::row_tick(&more_item_id(facet))
 }
 
 /// The in-view count at the right end of `facet`'s row.
 #[cfg(test)]
 pub(crate) fn row_count_id(facet: &Facet) -> SharedString {
-    crate::workspace::facet_ui::row_count(&more_item_id(facet))
+    crate::workspace::facet_pill::row_count(&more_item_id(facet))
 }
 
 /// The label over `kind`'s group in the list of every kind (`Tags`,

@@ -76,33 +76,10 @@ fn assert_ring_in_view(
     stop
 }
 
-/// `ids` (the order the stops were tracked) in Tab order: a gap row
-/// tracks its `Show all` first but paints it after its chevrons.
-fn tab_order(ids: &[SharedString]) -> Vec<SharedString> {
-    let mut out = Vec::with_capacity(ids.len());
-    let mut held: Option<(SharedString, String)> = None;
-    for id in ids {
-        if let Some((show_all, g)) = &held {
-            let chevron = id
-                .strip_prefix("facet-gap-")
-                .and_then(|r| r.split_once(':'));
-            if chevron.is_none_or(|(_, n)| n != g) {
-                out.push(show_all.clone());
-                held = None;
-            }
-        }
-        match id.strip_prefix("facet-show-all:") {
-            Some(g) => held = Some((id.clone(), g.to_string())),
-            None => out.push(id.clone()),
-        }
-    }
-    out.extend(held.map(|(id, _)| id));
-    out
-}
-
-/// The stops the last frame drew after `Clear`, in Tab order.
+/// The stops the last frame drew after `Clear`. The view tracks its stops
+/// in the order it paints them, so this is the Tab order.
 fn drawn_column_stops(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<SharedString> {
-    let all = tab_order(&view.read_with(cx, |v, _| v.drawn_stop_ids()));
+    let all = view.read_with(cx, |v, _| v.drawn_stop_ids());
     let at = all.iter().position(|id| id == CLEAR_ID).expect("Clear");
     all[at + 1..].to_vec()
 }

@@ -21,6 +21,7 @@ use gpui_kit::{
 };
 use kimun_notes::settings::themes::Theme;
 
+use super::facet::rows;
 use super::facet::{LIST_EMPTY_ID, LIST_REST_ID, ListKind, MORE_LIST_ID, MORE_QUERY_ID};
 use super::popup_layer;
 use super::query_field::query_field;
@@ -132,7 +133,7 @@ fn note(id: &'static str, text: SharedString, t: &Theme) -> impl IntoElement {
         .pb_1()
         .role(Role::Status)
         .aria_label(text.clone())
-        .text_xs()
+        .text_size(rows::small_text())
         .text_color(theme::muted(t))
         .child(text)
         .test_support()
@@ -151,7 +152,7 @@ fn frame(list: OpenList, t: &Theme) -> impl IntoElement {
                 .pt_1()
                 .role(Role::Label)
                 .aria_label(text)
-                .text_xs()
+                .text_size(rows::small_text())
                 .text_color(theme::muted(t))
                 .child(text)
                 .test_support()
