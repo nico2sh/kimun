@@ -4,6 +4,7 @@
 
 use std::ops::Range;
 
+use super::blocks::{BlockKind, NoteBlock};
 use super::facets::{Facet, FacetKind, NoteFacets};
 
 /// The default most chunks a caller asks `plan_chunks` for.
@@ -64,6 +65,51 @@ fn crumbs_for(facets: &NoteFacets, first: usize) -> Vec<Crumb> {
     found.into_iter().map(|(_, c)| c).collect()
 }
 
+/// Where a top-level indented code block's first line starts. The block's
+/// range starts after the indent, but the indent is what makes it code, so
+/// the chunk keeps it. `None` for any other block, a fenced one included.
+fn code_line_start(text: &str, block: &NoteBlock) -> Option<usize> {
+    if block.kind != BlockKind::Code || block.depth != 0 {
+        return None;
+    }
+    let rest = &text[block.range.start..];
+    if rest.starts_with("```") || rest.starts_with("~~~") {
+        return None;
+    }
+    let line_start = text[..block.range.start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[line_start..block.range.start];
+    (!indent.is_empty() && indent.chars().all(|c| c == ' ' || c == '\t')).then_some(line_start)
+}
+
+/// `text[span]` with the indent of the span's first line taken off the
+/// lines after it. A block starts at its marker, so the first line has no
+/// indent, but a nested list item's later lines keep the indent of its
+/// level. Drawn alone, those lines read as an indented code block. Only
+/// whitespace goes, and never more than the first line's indent. A span in a
+/// quote (`> - x`) has no whitespace-only indent and stays as it is.
+fn dedented(text: &str, span: Range<usize>) -> String {
+    let line_start = text[..span.start].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[line_start..span.start];
+    let source = &text[span];
+    if indent.is_empty() || !indent.chars().all(|c| c == ' ' || c == '\t') {
+        return source.to_string();
+    }
+    let mut out = String::with_capacity(source.len());
+    for (i, line) in source.split_inclusive('\n').enumerate() {
+        if i == 0 {
+            out.push_str(line);
+            continue;
+        }
+        let strip = line
+            .bytes()
+            .take(indent.len())
+            .take_while(|b| *b == b' ' || *b == b'\t')
+            .count();
+        out.push_str(&line[strip..]);
+    }
+    out
+}
+
 /// Chunks for `shown` (ascending, non-overlapping). At most `limit` chunks;
 /// the second value counts the ranges left out.
 pub fn plan_chunks(
@@ -87,7 +133,8 @@ pub fn plan_chunks(
                 chunk.push_str(&text[lead.clone()]);
             }
         }
-        chunk.push_str(&text[first.range.start..last.range.end]);
+        let start = code_line_start(text, first).unwrap_or(first.range.start);
+        chunk.push_str(&dedented(text, start..last.range.end));
         let above_from = if at == 0 { 0 } else { shown[at - 1].end };
         let below_to = shown.get(at + 1).map_or(blocks.len(), |next| next.start);
         plans.push(ChunkPlan {
@@ -169,6 +216,39 @@ mod tests {
     }
 
     const NINE: &str = "p0\n\np1\n\np2\n\np3\n\np4\n\np5\n\np6\n\np7\n\np8\n";
+
+    #[test]
+    fn a_nested_item_loses_its_levels_indent_on_later_lines() {
+        let text = "- one\n  - two\n    - three\n      more of three\n\n      para of three\n";
+        let f = facets(text);
+        let last = f.blocks.len() - 1;
+        let (plans, _) = plan_chunks(&f, text, &[2..last + 1], MAX_RANGES);
+        assert_eq!(plans[0].text, "- three\n  more of three\n\n  para of three");
+    }
+
+    #[test]
+    fn real_code_blocks_keep_their_shape() {
+        let nested = "- one\n  - two\n    - three\n      ```\n        code  \n      ```\n";
+        let f = facets(nested);
+        let (plans, _) = plan_chunks(&f, nested, &[2..3], MAX_RANGES);
+        assert_eq!(plans[0].text, "- three\n  ```\n    code  \n  ```");
+        let indented = "para\n\n    a\n\n    b\n      c\n";
+        let f = facets(indented);
+        let (plans, _) = plan_chunks(&f, indented, &[1..2], MAX_RANGES);
+        assert_eq!(plans[0].text, "    a\n\n    b\n      c");
+        let top = "para\n\n```\n  code\n```\n";
+        let f = facets(top);
+        let (plans, _) = plan_chunks(&f, top, &[1..2], MAX_RANGES);
+        assert_eq!(plans[0].text, "```\n  code\n```");
+    }
+
+    #[test]
+    fn a_chunk_in_a_quote_keeps_its_text() {
+        let text = "> - one\n>   more\n";
+        let f = facets(text);
+        let (plans, _) = plan_chunks(&f, text, &[0..1], MAX_RANGES);
+        assert!(plans[0].text.contains(">   more"));
+    }
 
     #[test]
     fn a_chunk_is_the_source_text_of_its_blocks() {
