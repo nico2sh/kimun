@@ -15,7 +15,10 @@ use tokio::runtime::Runtime;
 
 use super::directory_choice::choice_row_id;
 use super::file_dialogs::CONFIRM_ID;
-use super::files::{FILES_NEW_DIRECTORY_ID, FILES_NEW_ID, FILES_NEW_NOTE_ID};
+use super::files::{
+    FILES_NEW_DIRECTORY_ID, FILES_NEW_ID, FILES_NEW_JOURNAL_ID, FILES_NEW_NOTE_ID,
+    FILES_NEW_QUICK_NOTE_ID,
+};
 use super::modal::ModalKind;
 use super::new_entry::{NEW_ENTRY_CHANGE_ID, NewEntryDialog};
 use super::start_tests::{Started, drive, open_started, runtime, vault_start};
@@ -388,6 +391,35 @@ fn the_files_plus_menu_opens_both_dialogs(cx: &mut TestAppContext) {
         started.settle_dialog(cx);
         assert_eq!(modal(&started, cx), None);
     }
+}
+
+/// The `New` menu also holds the quick note and today's journal: each does
+/// what its chord does.
+#[gpui_kit::test]
+fn the_files_new_menu_offers_the_quick_note_and_the_journal(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, &[("a.md", "alpha")], &[], "a.md");
+    click(&started, FILES_NEW_ID, cx);
+    click(&started, FILES_NEW_QUICK_NOTE_ID, cx);
+    cx.run_until_parked();
+    assert_eq!(modal(&started, cx), Some(ModalKind::QuickNote));
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    assert_eq!(modal(&started, cx), None);
+
+    click(&started, FILES_NEW_ID, cx);
+    click(&started, FILES_NEW_JOURNAL_ID, cx);
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            let w = started.workspace.read(cx);
+            w.active_state()
+                .notes
+                .as_ref()
+                .and_then(|h| h.note.clone())
+                .is_some_and(|n| n.to_string().contains("journal"))
+        })
+    });
 }
 
 /// The dialog refuses to open over another modal, and its chord does
