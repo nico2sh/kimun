@@ -283,6 +283,12 @@ impl Heights {
         self.top_of(self.shapes.len())
     }
 
+    /// The fixed heights in use (tests).
+    #[cfg(test)]
+    pub(crate) fn metrics(&self) -> Metrics {
+        self.metrics
+    }
+
     /// Whether the offsets are rebuilt at the next read (tests).
     #[cfg(test)]
     pub(crate) fn is_stale(&self) -> bool {
@@ -328,16 +334,6 @@ pub(crate) enum Row {
     Tail(usize),
     /// The `Show more` row after the last piece.
     End,
-}
-
-/// The room above and below the column's pieces (`py_3`).
-pub(crate) fn column_pad(rem: Pixels) -> Pixels {
-    rem * 0.75
-}
-
-/// The space between two items of the column (`gap_3`).
-pub(crate) fn column_gap(rem: Pixels) -> Pixels {
-    rem * 0.75
 }
 
 /// The pieces that touch the viewport or lie within one viewport of it.

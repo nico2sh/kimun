@@ -53,7 +53,8 @@ use kimun_core::note::{Facet, Reveal};
 use kimun_notes::logic::input::{Key, Mods};
 use kimun_notes::settings::themes::Theme;
 
-use super::window::column_pad;
+use super::body::to_px;
+use super::rows::column_pad;
 use super::{FacetEvent, FacetView, ListKind};
 use crate::input;
 use crate::keymap::Platform;
@@ -417,7 +418,7 @@ impl FacetView {
     /// not drawn is reached too.
     fn step_piece(&mut self, down: bool, window: &Window, cx: &mut Context<Self>) {
         // The table starts under the column's `py_3`.
-        let pad = column_pad(window.rem_size());
+        let pad = to_px(column_pad(), window.rem_size());
         let tops: Vec<f32> = {
             let heights = self.heights.borrow();
             (0..self.members.len())

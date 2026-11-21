@@ -16,7 +16,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::bar_motion::HintDraw;
 use super::keys::{Stop, keys};
-use super::window::{column_gap, column_pad};
+use super::rows;
 use super::{
     CLEAR_ID, COLUMN_ID, EMPTY_ID, FACET_BAR_ID, FACET_VIEW_ID, FacetView, HINT_ID, HINT_TEXT,
     HINT_TEXT_NOTES, REMOVE_LAST_ID, SHOW_MORE_COUNT_ID, SHOW_MORE_ID, SUMMARY_ID, chunk_id,
@@ -144,7 +144,7 @@ impl FacetView {
                 .flex_none()
                 .items_center()
                 .gap_2()
-                .text_xs()
+                .text_size(rows::small_text())
                 .text_color(theme::muted(t))
                 .when(gap.above.is_some(), |row| {
                     let down = gap_down_id(g);
@@ -395,7 +395,6 @@ impl Render for FacetView {
         let t = &*theme;
         let title_size = collection::dateline_title_size(cx);
         self.stops.get_mut().begin(window);
-        let rem = window.rem_size();
 
         // Drawn in this order: the tab stops follow it.
         let bar = self.render_bar(t, window, cx);
@@ -429,9 +428,9 @@ impl Render for FacetView {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .gap(column_gap(rem))
+                    .gap(rows::column_gap())
                     .px_4()
-                    .py(column_pad(rem))
+                    .py(rows::column_pad())
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
                     .children(body)

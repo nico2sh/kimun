@@ -53,6 +53,7 @@ pub(crate) use super::collection_text::{dateline_meta, note_folder, piece_count,
 use super::collection_text::{local_now, note_count};
 use super::keys::Stop;
 use super::members::{GapRef, MemberInit, Members};
+use super::rows;
 use super::timed::Timed;
 use super::{
     COLLECTION_LINE_ID, FacetEvent, FacetView, REFRESH_ID, dateline_folder_id, dateline_id,
@@ -345,7 +346,7 @@ impl FacetView {
                 .flex_none()
                 .items_center()
                 .gap_2()
-                .when(spaced, |row| row.mt_3())
+                .when(spaced, |row| row.mt(rows::dateline_margin()))
                 .child(
                     div()
                         .id(dateline_title_id(m))
@@ -402,7 +403,7 @@ impl FacetView {
                 // A space's width to the dot, not the row's gap.
                 .mr(px(-4.))
                 .truncate()
-                .text_xs()
+                .text_size(rows::small_text())
                 .text_color(muted)
                 .child(folder)
                 .test_support();
@@ -415,7 +416,7 @@ impl FacetView {
             .aria_label(meta)
             .flex_none()
             .whitespace_nowrap()
-            .text_xs()
+            .text_size(rows::small_text())
             .text_color(muted)
             .child(count)
             .test_support()

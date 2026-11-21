@@ -48,7 +48,7 @@ use gpui_kit::base::TestSupportExt;
 use gpui_kit::{
     App, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
     KeyBinding, MouseButton, MouseDownEvent, NoAction, ParentElement, Pixels, Point, Render,
-    Styled, Subscription, Task, Window, div,
+    Styled, Subscription, Task, Window, div, rems,
 };
 use kimun_notes::logic::autocomplete::AutocompleteEngine;
 use kimun_notes::logic::editor::Editor;
@@ -81,6 +81,12 @@ use self::pointer::ClickRun;
 #[cfg(test)]
 pub(crate) use self::pointer::frozen_clock;
 use self::read_only::ReadOnlyClicks;
+
+/// The pane's padding at each side of the grid, in rems (`px_4`). A facet
+/// piece's height table reads it too (`workspace::facet::rows`).
+pub(crate) const PANE_PAD_X_REMS: f32 = 1.0;
+/// The pane's padding above and below the grid, in rems (`py_2`).
+pub(crate) const PANE_PAD_Y_REMS: f32 = 0.5;
 
 /// The key context of the Edit surface.
 pub const KEY_CONTEXT: &str = "KimunEditor";
@@ -426,8 +432,8 @@ impl Render for EditorView {
                     window.focus(&this.focus_handle, cx);
                 }),
             )
-            .px_4()
-            .py_2()
+            .px(rems(PANE_PAD_X_REMS))
+            .py(rems(PANE_PAD_Y_REMS))
             .bg(theme::background(&theme::current(cx)))
             .child(EditorElement::new(cx.entity()));
         // A text-sized editor takes its height from its text.

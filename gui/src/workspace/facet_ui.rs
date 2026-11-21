@@ -17,6 +17,7 @@ use kimun_notes::logic::facet_bar::Pill;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::settings::themes::Theme;
 
+use super::facet::rows::button;
 use super::rail_icon;
 use crate::theme;
 
@@ -77,8 +78,8 @@ pub(super) fn chip(
         .aria_label(label.clone())
         .flex()
         .flex_none()
-        .h_6()
-        .min_w_6()
+        .h(button())
+        .min_w(button())
         .items_center()
         .justify_center()
         .whitespace_nowrap()
@@ -108,8 +109,8 @@ pub(super) fn icon_chip(
         .aria_label(label)
         .flex()
         .flex_none()
-        .size_6()
-        .min_w_6()
+        .size(button())
+        .min_w(button())
         .items_center()
         .justify_center()
         .rounded_md()
@@ -132,7 +133,7 @@ pub(super) fn text_button(
     let label: SharedString = label.into();
     text_frame(id, label.clone(), t)
         .flex_none()
-        .min_w_6()
+        .min_w(button())
         .justify_center()
         .child(label)
 }
@@ -203,7 +204,7 @@ fn text_frame(id: SharedString, label: SharedString, t: &Theme) -> Stateful<Div>
         .role(Role::Button)
         .aria_label(label)
         .flex()
-        .h_6()
+        .h(button())
         .items_center()
         .whitespace_nowrap()
         .px_1()
@@ -299,7 +300,7 @@ pub(super) fn pill(id: SharedString, p: &Pill, t: &Theme) -> Stateful<Div> {
         .flex_none()
         // A long name is cut with an ellipsis: the marks stay in view.
         .max_w_full()
-        .h_6()
+        .h(button())
         .items_center()
         .gap(rems(PILL_GAP_REMS))
         .whitespace_nowrap()

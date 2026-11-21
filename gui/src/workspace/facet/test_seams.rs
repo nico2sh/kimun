@@ -142,4 +142,9 @@ impl FacetView {
     pub(crate) fn ask_focus_open(&mut self, i: usize) {
         self.focus_after = Some(Stop::Open(i));
     }
+
+    /// The fixed row heights the height table uses now (tests).
+    pub(crate) fn table_metrics(&self) -> super::window::Metrics {
+        self.heights.borrow().metrics()
+    }
 }
