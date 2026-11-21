@@ -264,6 +264,33 @@ fn f3_lists_the_backlinks_entry_then_the_saved_searches(cx: &mut TestAppContext)
     assert!(back, "the keyboard returns to the editor");
 }
 
+/// With nothing saved, the list says what a saved search is and how to make
+/// one, with the chord. It waits for the read (the built-in entry alone is
+/// not "nothing saved" yet), and it is not there once something is saved.
+#[gpui_kit::test]
+fn an_empty_list_teaches_what_a_saved_search_is(cx: &mut TestAppContext) {
+    use super::picker::{SAVED_EMPTY_ID, saved_empty_text};
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_with(cx, &rt, &[]);
+    press(&started, "f3", cx);
+    assert!(!started.shows(SAVED_EMPTY_ID, cx), "not before the read");
+    rows(&started, &rt, cx);
+    assert!(started.shows(SAVED_EMPTY_ID, cx));
+    assert!(saved_empty_text(Some("Ctrl+D")).contains("press Ctrl+D"));
+    assert!(!saved_empty_text(None).contains("press"));
+    // A filter that hides every row is not "nothing saved".
+    type_in(&started, "zzz", cx);
+    assert!(!started.shows(SAVED_EMPTY_ID, cx));
+
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    let (_v, started) = started_with(cx, &rt, &[("todo", "#rust")]);
+    press(&started, "f3", cx);
+    rows(&started, &rt, cx);
+    assert!(!started.shows(SAVED_EMPTY_ID, cx), "something is saved");
+}
+
 /// A digit types into the filter (it is still text) and puts the search
 /// with that number under Enter; a name filters too; clearing the filter
 /// puts the Backlinks entry back on top.
