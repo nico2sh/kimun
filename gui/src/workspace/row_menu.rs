@@ -31,7 +31,7 @@ use gpui_kit::{
 use kimun_core::error::{FSError, VaultError};
 use kimun_core::nfs::VaultPath;
 use kimun_core::nfs::pinned_notes;
-use kimun_core::{NoteVault, PINNED_NOTES_CAP, PinToggle};
+use kimun_core::{NoteVault, PINNED_NOTES_CAP, PinOutcome};
 use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::layout_tree::Axis as TreeAxis;
@@ -362,27 +362,14 @@ impl Workspace {
 }
 
 /// Pin the note at `path` unless it is pinned already; the flash text.
-/// The pins are read fresh from core first, so a stale menu never unpins.
+/// Core checks and appends under one lock, so a stale menu never unpins.
 async fn pin_note(vault: &NoteVault, path: &VaultPath) -> String {
-    match vault.list_pinned_notes().await {
-        Ok(pins) if pinned_notes::position_of(&pins, path).is_some() => {
-            return ALREADY_PINNED.to_string();
-        }
-        Ok(_) => {}
-        Err(e) => return pin_error(path, e),
-    }
-    let mut outcome = vault.toggle_pinned_note(path).await;
-    // Pinned elsewhere between the read and the toggle: the toggle took it
-    // off, so put it back (last).
-    if matches!(outcome, Ok(PinToggle::Unpinned)) {
-        outcome = vault.toggle_pinned_note(path).await;
-    }
-    match outcome {
-        Ok(PinToggle::Pinned { position }) => {
+    match vault.pin_note(path).await {
+        Ok(PinOutcome::Pinned { position }) => {
             format!("pinned as {} of {}", position + 1, PINNED_NOTES_CAP)
         }
-        Ok(PinToggle::Unpinned) => "unpinned".to_string(),
-        Ok(PinToggle::Full) => {
+        Ok(PinOutcome::AlreadyPinned) => ALREADY_PINNED.to_string(),
+        Ok(PinOutcome::Full) => {
             format!("already {PINNED_NOTES_CAP} pinned — unpin one first")
         }
         Err(e) => pin_error(path, e),

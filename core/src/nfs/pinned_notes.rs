@@ -43,6 +43,19 @@ pub enum PinToggle {
     Full,
 }
 
+/// What `NoteVault::pin_note` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinOutcome {
+    /// Appended; `position` is 0-based.
+    Pinned {
+        position: usize,
+    },
+    /// Already in the list, anywhere (even past the cap). Nothing written.
+    AlreadyPinned,
+    /// Not pinned and the list already holds [`PINNED_NOTES_CAP`] entries.
+    Full,
+}
+
 /// On-disk wrapper: `notes = ["/a.md", "/dir/b.md"]` (canonical form).
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct PinnedNotesFile {
