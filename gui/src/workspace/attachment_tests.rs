@@ -519,7 +519,9 @@ fn opening_a_note_returns_to_the_editor(cx: &mut TestAppContext) {
     );
     started.show(&rt, "notes.txt", cx);
     started.open_row("b.md", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "bravo" && !started.indexing(cx)
+    });
     assert_eq!(started.shown(cx), None);
     assert!(!started.shows(ATTACHMENT_ID, cx));
     assert!(

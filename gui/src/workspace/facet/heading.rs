@@ -28,8 +28,11 @@ pub(crate) const VIEW_TITLE_LEVEL: usize = 1;
 /// The heading level of a dateline: one level under the view title.
 pub(crate) const DATELINE_LEVEL: usize = 2;
 
-/// The word before the query in a collection's title row.
+/// The small word above the query in a collection's title row.
 const COLLECTION_WORD: &str = "Collection";
+
+/// The small word above the note title in a single-note view.
+const NOTE_WORD: &str = "Note";
 
 /// The size of the view title: one type step above a dateline title, so it
 /// stays above the note titles at any editor size.
@@ -38,31 +41,28 @@ pub(crate) fn view_title_size(cx: &App) -> Pixels {
 }
 
 impl FacetView {
-    /// The view title row: what the view shows, one line at `size`,
-    /// semibold, cut with an ellipsis when too long. A collection shows a
-    /// small muted `Collection`, then its query, with the full query in a
-    /// tooltip. A single-note view shows its note's title, which follows new
-    /// text and a rename ([`super::members`]). A screen reader hears it as
-    /// the first heading level, named with the full text.
+    /// The view title row: what the view shows. A small muted word on top
+    /// (`Collection` or `Note`), at the left edge, and under it the title
+    /// at `size`, semibold, one line, cut with an ellipsis when too long.
+    /// The title of a collection is its query, with the full query in a
+    /// tooltip. The title of a single-note view is its note's title, which
+    /// follows new text and a rename ([`super::members`]). A screen reader
+    /// hears it as the first heading level, named with the word and the
+    /// full title.
     pub(super) fn render_view_title(&self, size: Pixels, t: &Theme) -> Option<Div> {
         let query = self.query().map(SharedString::from);
-        let text = match &query {
-            Some(query) => query.clone(),
-            None => SharedString::from(self.single()?.title.clone()),
+        let (word, text) = match &query {
+            Some(query) => (COLLECTION_WORD, query.clone()),
+            None => (NOTE_WORD, SharedString::from(self.single()?.title.clone())),
         };
-        let name = match &query {
-            Some(query) => SharedString::from(format!("{COLLECTION_WORD}: {query}")),
-            None => text.clone(),
-        };
-        let kind = query.is_some().then(|| {
-            div()
-                .id(VIEW_TITLE_KIND_ID)
-                .flex_none()
-                .text_size(rows::small_text())
-                .text_color(theme::muted(t))
-                .child(COLLECTION_WORD)
-                .test_support()
-        });
+        let name = SharedString::from(format!("{word}: {text}"));
+        let kind = div()
+            .id(VIEW_TITLE_KIND_ID)
+            .flex_none()
+            .text_size(rows::small_text())
+            .text_color(theme::muted(t))
+            .child(word)
+            .test_support();
         let shown = div()
             .id(VIEW_TITLE_TEXT_ID)
             .min_w_0()
@@ -83,12 +83,12 @@ impl FacetView {
                     .aria_level(VIEW_TITLE_LEVEL)
                     .aria_label(name)
                     .flex()
-                    .items_baseline()
-                    .gap_2()
+                    .flex_col()
+                    .items_start()
                     .px_4()
                     .when_some(self.corner_room, |row, room| row.pr(room))
                     .pt_3()
-                    .children(kind)
+                    .child(kind)
                     .child(shown)
                     .test_support(),
             ),

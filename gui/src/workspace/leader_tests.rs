@@ -376,7 +376,9 @@ fn ctrl_s_mid_sequence_cancels_and_saves(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let shell = Shell {
         handle: started.handle,
         workspace: started.workspace.clone(),

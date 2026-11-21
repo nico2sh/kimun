@@ -19,7 +19,7 @@ Use any of these:
 
 The pane now shows the note as read-only text. The funnel button looks pressed, and its tooltip says `Back to the editor`. When a tab has two panes or more, each pane has a header, and a pane that shows a facet view has a small funnel before its title there. A lone pane has no header: its corner button looks pressed instead. When the window has two tabs or more, a tab whose pane shows a facet view also has a small funnel before its title. To go back, click the funnel button again, run `Toggle facet view`, or open the note menu and pick `Edit note`.
 
-At the top of the view, a title row shows the title of the note in bold. It changes when you rename the note or change its first line. So you can see what the view shows also when the window shows no tabs.
+At the top of the view, a title row shows a small, dim `Note` and, under it, the title of the note in bold. It changes when you rename the note or change its first line. So you can see what the view shows also when the window shows no tabs.
 
 Kimün saves the text of the note before it opens the view. If another pane changes and saves the note, the facet view updates. When you start Kimün again, the pane opens as a facet view with the same picks.
 
@@ -133,7 +133,7 @@ Open FIND and type a query. Then use one of these:
 
 Neither has a key by default. Both use the query that is now in FIND, not the results that you see. If FIND has no query, a message says `No query to open`. If the query uses `{note}` and the pane has no open note, a message says `This query needs an open note.` The query is filled in with the open note when the collection opens, and it stays so.
 
-The collection opens in the current pane and replaces what the pane shows. Kimün saves the text of the pane's own note first. The pane header, and the tab, show the query as the title. The title row at the top of the view shows a small `Collection` and then the query in bold. A long query is shortened with `…`. Hover it to see the full query.
+The collection opens in the current pane and replaces what the pane shows. Kimün saves the text of the pane's own note first. The pane header, and the tab, show the query as the title. The title row at the top of the view shows a small, dim `Collection` and, under it, the query in bold. A long query is shortened with `…`. Hover it to see the full query.
 
 ### What a collection shows
 
