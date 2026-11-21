@@ -1627,6 +1627,7 @@ fn opening_state() -> EmptyState {
         title: "Opening the workspace…".into(),
         detail: String::new(),
         failed: false,
+        shortcuts: Vec::new(),
     }
 }
 
