@@ -91,7 +91,6 @@ pub(crate) const UPDATE_INSTALL_ID: &str = "update-install";
 pub(crate) const UPDATE_NOTES_ID: &str = "update-release-notes";
 pub(crate) const UPDATE_SKIP_ID: &str = "update-skip";
 pub(crate) const UPDATE_LATER_ID: &str = "update-later";
-pub(crate) const UPDATE_CLOSE_ID: &str = "update-close";
 
 /// What the toast's `View` says when another dialog is in the way.
 const DIALOG_OPEN_TEXT: &str = "Close this dialog first, then check for updates from the palette.";
@@ -321,7 +320,7 @@ impl UpdateDialog {
                         .on_click(on(Workspace::restart_now)),
                 )
                 .child(
-                    Button::new(UPDATE_CLOSE_ID)
+                    Button::new(UPDATE_LATER_ID)
                         .track_focus(later_focus)
                         .small()
                         .ghost()
@@ -920,16 +919,16 @@ impl Workspace {
         self.restart_unless_underway(&version, cx);
     }
 
-    /// The quit [`Self::restart_into_update`] asked for did not start (a close
+    /// The quit [`Self::restart_now`] asked for did not start (a close
     /// the window refuses: unsaved Preferences, a note that cannot be saved):
-    /// no restart stays armed for some later quit, and the user is told to
-    /// restart by hand. A quit that waits on a save is under way and keeps it;
+    /// no restart stays armed for some later quit, and the toast keeps
+    /// `Restart now` so the user can try again. A quit that waits on a save is under way and keeps it;
     /// one that already ended the app took the flag ([`Workspace::end_app`]).
     fn restart_unless_underway(&mut self, version: &str, cx: &mut Context<Self>) {
         let underway = self.window_closing();
         if self.updates.restart_pending && !underway {
             self.updates.restart_pending = false;
-            self.flash(rules::installed_text(version), cx);
+            self.flash_with_action(rules::installed_text(version), Self::restart_action(), cx);
         }
     }
 

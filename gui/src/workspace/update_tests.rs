@@ -45,9 +45,9 @@ use super::preferences::{
 use super::start_tests::{Started, drive, runtime, send, vault_start};
 use super::update::{
     ACTION_TOAST_LIFETIME, INSTALL_LABEL, RESTART_LABEL, RETRY_LABEL, TITLE, TITLE_INSTALLED,
-    UPDATE_CLOSE_ID, UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID,
-    UPDATE_LATER_ID, UPDATE_NOTES_ID, UPDATE_NOW_LABEL, UPDATE_RESTART_ID, UPDATE_SKIP_ID,
-    UPDATE_TEXT_ID, UPDATE_VERSIONS_ID, UPDATING_TEXT, UpdateDialog, VIEW_LABEL,
+    UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID, UPDATE_LATER_ID,
+    UPDATE_NOTES_ID, UPDATE_NOW_LABEL, UPDATE_RESTART_ID, UPDATE_SKIP_ID, UPDATE_TEXT_ID,
+    UPDATE_VERSIONS_ID, UPDATING_TEXT, UpdateDialog, VIEW_LABEL,
 };
 use super::{FLASH_MESSAGE_ID, LayoutStore, TOAST_ACTION_ID, ToastAction, Workspace};
 use crate::editor_view::{self, EditorView};
@@ -897,8 +897,8 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     assert_eq!(title, TITLE_INSTALLED);
     assert!(!s.shows(UPDATE_INSTALL_ID, cx));
     // The palette row shows it again rather than checking for the same
-    // version; Close closes, and the window can close now.
-    s.up_click(UPDATE_CLOSE_ID, cx);
+    // version; Later closes, and the window can close now.
+    s.up_click(UPDATE_LATER_ID, cx);
     s.settle_dialog(cx);
     assert_eq!(s.shown_modal(cx), None);
     s.up_route(cx);

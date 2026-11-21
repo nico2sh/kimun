@@ -129,7 +129,7 @@ If the title bar looks wrong on your desktop, add `window_decorations = "system"
 
 ## Updates
 
-The app checks for a new version when it starts. If you installed with the install script, click `Update now` in the message. Your open note is saved first, and the app restarts. For other installs, the message shows how to update.
+The app checks for a new version when it starts. If you installed with the install script, click `Update now` in the message. Your open note is saved first. When the update is installed, click `Restart now` to start the new version, or `Later` to keep working. For other installs, the message shows how to update.
 
 To turn off the check, clear `Check for updates on startup` in Preferences, in the Display section. Click `Check now` to look right away.
 
