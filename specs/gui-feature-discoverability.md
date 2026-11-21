@@ -1,6 +1,8 @@
 # GUI feature discoverability: design brief
 
-Status: draft, 2026-11-21. Nothing is built.
+Status: in progress, 2026-11-21. Built: note menu pin item, Find panel saved searches button, Files "New" menu rows. Next: empty editor group.
+
+Decision, 2026-11-21: the chord is the primary route for the journal entry and the quick note. The Files "New" menu rows exist to teach the chords, so they show them. A one-click surface (the rail footer row) stays rejected unless a user test shows that people do not find these two features. The empty editor group is the main place that teaches the chords, so it comes before the pinned section.
 
 ## Problem
 
@@ -44,9 +46,11 @@ For actions (journal, quick note, new note), do not use the rail. Use the Files 
 
 ## Changes, in build order
 
-1. Note menu. Add "Pin note" and "Unpin note" (the label follows the state), each with its chord on the right, as the Files "New" menu does. Show a short flash after the action, the way the TUI says "pinned as 1 of 9".
-2. Find panel. Add two ghost buttons beside the query field: "Save" and "Saved". Each has a tooltip built with `tooltip_with_chord`. Save is disabled while the query is empty.
-3. Files "New" menu. Add "Journal entry" and "Quick note" below the note and directory items, with their chords.
+The list shows the intended order. Item 5, the empty editor group, was moved ahead of item 4.
+
+1. Note menu (built). Add "Pin note" and "Unpin note" (the label follows the state), each with its chord on the right, as the Files "New" menu does. Show a short flash after the action, the way the TUI says "pinned as 1 of 9".
+2. Find panel (built). "Save…" already existed. Add a ghost bookmark button, "Saved searches", in the row under the field, with a tooltip built with `tooltip_with_chord`.
+3. Files "New" menu. Add "Today's journal" and "Quick note" below the note and directory items, with their chords. Built.
 4. Pinned section in the Files panel. A quiet heading, "Pinned", and up to nine rows in pin order, each with its digit. A click opens the note. A row whose note is missing shows dimmed, as the dialog does. The section header has a "Manage" text link that opens the existing dialog.
 5. Empty states that teach.
    - Empty editor group: three or four lines, each an action and its chord: open a note, today's journal, quick note, command palette.
