@@ -54,6 +54,7 @@ use super::Workspace;
 use crate::editor_view::EditorView;
 
 pub(super) use self::leave::{LeavingFor, NoteLeft};
+pub(crate) use self::open::OpenAt;
 
 mod close;
 mod footer;
@@ -85,7 +86,7 @@ pub(crate) struct NoteHost {
     /// The needles of the note being read, applied once it has loaded.
     reading_emphasis: Option<Vec<String>>,
     /// The source line (0-based) the caret goes to once the wanted note
-    /// has loaded ([`Workspace::open_note_at`]); replaced by every open.
+    /// has loaded ([`Workspace::open_note_at_line`]); replaced by every open.
     wanted_line: Option<usize>,
     /// The line of the note being read, applied once it has loaded.
     reading_line: Option<usize>,

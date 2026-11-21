@@ -737,6 +737,7 @@ impl Workspace {
         *self.layout.region_mut() = region;
         // The open menu's group may be gone, or its id name another group.
         self.forget_note_menu(cx);
+        self.forget_link_menu(cx);
         let mut made = made.into_iter();
         for group in wanted {
             match carried.pop_front() {

@@ -32,7 +32,8 @@ use kimun_notes::logic::message::{AppMessage, FileOp};
 
 use super::Workspace;
 use super::facet::{FacetEvent, FacetView};
-use super::note::{Closing, LeavingFor, NoteLeft};
+use super::link_menu::LinkMenuPick;
+use super::note::{Closing, LeavingFor, NoteLeft, OpenAt};
 use crate::startup::EmptyState;
 use crate::tasks;
 
@@ -209,15 +210,35 @@ impl Workspace {
             return;
         }
         match event {
-            FacetEvent::OpenNote { note, line } => self.open_note_at(note.clone(), *line, cx),
+            FacetEvent::OpenNote { note, line } => self.open_note_at_line(note.clone(), *line, cx),
             FacetEvent::Follow {
                 from,
                 target: FollowTarget::Link { target, kind },
-            } => self.follow_link_from(from, target.clone(), *kind, true, cx),
+            } => self.follow_link_from(from, target.clone(), *kind, OpenAt::NewTab, cx),
             FacetEvent::Follow {
                 target: FollowTarget::Label(name),
                 ..
             } => self.follow_label(name, cx),
+            // A right-click on a link in a piece: the Link menu, from the
+            // piece's own note, for the group that shows the view.
+            FacetEvent::LinkMenu { from, at, target } => {
+                let group = self
+                    .group_ids()
+                    .into_iter()
+                    .find(|g| self.state(*g).and_then(|s| s.facet.as_ref()) == Some(&view));
+                if let Some(group) = group {
+                    let pick = LinkMenuPick {
+                        group,
+                        from: from.clone(),
+                        target: target.clone(),
+                        facet: true,
+                    };
+                    let at = *at;
+                    self.with_window(cx, move |workspace, window, cx| {
+                        workspace.open_link_menu(pick, at, window, cx);
+                    });
+                }
+            }
             FacetEvent::PicksChanged => self.facet_picks_changed(cx),
             // A single-note view never emits it.
             FacetEvent::Refresh => {
@@ -454,17 +475,17 @@ impl Workspace {
         }
     }
 
-    /// Open the note a create made in a new tab (a follow from a facet
-    /// view): [`FileOp::Created`] reported first when it is new, as
+    /// Open the note a create made where `at` says (a follow from a facet
+    /// view, or a Link menu pick): [`FileOp::Created`] reported first when it is new, as
     /// [`NoteOutcome::announce_and_open`] does for a plain open.
-    pub(super) fn open_made_in_new_tab(&mut self, made: NoteOutcome, cx: &mut Context<Self>) {
+    pub(super) fn open_made_at(&mut self, made: NoteOutcome, at: OpenAt, cx: &mut Context<Self>) {
         if made.created
             && let Some(tx) = self.tx.as_ref()
         {
             tx.send(AppMessage::FileOp(FileOp::Created(made.path.clone())))
                 .ok();
         }
-        self.open_note_in_new_tab(made.path, cx);
+        self.open_note_at(made.path, at, cx);
     }
 
     /// Open the attachment at `path` in a new tab (a follow from a facet

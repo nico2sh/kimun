@@ -16,7 +16,8 @@
 //!
 //! **Pointer.** A click selects a row and activates it, as Enter does
 //! ([`ClickPolicy::Open`]: the pointing hand over every row); a right
-//! click shows an entry's menu. The sort chip beside the breadcrumb opens the sort dialog
+//! click on an entry or a pinned note shows the row menu
+//! ([`super::row_menu`]) and never activates the row. The sort chip beside the breadcrumb opens the sort dialog
 //! ([`super::sort`]).
 //!
 //! **Activation.** A folder (or `..`) is shown here; everything else is
@@ -40,13 +41,13 @@ use gpui_kit::component::input::{
     Enter, Escape, InputEvent as FilterEvent, InputState, MoveDown, MoveLeft, MovePageDown,
     MovePageUp, MoveUp,
 };
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext, ClickEvent, Context, CursorStyle, Div, Entity, EventEmitter,
     FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render, Role,
     ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement, Styled, Subscription,
-    UniformListScrollHandle, WeakEntity, Window, div, rems, uniform_list,
+    UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -68,9 +69,9 @@ use super::Workspace;
 use super::drawer_list::page_move;
 #[cfg(test)]
 use super::drawer_list::page_of;
-use super::file_dialogs::FileOpKind;
 use super::motion::HeightFollow;
 use super::query_field::query_field_with;
+use super::row_menu::{PinnedPaths, RowKind, RowPick, with_row_menu};
 use super::sort::{chip_label, sort_chip};
 use crate::keymap;
 use crate::tasks;
@@ -177,8 +178,9 @@ pub(crate) enum FilesEvent {
     OpenAttachment(VaultPath),
     /// Escape with an empty filter: back to the editor.
     Dismiss,
-    /// A row's context menu asked to rename, move or delete its entry.
-    FileOp(FileOpKind, VaultPath),
+    /// A pick in a row's menu ([`super::row_menu`]) for the entry at the
+    /// path.
+    Pick(RowPick, VaultPath),
     /// The sort chip: open the sort dialog on FILES.
     Sort,
 }
@@ -300,10 +302,17 @@ impl FilesPane {
             this.update(cx, |pane, cx| {
                 // A failed read keeps the rows on screen: the section is a
                 // convenience, and the dialog says why when it fails.
-                if generation == pane.pins_gen
-                    && let Ok(rows) = rows
-                    && rows != pane.pins
-                {
+                let Ok(rows) = rows else {
+                    return;
+                };
+                if generation != pane.pins_gen {
+                    return;
+                }
+                // The row menus read it for `Pin note` / `Unpin note`.
+                cx.set_global(PinnedPaths(
+                    rows.iter().map(|row| row.path.clone()).collect(),
+                ));
+                if rows != pane.pins {
                     pane.pins = rows;
                     cx.notify();
                 }
@@ -872,14 +881,9 @@ impl FilesPane {
         selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Notes, folders and attachments have a context menu; `..` and
+        // Notes, folders and attachments have the row menu; `..` and
         // `Create:` are not entries.
-        let entry = match row {
-            FileListEntry::Directory { .. }
-            | FileListEntry::Note { .. }
-            | FileListEntry::Attachment { .. } => Some(row.path().clone()),
-            FileListEntry::Up { .. } | FileListEntry::CreateNote { .. } => None,
-        };
+        let entry = RowKind::of(row).map(|kind| (kind, row.path().clone()));
         let dir_line = match row {
             FileListEntry::Directory { path, .. } => Some(self.count_line(path)),
             _ => None,
@@ -898,7 +902,14 @@ impl FilesPane {
             }))
             .test_support();
         match entry {
-            Some(path) => with_file_menu(row, path, cx.entity().downgrade(), FilesEvent::FileOp),
+            Some((kind, path)) => with_row_menu(
+                row,
+                path,
+                kind,
+                true,
+                cx.entity().downgrade(),
+                FilesEvent::Pick,
+            ),
             None => row.into_any_element(),
         }
     }
@@ -908,8 +919,9 @@ impl FilesPane {
     /// a `Manage` link and a short row for each pin. Drawn only while
     /// something is pinned and the filter is empty (a filter is for finding in the folder). A click opens
     /// the note, as a click on a folder row does; a note missing on disk is
-    /// dimmed and does nothing. The keyboard has the leader's digits and
-    /// the dialog.
+    /// dimmed and does nothing on a click. A right-click on any pin shows
+    /// the row menu (a missing note's `Unpin note` still drops its pin). The
+    /// keyboard has the leader's digits and the dialog.
     fn render_pins(&self, height: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.pins.is_empty() || !self.query(cx).is_empty() {
             return None;
@@ -951,13 +963,22 @@ impl FilesPane {
                     t,
                 );
                 let path = pin.path.clone();
-                with_click_cursor(frame, ClickPolicy::Open, !pin.missing)
+                let row = with_click_cursor(frame, ClickPolicy::Open, !pin.missing)
                     .test_support()
                     .when(!pin.missing, |row| {
+                        let path = path.clone();
                         row.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                             cx.emit(FilesEvent::Open(path.clone()))
                         }))
-                    })
+                    });
+                with_row_menu(
+                    row,
+                    path,
+                    RowKind::Note,
+                    true,
+                    cx.entity().downgrade(),
+                    FilesEvent::Pick,
+                )
             });
         let (chevron, tip) = if open {
             (IconName::ChevronDown, "Hide the pinned notes")
@@ -1345,40 +1366,6 @@ pub(super) fn display_title<'a>(title: &'a str, filename: &'a str) -> &'a str {
     }
 }
 
-/// `row` with the FILES entry menu for `path`: Rename…, Move…, Delete….
-/// A pick emits `event(kind, path)` from `owner` once the menu has given
-/// the keyboard back, so the dialog it opens returns it there too.
-pub(super) fn with_file_menu<R, T, E>(
-    row: R,
-    path: VaultPath,
-    owner: WeakEntity<T>,
-    event: fn(FileOpKind, VaultPath) -> E,
-) -> AnyElement
-where
-    R: InteractiveElement + ParentElement + Styled + IntoElement + 'static,
-    T: EventEmitter<E>,
-    E: 'static,
-{
-    row.context_menu(move |menu, _, _| {
-        let item = |kind: FileOpKind, label: &'static str| {
-            let owner = owner.clone();
-            let path = path.clone();
-            PopupMenuItem::new(label).on_click(move |_, window, cx| {
-                let event = event(kind, path.clone());
-                let owner = owner.clone();
-                window.defer(cx, move |_, cx| {
-                    owner.update(cx, |_, cx| cx.emit(event)).ok();
-                });
-            })
-        };
-        menu.item(item(FileOpKind::Rename, "Rename…"))
-            .item(item(FileOpKind::Move, "Move…"))
-            .separator()
-            .item(item(FileOpKind::Delete, "Delete…"))
-    })
-    .into_any_element()
-}
-
 /// One line of text that ends in an ellipsis when it does not fit.
 pub(super) fn ellipsis(text: impl Into<SharedString>) -> Div {
     ellipsis_box().child(text.into())
@@ -1567,9 +1554,7 @@ impl Workspace {
                 self.open_attachment(path, cx);
             }
             FilesEvent::Dismiss => self.dismiss_to_editor(window, cx),
-            FilesEvent::FileOp(kind, path) => {
-                self.open_file_dialog(*kind, path.clone(), window, cx)
-            }
+            FilesEvent::Pick(pick, path) => self.run_row_pick(*pick, path.clone(), window, cx),
             FilesEvent::Sort => self.open_sort(SortTarget::Sidebar, window, cx),
         }
     }
@@ -1604,6 +1589,21 @@ impl Workspace {
                     files.update(cx, |pane, cx| pane.reveal(&path, window, cx));
                 }
             });
+        }
+    }
+
+    /// The row menu's `Reveal in file browser`: FILES is shown with the
+    /// keyboard, the filter goes, and the folder holding `path` is listed
+    /// with the entry's row selected.
+    pub(super) fn reveal_in_files(
+        &mut self,
+        path: VaultPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_view(DrawerView::Files, window, cx);
+        if let Some(files) = self.files.clone() {
+            files.update(cx, |pane, cx| pane.reveal(&path, window, cx));
         }
     }
 

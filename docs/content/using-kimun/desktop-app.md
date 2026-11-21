@@ -52,6 +52,30 @@ The menu also has `Facet view`. It shows the note in a read-only view that you c
 
 The funnel button beside the `...` button does the same as `Facet view` and `Edit note`: click it to open the facet view, and click it again to go back. The command palette has the same switch as `Toggle facet view`. It has no key by default. A pane that shows a facet view, and its tab, have a small funnel before the title.
 
+## The link menu
+
+Right-click a link or a tag (also called a label) in a note to open the link menu. The menu depends on the target:
+
+- A link to a note: Open, Open in new tab, Open in split right, Open in split down, and Copy link.
+- A link to an attachment: Open, Open in new tab, Open in default app, and Copy link.
+- A link to a web address (`http` or `https`): Open in browser and Copy link.
+- A link that Kimün cannot follow, for example a `mailto:` link: Copy link only.
+- A label: Search for label and Copy label.
+
+If the note is already open in a pane, Kimün goes to that pane and does not open it again. In a [facet view](@/using-kimun/facet-view.md#click-in-the-text), the menu has no plain Open item.
+
+If you right-click with text selected in an editor, Kimün copies the text and opens no menu. In a facet view, a right-click with text selected does nothing. A right-click on plain text opens the note menu. While the find bar is open, a right-click on a link also opens the note menu.
+
+## The row menu
+
+Right-click a row in FILES, FIND, LINKS, SEM, or the pinned notes to open the row menu. The items depend on the row:
+
+- A note: Open, Open in new tab, Open in split right, and Open in split down. Then Copy path, Pin note (or Unpin note), and Reveal in file browser. Then Rename…, Move…, and Delete….
+- A folder: Copy path. Then Rename…, Move…, and Delete….
+- An attachment: Open, Open in new tab, and Open in default app. Then Copy path and Reveal in file browser. Then Rename…, Move…, and Delete…. An attachment has no Pin item. Only notes can be pinned.
+
+In FILES, the menu has no Reveal in file browser item. If the note or file was moved or deleted, Open and Reveal show an error and open nothing.
+
 ## New notes and directories
 
 - Press `Ctrl+N` to make a note. Type its name and press `Enter`. The note goes in the folder that FILES shows, or in the folder of the open note. A name with slashes, such as `projects/ideas`, makes the folders for you. Start the name with `/` to begin at the top of the vault.

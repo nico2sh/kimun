@@ -447,3 +447,238 @@ fn a_label_opens_the_search_browser_on_it(cx: &mut TestAppContext) {
     assert!(opened.borrow().is_empty());
     assert!(started.on("a.md", cx));
 }
+
+// ── where a follow opens (`OpenAt`) ───────────────────────────────────────
+
+mod open_at {
+    use gpui_kit::TestAppContext;
+    use kimun_core::note::scan::LinkSpanKind;
+    use kimun_notes::logic::layout_tree::{Axis, GroupId};
+
+    use super::super::modal::ModalKind;
+    use super::super::note::OpenAt;
+    use super::*;
+
+    fn groups(s: &Started, cx: &TestAppContext) -> Vec<GroupId> {
+        cx.read(|cx| {
+            let region = s.workspace.read(cx).layout.region();
+            region.groups(region.shown())
+        })
+    }
+
+    fn tabs(s: &Started, cx: &TestAppContext) -> usize {
+        cx.read(|cx| s.workspace.read(cx).layout.region().tabs().len())
+    }
+
+    fn active(s: &Started, cx: &TestAppContext) -> GroupId {
+        cx.read(|cx| s.workspace.read(cx).layout.active_group())
+    }
+
+    /// The note the group `g` holds, if any.
+    fn note_in(s: &Started, g: GroupId, cx: &TestAppContext) -> Option<VaultPath> {
+        cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .host_in(g)
+                .and_then(|host| host.note.clone())
+        })
+    }
+
+    fn follow(
+        s: &Started,
+        from: &str,
+        target: &str,
+        kind: LinkSpanKind,
+        at: OpenAt,
+        cx: &mut TestAppContext,
+    ) {
+        let from = path(from);
+        let target = target.to_string();
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.follow_link_from(&from, target, kind, at, cx))
+        });
+    }
+
+    fn press(s: &Started, key: &str, cx: &mut TestAppContext) {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(key, cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    const SPLIT: OpenAt = OpenAt::Split(Axis::Horizontal);
+
+    #[gpui_kit::test]
+    fn following_into_a_split_opens_the_note_in_a_group_beside_the_active_one(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started_on(
+            cx,
+            &rt,
+            &[("a.md", "[[bravo]]"), ("bravo.md", "Bravo")],
+            "a.md",
+            false,
+        );
+        let first = active(&s, cx);
+        follow(&s, "a.md", "bravo", LinkSpanKind::WikiLink, SPLIT, cx);
+        drive(&rt, cx, |cx| {
+            groups(&s, cx).len() == 2 && s.text(cx) == "Bravo"
+        });
+        assert_eq!(groups(&s, cx).first(), Some(&first));
+        assert_ne!(active(&s, cx), first, "the new group has the keyboard");
+        assert_eq!(note_in(&s, first, cx), Some(path("a.md")));
+        assert!(s.on("bravo.md", cx));
+    }
+
+    #[gpui_kit::test]
+    fn following_into_a_new_tab_focuses_the_tab_of_a_note_that_is_open(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started_on(
+            cx,
+            &rt,
+            &[("a.md", "[[bravo]]"), ("bravo.md", "Bravo")],
+            "a.md",
+            false,
+        );
+        let first = active(&s, cx);
+        cx.update(|cx| {
+            s.workspace
+                .update(cx, |w, cx| w.open_note_in_new_tab(path("bravo.md"), cx))
+        });
+        drive(&rt, cx, |cx| s.text(cx) == "Bravo");
+        let second = active(&s, cx);
+        assert_eq!(tabs(&s, cx), 2);
+        cx.update(|cx| s.workspace.update(cx, |w, cx| w.focus_group(first, cx)));
+        cx.run_until_parked();
+        assert_eq!(active(&s, cx), first);
+        follow(
+            &s,
+            "a.md",
+            "bravo",
+            LinkSpanKind::WikiLink,
+            OpenAt::NewTab,
+            cx,
+        );
+        drive(&rt, cx, |cx| active(&s, cx) == second);
+        assert_eq!(tabs(&s, cx), 2, "no third tab");
+    }
+
+    #[gpui_kit::test]
+    fn a_missing_link_followed_into_a_split_creates_the_note_and_opens_it_in_the_split(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started_on(cx, &rt, &[("a.md", "[[nobody]]")], "a.md", false);
+        let first = active(&s, cx);
+        follow(&s, "a.md", "nobody", LinkSpanKind::WikiLink, SPLIT, cx);
+        drive(&rt, cx, |cx| {
+            s.shown_modal(cx) == Some(ModalKind::CreateNote)
+        });
+        press(&s, "enter", cx);
+        drive(&rt, cx, |cx| {
+            s.on("nobody.md", cx) && groups(&s, cx).len() == 2
+        });
+        assert_ne!(active(&s, cx), first);
+        assert_eq!(note_in(&s, first, cx), Some(path("a.md")));
+    }
+
+    #[gpui_kit::test]
+    fn an_ambiguous_link_followed_into_a_split_opens_the_chosen_note_in_the_split(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started_on(
+            cx,
+            &rt,
+            &[
+                ("a.md", "[[dup]]"),
+                ("dup.md", "Dup one"),
+                ("sub/dup.md", "Dup two"),
+            ],
+            "a.md",
+            false,
+        );
+        let first = active(&s, cx);
+        follow(&s, "a.md", "dup", LinkSpanKind::WikiLink, SPLIT, cx);
+        drive(&rt, cx, |cx| {
+            s.shown_modal(cx) == Some(ModalKind::LinkChooser)
+        });
+        let view = cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .picker
+                .as_ref()
+                .and_then(|p| p.upgrade())
+                .expect("a picker is open")
+        });
+        drive(&rt, cx, |cx| {
+            cx.read(|cx| !view.read(cx).is_loading() && !view.read(cx).rows().is_empty())
+        });
+        press(&s, "enter", cx);
+        drive(&rt, cx, |cx| {
+            groups(&s, cx).len() == 2
+                && note_in(&s, active(&s, cx), cx).is_some_and(|n| n.get_name() == "dup.md")
+        });
+        assert_eq!(note_in(&s, first, cx), Some(path("a.md")));
+    }
+
+    #[gpui_kit::test]
+    fn following_an_attachment_externally_hands_the_file_to_the_opener(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (v, s) = started_on(
+            cx,
+            &rt,
+            &[("sub/a.md", "[doc](../files/doc.pdf)")],
+            "sub/a.md",
+            false,
+        );
+        rt.block_on(v.vault.save_attachment(&path("files/doc.pdf"), b"%PDF\x00"))
+            .unwrap();
+        let opened = s.record_opens(cx);
+        follow(
+            &s,
+            "sub/a.md",
+            "../files/doc.pdf",
+            LinkSpanKind::Markdown,
+            OpenAt::Externally,
+            cx,
+        );
+        drive(&rt, cx, |_| !opened.borrow().is_empty());
+        let opened = opened.borrow();
+        assert_eq!(opened.len(), 1);
+        assert!(
+            std::path::Path::new(&opened[0]).ends_with("files/doc.pdf"),
+            "{:?}",
+            opened[0]
+        );
+        assert!(s.on("sub/a.md", cx), "the editor stays");
+        assert!(!s.shown_attachment_is("files/doc.pdf", cx));
+    }
+}
+
+/// A note never goes to the default app: a follow that lands on a note
+/// (a missing one, several matches) opens it in place instead.
+#[test]
+fn externally_becomes_here_for_a_note() {
+    use super::follow::for_a_note;
+    use super::note::OpenAt;
+    use kimun_notes::logic::layout_tree::Axis;
+    assert_eq!(for_a_note(OpenAt::Externally), OpenAt::Here);
+    for at in [
+        OpenAt::Here,
+        OpenAt::NewTab,
+        OpenAt::Split(Axis::Horizontal),
+        OpenAt::Split(Axis::Vertical),
+    ] {
+        assert_eq!(for_a_note(at), at);
+    }
+}
