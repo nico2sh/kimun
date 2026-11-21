@@ -47,10 +47,11 @@
 //!   while the dialog shows its progress with every button waiting, and the
 //!   window's close is refused. The backend swaps a raw binary, or, for the
 //!   macOS app bundle, the whole `Kimun.app` ([`crate::bundle`], ADR-0056).
-//!   Success: "Updated to `<v>`. Restarting Kimün…", and the window quits
-//!   through the normal close and starts the app again as it ends
-//!   ([`crate::bundle::relaunch`]): the TUI only asks for a restart, the desktop app
-//!   restarts itself. Failure: the error inline and `Retry`.
+//!   Success: "Updated to `<v>`. Restart Kimün to use it." with `Restart now`
+//!   (in the dialog, or in a toast when the dialog is closed) and `Later`.
+//!   Nothing restarts by itself: only `Restart now` quits through the normal
+//!   close and starts the app again as it ends ([`crate::bundle::relaunch`]).
+//!   Failure: the error inline and `Retry`.
 
 use std::ffi::OsStr;
 use std::rc::Rc;
@@ -107,6 +108,9 @@ pub(crate) const VIEW_LABEL: &str = "View";
 pub(crate) const UPDATE_NOW_LABEL: &str = "Update now";
 /// What the toast says once `Update now` started.
 pub(crate) const UPDATING_TEXT: &str = "Updating Kimün…";
+/// The button that restarts into the installed version.
+pub(crate) const RESTART_LABEL: &str = "Restart now";
+pub(crate) const UPDATE_RESTART_ID: &str = "update-restart";
 /// What the dialog says while the open note is written before the install.
 pub(crate) const SAVING_NOTE_TEXT: &str = "Saving the open note…";
 
@@ -307,13 +311,23 @@ impl UpdateDialog {
         };
         let row = modal::footer_row().flex_wrap();
         if let UpdatePhase::Installed { .. } = state.phase {
-            return row.child(
-                Button::new(UPDATE_CLOSE_ID)
-                    .primary()
-                    .small()
-                    .label("Close")
-                    .on_click(on(Workspace::update_later)),
-            );
+            let [_, _, later_focus] = &self.secondary;
+            return row
+                .child(
+                    Button::new(UPDATE_RESTART_ID)
+                        .primary()
+                        .small()
+                        .label(RESTART_LABEL)
+                        .on_click(on(Workspace::restart_now)),
+                )
+                .child(
+                    Button::new(UPDATE_CLOSE_ID)
+                        .track_focus(later_focus)
+                        .small()
+                        .ghost()
+                        .label("Later")
+                        .on_click(on(Workspace::update_later)),
+                );
         }
         let waits = state.acting_waits();
         let can_install = state.offer == Some(UpdateOffer::Install);
@@ -396,16 +410,14 @@ impl Render for UpdateDialog {
             ));
         }
         let text: SharedString = match (&state.phase, &state.offer) {
-            (UpdatePhase::Installed { version }, _) => {
-                rules::installed_restarting_text(version).into()
-            }
+            (UpdatePhase::Installed { version }, _) => rules::installed_text(version).into(),
             _ if state.saving_note => SAVING_NOTE_TEXT.into(),
             (UpdatePhase::Installing(_), _) => rules::INSTALLING_TEXT.into(),
             _ if state.checking => rules::CHECKING_TEXT.into(),
             (_, Some(UpdateOffer::PackageManager { .. })) => rules::PACKAGE_MANAGER_TEXT.into(),
             (_, Some(UpdateOffer::Download)) => rules::DOWNLOAD_TEXT.into(),
             (UpdatePhase::Available(_) | UpdatePhase::Failed { .. }, _) => {
-                "Installs in place of this copy, then asks for a restart.".into()
+                "Installs in place of this copy. You choose when to restart.".into()
             }
             _ => "No update is known.".into(),
         };
@@ -501,7 +513,7 @@ impl Workspace {
     pub(crate) fn check_updates_now(&mut self, cx: &mut Context<Self>) {
         if let UpdatePhase::Installed { version } = self.updates.machine.phase() {
             let text = rules::installed_text(version);
-            self.flash(text, cx);
+            self.flash_with_action(text, Self::restart_action(), cx);
             return;
         }
         self.run_update_check(true, cx);
@@ -685,7 +697,7 @@ impl Workspace {
             return;
         }
         match (&state.phase, &state.offer) {
-            (UpdatePhase::Installed { .. }, _) => self.update_later(window, cx),
+            (UpdatePhase::Installed { .. }, _) => self.restart_now(window, cx),
             (_, Some(UpdateOffer::Install)) if state.checking => {}
             (_, Some(UpdateOffer::Install)) => self.install_update(window, cx),
             (_, Some(_)) => self.open_release_notes(cx),
@@ -875,27 +887,37 @@ impl Workspace {
         // a toast says it.
         if !self.update_dialog_shown() {
             match &result {
-                Ok(version) => self.flash(rules::installed_restarting_text(version), cx),
+                Ok(version) => {
+                    self.flash_with_action(
+                        rules::installed_text(version),
+                        Self::restart_action(),
+                        cx,
+                    );
+                }
                 Err(e) => self.update_failed(rules::install_failed_text(e), cx),
             }
         }
-        let installed = result.as_ref().ok().cloned();
         self.updates.machine.install_landed(result);
         self.refresh_update_dialog(cx);
-        if let Some(version) = installed {
-            self.restart_into_update(version, cx);
-        }
     }
 
-    /// The new version is in place: quit through the normal close (the
-    /// note was saved before the install, edits typed since are saved or
-    /// asked about first), and start the app again as it ends.
-    fn restart_into_update(&mut self, version: String, cx: &mut Context<Self>) {
+    /// The toast's `Restart now`.
+    fn restart_action() -> ToastAction {
+        ToastAction::new(RESTART_LABEL, |w, window, cx| w.restart_now(window, cx))
+    }
+
+    /// `Restart now`: only the user's click restarts. Quit through the
+    /// normal close (the note was saved before the install, edits typed
+    /// since are saved or asked about first), and start the app again as
+    /// it ends.
+    pub(crate) fn restart_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let UpdatePhase::Installed { version } = self.updates.machine.phase() else {
+            return;
+        };
+        let version = version.clone();
         self.updates.restart_pending = true;
-        self.with_window(cx, move |workspace, window, cx| {
-            workspace.request_quit(window, cx);
-            workspace.restart_unless_underway(&version, cx);
-        });
+        self.request_quit(window, cx);
+        self.restart_unless_underway(&version, cx);
     }
 
     /// The quit [`Self::restart_into_update`] asked for did not start (a close
