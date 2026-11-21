@@ -24,7 +24,7 @@ use super::find::{
     FIND_PREVIEW_HEADER_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
 };
 use super::modal::ModalKind;
-use super::picker::TO_FIND_BUTTON_ID;
+use super::picker::{BROWSER_COLLECTION_ID, TO_FIND_BUTTON_ID};
 use super::rail_cell_id;
 use super::search::{PREVIEW_DEBOUNCE, SearchPreview};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
@@ -854,6 +854,35 @@ fn tags_list_counts_filter_and_run_in_find(cx: &mut TestAppContext) {
     assert!(shown(&started, DrawerView::Find, cx));
     assert_eq!(query(&started, cx), "#go");
     assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);
+}
+
+/// The search browser's `Open as collection` button: the browser closes and
+/// the active group shows the query's notes as a collection.
+#[gpui_kit::test]
+fn the_browser_opens_its_query_as_a_collection(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    leader(&started, "ft", cx);
+    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
+    click(&started, tag_row_id("go"), cx);
+    started.settle_dialog(cx);
+    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
+    click(&started, BROWSER_COLLECTION_ID, cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    let group = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .collection_query_in(group, cx)
+                .is_some()
+        })
+    });
+    let query = cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx));
+    assert_eq!(query.as_deref(), Some("#go"));
 }
 
 /// A double-click on a tag opens the browser once and opens no note: its

@@ -1010,22 +1010,44 @@ impl Workspace {
             return;
         };
         let template = find.read(cx).query(cx);
+        self.open_query_as_collection(&template, cx);
+    }
+
+    /// The search browser's `Open as collection` button: the same as FIND's,
+    /// for the query typed in the browser. The browser closes when the
+    /// collection opens; a blank or unresolvable query keeps it.
+    pub(crate) fn open_browser_as_collection(
+        &mut self,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_query_as_collection(&query, cx) {
+            self.close_modal(window, cx);
+        }
+    }
+
+    /// Resolve `template` against the active group's note, once, and show
+    /// its notes as a collection in the active group. Says why and returns
+    /// false when it cannot.
+    fn open_query_as_collection(&mut self, template: &str, cx: &mut Context<Self>) -> bool {
         if template.trim().is_empty() {
             self.flash("No query to open", cx);
-            return;
+            return false;
         }
         let note = self
             .active_state()
             .notes
             .as_ref()
             .and_then(|h| h.note.clone());
-        let Some(resolved) = resolve_collection_query(&template, &QueryContext::with_note(note))
+        let Some(resolved) = resolve_collection_query(template, &QueryContext::with_note(note))
         else {
             self.flash("This query needs an open note.", cx);
-            return;
+            return false;
         };
         let group = self.layout.active_group();
         self.open_collection(group, resolved, Vec::new(), cx);
+        true
     }
 
     /// `RefreshCollection`: run the active group's collection query again,
