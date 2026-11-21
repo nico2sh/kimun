@@ -32,7 +32,8 @@
 //! it; [`ClickPolicy::Open`](super::files::ClickPolicy)); the chevron on
 //! the selected or hovered row, and the one on the preview's header, step
 //! the preview; `Save…` saves the query (as the `SaveCurrentQuery`
-//! chord does here); the `Syntax` button shows the query syntax; the sort
+//! chord does here); the bookmark button opens the saved searches (as the
+//! `OpenSavedSearches` chord does); the `Syntax` button shows the query syntax; the sort
 //! chip opens the sort dialog, which rewrites the query's order directive
 //! (M7b G7, [`super::sort`]).
 //!
@@ -103,6 +104,11 @@ pub(crate) const FIND_HELP_ID: &str = "find-help";
 pub(crate) const FIND_BUILD_ID: &str = "find-build";
 pub(crate) const FIND_SAVE_ID: &str = "find-save";
 pub(crate) const FIND_COLLECTION_ID: &str = "find-collection";
+pub(crate) const FIND_SAVED_ID: &str = "find-saved";
+/// The saved searches button's label and tooltip.
+pub(crate) const SAVED_LABEL: &str = "Saved searches";
+/// The saved searches button's icon.
+pub(crate) const SAVED_ICON: IconName = IconName::Bookmark;
 /// The collection button's label and tooltip.
 pub(crate) const COLLECTION_LABEL: &str = "Open as collection";
 /// The collection button's icon.
@@ -167,6 +173,9 @@ pub(crate) enum FindEvent {
     Build,
     /// `Save…`: save the query.
     Save,
+    /// The `Saved searches` button (the `OpenSavedSearches` chord): the
+    /// saved searches, to run one in FIND.
+    Saved,
     /// The sort chip: the sort dialog on FIND.
     Sort,
     /// The `Open as collection` button: the query's notes as a collection in
@@ -686,6 +695,18 @@ impl FindView {
             can_save: querying,
             busy: false,
             extras: vec![
+                Button::new(FIND_SAVED_ID)
+                    .ghost()
+                    .small()
+                    .icon(SAVED_ICON)
+                    .accessibility_label(SAVED_LABEL)
+                    .tooltip(super::chrome::tooltip_with_chord(
+                        SAVED_LABEL,
+                        &ActionShortcuts::OpenSavedSearches,
+                        cx,
+                    ))
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Saved)))
+                    .into_any_element(),
                 Button::new(FIND_COLLECTION_ID)
                     .ghost()
                     .small()
@@ -971,6 +992,7 @@ impl Workspace {
             FindEvent::Help => self.open_query_help(window, cx),
             FindEvent::Build => self.open_query_builder(window, cx),
             FindEvent::Save => self.save_find_query(window, cx),
+            FindEvent::Saved => self.open_saved_searches(window, cx),
             FindEvent::Sort => self.open_sort(SortTarget::Query, window, cx),
             FindEvent::Collection => self.open_find_as_collection(cx),
             FindEvent::Dismiss => self.dismiss_to_editor(window, cx),
