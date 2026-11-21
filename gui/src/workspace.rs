@@ -238,7 +238,7 @@ use files::FilesPane;
 #[cfg(test)]
 pub(crate) use files::ICONS as FILES_ICONS;
 #[cfg(test)]
-pub(crate) use find::COLLECTION_ICON;
+pub(crate) use find::{COLLECTION_ICON, SAVED_ICON};
 #[cfg(test)]
 pub(crate) use group_header::ICONS as GROUP_HEADER_ICONS;
 use leader::LeaderState;
