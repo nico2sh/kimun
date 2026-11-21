@@ -1299,3 +1299,31 @@ fn a_busy_group_is_written_once_per_interval(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// A screen reader hears the actions of an empty group with their chords,
+/// not only the find line: the list replaces the detail on screen.
+#[test]
+fn an_empty_state_with_actions_describes_them_to_a_screen_reader() {
+    use crate::startup::EmptyState;
+    let plain = EmptyState {
+        title: "No note open".into(),
+        detail: "Press Ctrl+O to find or create one.".into(),
+        failed: false,
+        shortcuts: Vec::new(),
+    };
+    assert_eq!(
+        super::empty_description(&plain),
+        "Press Ctrl+O to find or create one."
+    );
+    let listed = EmptyState {
+        shortcuts: vec![
+            ("Quick note", "Ctrl+Shift+W".into()),
+            ("Command palette", "Ctrl+P".into()),
+        ],
+        ..plain
+    };
+    assert_eq!(
+        super::empty_description(&listed),
+        "Quick note: Ctrl+Shift+W. Command palette: Ctrl+P"
+    );
+}

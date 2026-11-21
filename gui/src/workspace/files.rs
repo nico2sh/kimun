@@ -100,7 +100,7 @@ pub(crate) const FILES_PINNED_MANAGE_ID: &str = "files-pinned-manage";
 pub(crate) const FILES_PINNED_TOGGLE_ID: &str = "files-pinned-toggle";
 /// The clipping frame the pinned rows open and close in.
 pub(crate) const FILES_PINNED_ROWS_ID: &str = "files-pinned-rows";
-pub(crate) fn pinned_row_id(path: &VaultPath) -> SharedString {
+pub(crate) fn files_pinned_row_id(path: &VaultPath) -> SharedString {
     format!("files-pinned-row:{path}").into()
 }
 /// A pinned row's height, in rems: one line (the section is a short list
@@ -595,9 +595,15 @@ impl FilesPane {
     /// TUI's row effects; the dialogs and the open note follow it in
     /// `file_ops`).
     pub(crate) fn file_op(&mut self, op: &FileOp, cx: &mut Context<Self>) {
-        // Core rewrites the pins of a note that was renamed or moved, and
-        // keeps those of one that was deleted (shown as missing).
-        self.reload_pins(cx);
+        // Core rewrites the pin of a note that was renamed or moved, and
+        // drops the pin of one that was deleted: only these can change the
+        // pinned section.
+        if matches!(
+            op,
+            FileOp::Deleted(_) | FileOp::Moved { .. } | FileOp::Renamed { .. }
+        ) {
+            self.reload_pins(cx);
+        }
         match op {
             FileOp::Created(path) | FileOp::Deleted(path) => {
                 self.changed_in(&[&path.get_parent_path().0], true, cx);
@@ -936,7 +942,7 @@ impl FilesPane {
                     .text_color(theme::muted(t))
                     .child((index + 1).to_string());
                 let frame = lane_row(
-                    pinned_row_id(&pin.path),
+                    files_pinned_row_id(&pin.path),
                     label,
                     false,
                     PINNED_ROW_REMS,

@@ -207,6 +207,11 @@ impl PinnedNotesDialog {
                     Outcome::Failed(text) => workspace.flash_error(text.clone(), cx),
                 })
                 .ok();
+            // The Files pinned section follows each edit made here, and
+            // only an edit: opening the dialog changes nothing.
+            workspace
+                .update(cx, |workspace, cx| workspace.reload_pins(cx))
+                .ok();
             this.update(cx, |dialog, cx| dialog.landed(generation, rows, cx))
                 .ok();
         })
@@ -228,13 +233,7 @@ impl PinnedNotesDialog {
         self.loaded = true;
         self.pending = false;
         match rows {
-            Ok(rows) => {
-                self.list.replace_rows(rows);
-                // The Files pinned section follows every edit made here.
-                self.workspace
-                    .update(cx, |workspace, cx| workspace.reload_pins(cx))
-                    .ok();
-            }
+            Ok(rows) => self.list.replace_rows(rows),
             Err(error) => {
                 self.workspace
                     .update(cx, |workspace, cx| workspace.flash_error(error, cx))
