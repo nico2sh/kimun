@@ -1489,6 +1489,12 @@ mod facets {
         let _guard = rt.enter();
         let record = split(vec![facet_leaf("gone.md", &["a"]), leaf(Some("m.md"))]);
         let (_v, win) = restored(cx, &rt, &record, 0);
+        // `restored` waits for zero facet views, which is true before the
+        // restore has built anything. Wait for what this test checks: both
+        // groups are there, idle, and the gone flash is up.
+        drive(&rt, cx, |cx| {
+            win.groups_of_shown(cx).len() == 2 && win.all_idle(cx) && win.flash(cx).is_some()
+        });
         win.assert_states_in_step(cx);
         let groups = win.groups_of_shown(cx);
         assert_eq!(win.facet_in(groups[0], cx), None);
