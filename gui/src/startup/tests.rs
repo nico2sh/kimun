@@ -231,6 +231,42 @@ async fn with_no_history_the_restore_lands_on_the_root() {
     }
 }
 
+/// A record of only collections holds no note and no facet view, yet it
+/// wins over the history: the collections are its content.
+#[tokio::test]
+async fn a_collection_only_record_lands_on_the_session_not_the_history() {
+    use kimun_notes::settings::session::{CollectionRecord, GroupTreeRecord, TabRecord};
+    let v = test_vault(&[("a.md", "a #x")], &["a.md"]).await;
+    let record = SessionRecord::new(
+        vec![TabRecord {
+            tree: GroupTreeRecord::Leaf {
+                note: None,
+                facets: None,
+                collection: Some(CollectionRecord {
+                    query: "#x".into(),
+                    facets: vec![],
+                }),
+            },
+            active: 0,
+        }],
+        0,
+    );
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let landing =
+        index_and_restore(v.vault.clone(), v.settings.clone(), true, Some(record), tx).await;
+    let Some(Landing::Session(restored)) = landing else {
+        panic!("expected the session");
+    };
+    assert_eq!(restored.collections.len(), 1);
+    assert_eq!(restored.collections[0].1, "#x");
+    assert!(restored.notes.is_empty() && restored.facets.is_empty());
+    let mut sent = Vec::new();
+    while let Ok(m) = rx.try_recv() {
+        sent.push(m);
+    }
+    assert_eq!(sent.len(), 1, "only the indexing reports: {sent:?}");
+}
+
 /// A note named on the command line opens on its own: indexing restores
 /// nothing.
 #[tokio::test]

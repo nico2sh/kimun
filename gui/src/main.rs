@@ -36,6 +36,10 @@ mod grid;
 mod identity_tests;
 mod input;
 mod keymap;
+#[cfg(test)]
+mod measure_guard_tests;
+#[cfg(test)]
+mod measure_tests;
 mod mono_families;
 mod motion;
 mod row_cache;
@@ -198,6 +202,7 @@ fn main() {
             kit.motion.duration_normal = std::time::Duration::ZERO;
         });
         editor_view::init(cx);
+        workspace::init_facet_keys(cx);
         keymap::init(cx, keymap);
         dock::install(cx, &launch);
         open_main_window(&launch, start, theme, layout, cx);

@@ -44,9 +44,13 @@ On macOS, the pane keys use `Cmd+Option+Shift` in place of `Alt+Shift`, and the 
 
 ## The note menu
 
-The note menu acts on a pane and its note. To open it, right-click in a pane, click the small `...` button, or press `F2`. The button sits in the header of each pane when a tab has two panes or more. In a lone pane, it sits dimmed in the top right corner.
+The note menu acts on a pane and its note. To open it, right-click in a pane (not in a facet view), click the small `...` button, or press `F2`. The button sits in the header of each pane when a tab has two panes or more. In a lone pane, it sits in the top right corner, dimmed until you point at the pane. While the pane shows a facet view, it is not dimmed.
 
-The first items work on the note: Properties, Rename, Move, and Delete. Press `P`, `R`, `M`, or `D` to pick one. The next items change the layout: Split right, Split down, New tab, Close pane, and Close tab. They show their keys. The menu hides an item that cannot work. For example, an empty pane shows only the layout items. Press `Esc`, click outside the menu, or press `F2` again to close it.
+The first items work on the note: Facet view, Properties, Rename, Move, and Delete. Press `F`, `P`, `R`, `M`, or `D` to pick one. In a facet view, the first items are Edit note and Properties (`E` and `P`). Rename, Move, and Delete are hidden there. The next items change the layout: Split right, Split down, New tab, Close pane, and Close tab. They show their keys. The menu hides an item that cannot work. For example, an empty pane shows only the layout items. Press `Esc`, click outside the menu, or press `F2` again to close it.
+
+The menu also has `Facet view`. It shows the note in a read-only view that you can narrow by heading, tag, or link. See [Facet view](@/using-kimun/facet-view.md). In that view, the menu has `Edit note` to go back. A pane that shows a [collection](@/using-kimun/facet-view.md#collections) has no note, so its menu has the layout items only.
+
+The funnel button beside the `...` button does the same as `Facet view` and `Edit note`: click it to open the facet view, and click it again to go back. The command palette has the same switch as `Toggle facet view`. It has no key by default. A pane that shows a facet view, and its tab, have a small funnel before the title.
 
 ## New notes and directories
 
@@ -62,6 +66,8 @@ The first items work on the note: Properties, Rename, Move, and Delete. Press `P
 Click FIND in the rail, or press `Ctrl+K`. Type a query and the results update as you type. Click a result to see more of it. In this example, `<carlos or:title` finds the notes that link to `carlos`, sorted by title.
 
 ![The Find view with a query, a list of results, and a preview](/img/gui-find.png)
+
+To read all the results as one document, click `Open as collection` in the tool bar of FIND. See [Collections](@/using-kimun/facet-view.md#collections).
 
 ## Write a note
 

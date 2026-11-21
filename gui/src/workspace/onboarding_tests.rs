@@ -78,6 +78,7 @@ fn open(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let layout =

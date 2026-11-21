@@ -166,10 +166,38 @@ pub fn secondary(theme: &Theme) -> Rgba {
     to_gpui(&theme.fg_secondary, Token::Foreground, theme)
 }
 
+/// The most contrast muted text needs against the page (WCAG AA's 4.5:1
+/// for small text).
+const MUTED_CONTRAST: f32 = 4.5;
+
+/// How much quieter than the text muted text stays: its target contrast
+/// against the page is at most the text's own contrast divided by this.
+const MUTED_STEP: f32 = 1.5;
+
+/// The least contrast muted text keeps against the page, whatever
+/// [`MUTED_STEP`] gives: small text read for long stretches needs 3:1.
+const MUTED_FLOOR: f32 = 3.0;
+
 /// Quiet information (the find bar's match count and key hints): the TUI
-/// find bar's `gray`.
+/// find bar's `gray`, while it meets its target contrast against
+/// [`background`]. The target is [`MUTED_CONTRAST`], or the text's own
+/// contrast divided by [`MUTED_STEP`] when that is less, so muted text
+/// stays quieter than the text on a theme with faint text. The target never
+/// drops under [`MUTED_FLOOR`]: there muted text sits closer to the text
+/// and stays quiet by its size. Every view that shows muted text reads
+/// this, not only the facet view. A gray that
+/// already meets the target is kept. A fainter gray is moved toward
+/// [`foreground`] in small steps until it does, never past the foreground.
+/// No theme file changes.
 pub fn muted(theme: &Theme) -> Rgba {
-    to_gpui(&theme.gray, Token::Foreground, theme)
+    let own = to_gpui(&theme.gray, Token::Foreground, theme);
+    let page = background(theme);
+    let text = foreground(theme);
+    let target = (contrast(text, page) / MUTED_STEP).clamp(MUTED_FLOOR, MUTED_CONTRAST);
+    (0..=20)
+        .map(|step| mix_rgba(own, text, step as f32 / 20.0))
+        .find(|c| contrast(*c, page) >= target)
+        .unwrap_or(text)
 }
 
 /// A problem the user has to act on (no match, an invalid regex, the armed
@@ -201,6 +229,15 @@ pub fn divider(theme: &Theme) -> Rgba {
     to_gpui(theme.resting_border(), Token::Foreground, theme)
 }
 
+/// How far [`divider_faint`] moves the divider toward the page.
+const DIVIDER_FAINT_MIX: f32 = 0.5;
+
+/// A fainter hairline: the [`divider`] halfway to the page. The border of a
+/// facet chip with no result in view, so its dimming shows.
+pub fn divider_faint(theme: &Theme) -> Rgba {
+    mix_rgba(divider(theme), background(theme), DIVIDER_FAINT_MIX)
+}
+
 // ---- The shell (rail, slot, focus) ----------------------------------------
 
 /// How far the foreground is mixed into the background for a derived hover.
@@ -226,10 +263,100 @@ pub fn slot_header_background(theme: &Theme) -> Rgba {
     rgba(mix(panel, tint, SLOT_HEADER_MIX))
 }
 
+/// The facet strip's least contrast against the page: a faint step off it.
+const FACET_STRIP_CONTRAST: f32 = 1.08;
+
+/// The facet strip hover's least contrast against the strip: a clear step.
+const FACET_HOVER_CONTRAST: f32 = 1.2;
+
+/// How much text one step of [`lift`] mixes into its base.
+const LIFT_STEP: f32 = 0.005;
+
+/// The most text [`lift`] mixes into its base. Past it a fill stops reading
+/// as a surface.
+const LIFT_MAX: f32 = 0.5;
+
+/// `base` moved toward `toward` in small steps until its contrast against
+/// `base` reaches `target`. It always moves at least one step, so the result
+/// never equals `base`. It stops at [`LIFT_MAX`].
+fn lift(base: Rgba, toward: Rgba, target: f32) -> Rgba {
+    let steps = (LIFT_MAX / LIFT_STEP).round() as usize;
+    (1..=steps)
+        .map(|step| mix_rgba(base, toward, step as f32 * LIFT_STEP))
+        .find(|c| contrast(*c, base) >= target)
+        .unwrap_or_else(|| mix_rgba(base, toward, LIFT_MAX))
+}
+
+/// The header strip of a facet view piece (its crumbs row). It starts from
+/// [`background`], the surface the view sits on, and moves toward
+/// [`foreground`] until it has [`FACET_STRIP_CONTRAST`] against it. So it is
+/// a faint step off the view in every theme, light or dark, whatever the
+/// panel colour is. A search, so a caller takes it once per frame.
+pub fn facet_strip_background(theme: &Theme) -> Rgba {
+    lift(background(theme), foreground(theme), FACET_STRIP_CONTRAST)
+}
+
+/// A pointer on a control on the facet strip: the strip moved toward
+/// [`foreground`] until it has [`FACET_HOVER_CONTRAST`] against the strip.
+/// A search, so a caller takes it once per frame.
+pub fn facet_strip_hover(theme: &Theme) -> Rgba {
+    lift(
+        facet_strip_background(theme),
+        foreground(theme),
+        FACET_HOVER_CONTRAST,
+    )
+}
+
+/// A control while it is pressed: its `hover` fill one more step toward
+/// [`foreground`], the same step a derived hover takes from the panel.
+pub fn pressed_background(hover: Rgba, theme: &Theme) -> Rgba {
+    mix_rgba(hover, foreground(theme), HOVER_MIX)
+}
+
 /// The focused panel's edge and the active rail view's marker: the TUI's
 /// focused-border colour.
 pub fn focus_border(theme: &Theme) -> Rgba {
     to_gpui(&theme.focus_border, Token::Foreground, theme)
+}
+
+/// The least contrast a focus ring keeps against the page (WCAG's 3:1 for
+/// what marks a control's state).
+const FOCUS_RING_CONTRAST: f32 = 3.0;
+
+/// The focus ring around a tab stop: [`focus_border`] while it keeps
+/// [`FOCUS_RING_CONTRAST`] against [`background`] and against the facet
+/// strip ([`facet_strip_background`]), where some stops sit. A theme whose
+/// focus colour is fainter gets it moved toward [`foreground`] in small
+/// steps until it does (or the foreground itself, as the last step).
+pub fn focus_ring(theme: &Theme) -> Rgba {
+    let own = focus_border(theme);
+    let page = background(theme);
+    let strip = facet_strip_background(theme);
+    let text = foreground(theme);
+    (0..=10)
+        .map(|step| mix_rgba(own, text, step as f32 / 10.0))
+        .find(|c| {
+            contrast(*c, page) >= FOCUS_RING_CONTRAST && contrast(*c, strip) >= FOCUS_RING_CONTRAST
+        })
+        .unwrap_or(text)
+}
+
+/// WCAG relative luminance of an sRGB colour.
+pub(crate) fn luminance(c: Rgba) -> f32 {
+    let lin = |v: f32| {
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+}
+
+/// The WCAG contrast ratio of two opaque colours, from 1 to 21.
+pub(crate) fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
 /// Bright text: the rail cell under the keyboard cursor.
@@ -681,6 +808,85 @@ mod tests {
 
     use super::*;
 
+    /// Muted text reads at its target against the page in every built-in
+    /// theme, with no theme file changed: 4.5:1, or the text's own
+    /// contrast divided by 1.5 when that is less, but never under 3:1. A gray that is too faint
+    /// moves toward the text colour. The text colour itself always meets
+    /// the target, so the fallback is never needed past it.
+    #[test]
+    fn muted_text_reaches_its_target_in_every_builtin_theme() {
+        for t in Theme::builtins() {
+            let page = background(&t);
+            let ratio = contrast(muted(&t), page);
+            let best = contrast(foreground(&t), page);
+            let target = (best / 1.5).clamp(3.0, 4.5);
+            assert!(
+                ratio >= target || muted(&t) == foreground(&t),
+                "{}: {ratio:.2} under {target:.2}",
+                t.name
+            );
+        }
+    }
+
+    /// Muted text never drops under 3:1 against the page, the floor for
+    /// small text that is read for long stretches. A theme with faint text
+    /// gets a muted colour closer to its text instead.
+    #[test]
+    fn muted_text_keeps_three_to_one_in_every_builtin_theme() {
+        for t in Theme::builtins() {
+            let ratio = contrast(muted(&t), background(&t));
+            assert!(ratio >= 3.0, "{}: {ratio:.2}", t.name);
+        }
+    }
+
+    /// Muted text stays a step quieter than the text: at 1.5:1 or more
+    /// against it on every built-in theme whose text has 6.75:1 or more
+    /// against the page, and never the text colour itself on a theme whose
+    /// text has 3:1 or more.
+    ///
+    /// Exception: Material. Its own gray already has 4.5:1 against the
+    /// page, so it is kept as the theme draws it, and it sits at 1.46:1
+    /// from the text. Changing it would mean overriding a gray that passes.
+    #[test]
+    fn muted_stays_visibly_quieter_than_the_foreground_when_the_theme_allows() {
+        const OWN_GRAY_KEPT: [&str; 1] = ["Material"];
+        let mut close = Vec::new();
+        for t in Theme::builtins() {
+            let page = background(&t);
+            let text = foreground(&t);
+            let best = contrast(text, page);
+            if best >= 6.75 {
+                let apart = contrast(muted(&t), text);
+                if apart < 1.5 {
+                    close.push(t.name.clone());
+                }
+            }
+            if best >= 3.0 {
+                assert_ne!(muted(&t), text, "{}", t.name);
+            }
+        }
+        assert_eq!(close, OWN_GRAY_KEPT, "too close to the text");
+    }
+
+    /// A gray that already reads is the theme's own, unchanged.
+    #[test]
+    fn muted_keeps_the_theme_gray_when_it_already_passes() {
+        let t = Theme {
+            bg: ThemeColor::Rgb(255, 255, 255),
+            fg: ThemeColor::Rgb(0, 0, 0),
+            gray: ThemeColor::Rgb(100, 100, 100),
+            ..Theme::default()
+        };
+        assert!(contrast(to_gpui(&t.gray, Token::Foreground, &t), background(&t)) >= 4.5);
+        assert_eq!(muted(&t), rgba((100, 100, 100)));
+        for t in Theme::builtins() {
+            let own = to_gpui(&t.gray, Token::Foreground, &t);
+            if contrast(own, background(&t)) >= 4.5 {
+                assert_eq!(muted(&t), own, "{}", t.name);
+            }
+        }
+    }
+
     /// The dialog surface reads the kit's per-component tokens, not its
     /// colours: `Theme::update` must carry kimün's panel surface (the dialog's one tone) to both.
     #[gpui_kit::test]
@@ -807,21 +1013,36 @@ mod tests {
         });
     }
 
-    /// WCAG relative luminance of an sRGB colour.
-    fn luminance(c: Rgba) -> f32 {
-        let lin = |v: f32| {
-            if v <= 0.03928 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+    /// The facet view's header strip starts from the page, not the panel.
+    /// In every built-in theme it sits a faint step off the page (about
+    /// 1.08:1), never equal to it, and its hover a clear step off the strip
+    /// (about 1.2:1). A press is a step past the hover.
+    #[test]
+    fn the_facet_strip_and_its_hover_land_in_range_on_every_builtin_theme() {
+        for t in Theme::builtins() {
+            let page = background(&t);
+            let strip = facet_strip_background(&t);
+            let hover = facet_strip_hover(&t);
+            assert_ne!(strip, page, "{}: the strip shows", t.name);
+            let off = contrast(strip, page);
+            assert!((1.08..1.16).contains(&off), "{}: strip {off:.3}", t.name);
+            let lift = contrast(hover, strip);
+            assert!((1.2..1.3).contains(&lift), "{}: hover {lift:.3}", t.name);
+            let press = pressed_background(hover, &t);
+            assert!(contrast(press, strip) > lift, "{}: press", t.name);
+        }
     }
 
-    fn contrast(a: Rgba, b: Rgba) -> f32 {
-        let (la, lb) = (luminance(a), luminance(b));
-        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    /// The focus ring reads on the facet strip too, not only on the page:
+    /// 3:1 or more against both in every built-in theme.
+    #[test]
+    fn the_focus_ring_reads_on_the_facet_strip_on_every_builtin_theme() {
+        for t in Theme::builtins() {
+            let ring = focus_ring(&t);
+            let on_strip = contrast(ring, facet_strip_background(&t));
+            assert!(on_strip >= 3.0, "{}: {on_strip:.2} on the strip", t.name);
+            assert!(contrast(ring, background(&t)) >= 3.0, "{}", t.name);
+        }
     }
 
     /// Every built-in theme, light and dark, keeps a toast readable on its

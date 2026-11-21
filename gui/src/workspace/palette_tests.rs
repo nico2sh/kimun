@@ -480,7 +480,9 @@ fn the_save_row_writes_the_open_note(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let shell = Shell {
         handle: started.handle,
         workspace: started.workspace.clone(),
@@ -526,7 +528,9 @@ fn a_leaf_sent_on_the_channel_runs_unless_a_modal_is_open(cx: &mut TestAppContex
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let shell = Shell {
         handle: started.handle,
         workspace: started.workspace.clone(),
@@ -566,7 +570,9 @@ fn a_file_op_closes_the_palette(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let shell = Shell {
         handle: started.handle,
         workspace: started.workspace.clone(),
@@ -597,7 +603,9 @@ fn the_yank_row_copies_the_note_path(cx: &mut TestAppContext) {
         vault_start(&v, FirstNote::Note(VaultPath::new("ideas/a.md"))),
         v.settings.clone(),
     );
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let shell = Shell {
         handle: started.handle,
         workspace: started.workspace.clone(),

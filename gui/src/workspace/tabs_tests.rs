@@ -52,7 +52,9 @@ fn started(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Win) {
         vault_start(&v, FirstNote::Note(path("a.md"))),
         v.settings.clone(),
     );
-    drive(rt, cx, |cx| started.text(cx) == "alpha");
+    drive(rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     (v, Win(started))
 }
 
@@ -473,7 +475,9 @@ fn started_with(
         v.settings.clone(),
     );
     let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
-    drive(rt, cx, |cx| started.text(cx) == want);
+    drive(rt, cx, |cx| {
+        started.text(cx) == want && !started.indexing(cx)
+    });
     (v, Win(started))
 }
 
@@ -678,6 +682,8 @@ fn leave_vault_and_set_channel_reach_every_group(cx: &mut TestAppContext) {
     // B left two groups side by side.
     let leaf = |note: &str| GroupTreeRecord::Leaf {
         note: Some(path(note)),
+        facets: None,
+        collection: None,
     };
     let b_record = SessionRecord {
         version: SESSION_VERSION,

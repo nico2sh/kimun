@@ -249,7 +249,9 @@ fn the_finder_filters_and_opens_saving_the_open_note_first(cx: &mut TestAppConte
     press(&started, "down", cx);
     assert!(picker_selected(&started, cx).is_some_and(|p| p.is_like(&path("work/bravo.md"))));
     press(&started, "enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(on(&started, "work/bravo.md", cx));
     assert_eq!(
         disk(&rt, &v, "a.md").as_deref(),
@@ -324,7 +326,9 @@ fn the_create_row_never_overwrites(cx: &mut TestAppContext) {
         .expect("the create row leads");
     assert!(path(create).is_like(&path("b.md")), "{rows:?}");
     press(&started, "enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     assert_eq!(disk(&rt, &v, "b.md").as_deref(), Some("beta"));
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None, "no dialog");
@@ -421,7 +425,9 @@ fn a_click_on_a_finder_row_opens_it(cx: &mut TestAppContext) {
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
     assert!(on(&started, "a.md", cx), "a right click opens nothing");
     click_on(&started, row, Click::Left, cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     assert!(on(&started, "work/bravo.md", cx));
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
@@ -443,7 +449,9 @@ fn a_double_click_on_a_finder_row_opens_it_once(cx: &mut TestAppContext) {
     picker_rows(&started, &rt, cx);
     let row = row_of(&started, "work/bravo.md", cx);
     click_on(&started, row, Click::Double, cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Bravo");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Bravo" && !started.indexing(cx)
+    });
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
     assert!(on(&started, "work/bravo.md", cx));
@@ -494,7 +502,9 @@ fn a_click_on_a_link_chooser_row_opens_it(cx: &mut TestAppContext) {
     picker_rows(&started, &rt, cx);
     let row = row_of(&started, "sub/dup.md", cx);
     click_on(&started, row, Click::Left, cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Dup two");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Dup two" && !started.indexing(cx)
+    });
     assert!(on(&started, "sub/dup.md", cx));
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
@@ -535,7 +545,9 @@ fn an_ambiguous_link_lists_every_match_and_opens_the_chosen(cx: &mut TestAppCont
     let rows = picker_rows(&started, &rt, cx);
     assert_eq!(rows.len(), 1, "{rows:?}");
     press(&started, "enter", cx);
-    drive(&rt, cx, |cx| started.text(cx) == "Dup two");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "Dup two" && !started.indexing(cx)
+    });
     assert!(on(&started, "sub/dup.md", cx));
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);

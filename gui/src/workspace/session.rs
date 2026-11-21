@@ -16,15 +16,19 @@
 //! quit or a window close writes it at once and waits for the write, when
 //! it differs from what the file holds. A group's note is the one it holds
 //! or is opening ([`super::note::NoteHost::target`]); a group showing an
-//! attachment holds none. Without a workspace nothing is written.
+//! attachment holds none. A group showing a facet view records its source,
+//! a collection its resolved query, each with its picks; a collection
+//! still loading is recorded as the one it opens. Without a workspace
+//! nothing is written.
 //!
 //! **Restoring.** A start with no note on the command line, or with one
 //! that was refused, restores: once the vault indexed, a record that still
-//! has a note to open wins over the history. The region is rebuilt from it
+//! has something to show (a note, a facet view of a note still there, or a
+//! collection) wins over the history. The region is rebuilt from it
 //! ([`EditorRegion::from_record`], a gone note dropped from its group), every
 //! group gets a state ([`Workspace::replace_region`]) and each note opens
-//! in its group the normal way. With no record, or none of its notes left,
-//! the history's newest note opens as before (not after a refused
+//! in its group the normal way, then each facet view and collection. With
+//! no record, or nothing of it left to show, the history's newest note opens as before (not after a refused
 //! argument: the editor stays empty, as it did). A restore whose job fails
 //! lands on the history too, and the stored record is kept (only a real
 //! change writes). Only a stored record that loads makes a restore: with
@@ -55,12 +59,15 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
-use gpui_kit::{Context, Subscription, Task};
+use gpui_kit::{App, Context, Subscription, Task};
 use kimun_core::nfs::VaultPath;
-use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_core::note::Facet;
+use kimun_notes::logic::editor_region::{EditorRegion, GroupHeld};
 use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use kimun_notes::logic::startup::RestoreTarget;
-use kimun_notes::settings::session::{GroupTreeRecord, SessionFile, SessionRecord, TabRecord};
+use kimun_notes::settings::session::{
+    FacetPick, GroupTreeRecord, SessionFile, SessionRecord, TabRecord,
+};
 
 use super::Workspace;
 use super::group::GroupState;
@@ -161,16 +168,66 @@ pub(crate) enum Queued {
 /// What a record is built from, kept to tell a notify that changed the
 /// record from one that did not without building it: the region (its tabs,
 /// their groups, splits and weights, the shown tab and each tab's active
-/// group) and the note each group is on ([`NoteHost::target`]). The record
-/// is a function of these two, so an equal `Seen` is an equal record.
+/// group), the note each group is on ([`NoteHost::target`]) and the view it
+/// shows. The record is a function of these, so an equal `Seen` is an equal
+/// record, a collection still loading aside (`facets`).
 struct Seen {
     region: EditorRegion,
     targets: HashMap<GroupId, Option<VaultPath>>,
+    /// The source (or query) and picks of each group's facet view or
+    /// collection ([`facet_of`]). A collection still loading is not in
+    /// it, though the record holds it: its start alone writes nothing (a
+    /// write meanwhile, or a quit, records it), its showing is the change,
+    /// and a load that fails or is dropped leaves this as it was, so the
+    /// file keeps what it held (a restored collection whose query fails
+    /// stays in it until the next real change).
+    facets: HashMap<GroupId, Option<ViewSeen>>,
 }
 
 /// The note `state`'s group is on, as the record keeps it.
 fn target_of(state: &GroupState) -> Option<&VaultPath> {
     state.notes.as_ref().and_then(NoteHost::target_ref)
+}
+
+/// What a facet view shows, as the record keeps it: a single-note view's
+/// source, or a collection's resolved query, and the picks.
+#[derive(Debug, Clone, PartialEq)]
+enum ViewSeen {
+    Facet(VaultPath, Vec<Facet>),
+    Collection(String, Vec<Facet>),
+}
+
+/// The source or query and picks of the view `state`'s group shows.
+fn facet_of(state: &GroupState, cx: &App) -> Option<ViewSeen> {
+    state.facet.as_ref().and_then(|view| {
+        let view = view.read(cx);
+        let picks = view.picks().to_vec();
+        match (view.source(), view.query()) {
+            (Some(source), _) => Some(ViewSeen::Facet(source.clone(), picks)),
+            (None, Some(query)) => Some(ViewSeen::Collection(query.to_owned(), picks)),
+            (None, None) => None,
+        }
+    })
+}
+
+/// Whether `seen` is what `state`'s view shows now: a compare, nothing
+/// cloned.
+fn facet_matches(seen: Option<&ViewSeen>, state: &GroupState, cx: &App) -> bool {
+    let view = state.facet.as_ref().map(|view| view.read(cx));
+    match (seen, view) {
+        (None, None) => true,
+        (Some(ViewSeen::Facet(source, picks)), Some(view)) => {
+            view.source() == Some(source) && view.picks() == picks.as_slice()
+        }
+        (Some(ViewSeen::Collection(query, picks)), Some(view)) => {
+            view.source().is_none()
+                && view.query() == Some(query.as_str())
+                && view.picks() == picks.as_slice()
+        }
+        // A view with neither source nor query is no record: it reads as none.
+        (None, Some(view)) => view.source().is_none() && view.query().is_none(),
+        _ => false,
+    }
 }
 
 /// The window's side of the session file.
@@ -219,7 +276,11 @@ fn is_one_group(record: &SessionRecord) -> bool {
     matches!(
         record.tabs.as_slice(),
         [TabRecord {
-            tree: GroupTreeRecord::Leaf { .. },
+            tree: GroupTreeRecord::Leaf {
+                facets: None,
+                collection: None,
+                ..
+            },
             ..
         }]
     )
@@ -230,7 +291,11 @@ fn is_one_group(record: &SessionRecord) -> bool {
 fn one_group(note: Option<VaultPath>) -> SessionRecord {
     SessionRecord::new(
         vec![TabRecord {
-            tree: GroupTreeRecord::Leaf { note },
+            tree: GroupTreeRecord::Leaf {
+                note,
+                facets: None,
+                collection: None,
+            },
             active: 0,
         }],
         0,
@@ -247,12 +312,28 @@ impl Workspace {
     }
 
     /// What the window shows now, as a record.
-    pub(crate) fn session_record(&self) -> SessionRecord {
+    pub(crate) fn session_record(&self, cx: &App) -> SessionRecord {
         #[cfg(test)]
         self.session.builds.set(self.session.builds.get() + 1);
-        self.layout
-            .region()
-            .to_record(|group| self.host_in(group).and_then(NoteHost::target))
+        self.layout.region().to_record(|group| {
+            // A facet group records its source and picks, a collection its
+            // resolved query and picks; neither holds a note. A collection
+            // still loading is recorded as the one it opens.
+            let pending = self.state(group).and_then(|s| {
+                s.collection_pending
+                    .as_ref()
+                    .map(|(query, picks)| ViewSeen::Collection(query.clone(), picks.clone()))
+            });
+            match pending.or_else(|| self.state(group).and_then(|s| facet_of(s, cx))) {
+                Some(ViewSeen::Facet(source, picks)) => {
+                    GroupHeld::Facet(source, picks.iter().map(FacetPick::from).collect())
+                }
+                Some(ViewSeen::Collection(query, picks)) => {
+                    GroupHeld::Collection(query, picks.iter().map(FacetPick::from).collect())
+                }
+                None => GroupHeld::Note(self.host_in(group).and_then(NoteHost::target)),
+            }
+        })
     }
 
     /// Record to `file` from now on (the workspace was entered), as `start`
@@ -371,8 +452,13 @@ impl Workspace {
     }
 
     /// What the record would be built from now.
-    fn seen_now(&self) -> Seen {
+    fn seen_now(&self, cx: &App) -> Seen {
         Seen {
+            facets: self
+                .groups
+                .iter()
+                .map(|(group, state)| (*group, facet_of(state, cx)))
+                .collect(),
             region: self.layout.region().clone(),
             targets: self
                 .groups
@@ -384,14 +470,19 @@ impl Workspace {
 
     /// Whether what the record is built from is as it was at the last
     /// notify that changed it: a compare, no record built, nothing cloned.
-    fn seen_unchanged(&self) -> bool {
+    fn seen_unchanged(&self, cx: &App) -> bool {
         self.session.seen.as_ref().is_some_and(|seen| {
             seen.region == *self.layout.region()
                 && seen.targets.len() == self.groups.len()
+                && seen.facets.len() == self.groups.len()
                 && self.groups.iter().all(|(group, state)| {
                     seen.targets
                         .get(group)
                         .is_some_and(|target| target.as_ref() == target_of(state))
+                        && seen
+                            .facets
+                            .get(group)
+                            .is_some_and(|facet| facet_matches(facet.as_ref(), state, cx))
                 })
         })
     }
@@ -409,13 +500,13 @@ impl Workspace {
     /// only when it differs from what the file holds: a change undone
     /// meanwhile writes nothing.
     fn session_changed(&mut self, cx: &mut Context<Self>) {
-        if self.session.file.is_none() || self.session.restoring || self.seen_unchanged() {
+        if self.session.file.is_none() || self.session.restoring || self.seen_unchanged(cx) {
             return;
         }
-        self.session.seen = Some(self.seen_now());
+        self.session.seen = Some(self.seen_now(cx));
         self.session.timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SESSION_DEBOUNCE).await;
-            this.update(cx, |workspace, _| workspace.write_session())
+            this.update(cx, |workspace, cx| workspace.write_session(cx))
                 .ok();
         }));
     }
@@ -423,7 +514,7 @@ impl Workspace {
     /// Hand the record of now to the writer when it differs from what the
     /// file holds. Nothing without a workspace, nor while a restore is on
     /// its way.
-    fn write_session(&mut self) {
+    fn write_session(&mut self, cx: &App) {
         self.session.timer = None;
         if self.session.restoring {
             return;
@@ -431,7 +522,7 @@ impl Workspace {
         let Some(file) = self.session.file.clone() else {
             return;
         };
-        let record = self.session_record();
+        let record = self.session_record(cx);
         if self.session_unchanged(&record) {
             return;
         }
@@ -445,8 +536,8 @@ impl Workspace {
 
     /// [`Self::write_session`] now, without the debounce, and wait for it:
     /// the window is about to go, or to leave its workspace.
-    pub(super) fn write_session_now(&mut self) {
-        self.write_session();
+    pub(super) fn write_session_now(&mut self, cx: &App) {
+        self.write_session(cx);
         self.session.writer.flush();
     }
 
@@ -546,13 +637,14 @@ impl Workspace {
     fn land_on_record(&mut self, restored: SessionRestore, cx: &mut Context<Self>) {
         self.restore_pending = false;
         self.first_open_pending = false;
+        let expected = self.restored_record(&restored);
         if self.groups_closing.is_some() || !self.replace_region(restored.region, cx) {
             // Not applied: the stored record is still the better one, so
             // what the window holds now is no change; only the user's own
             // is (the open asked for meanwhile, for one).
             self.session.restoring = false;
-            self.session.seen = Some(self.seen_now());
-            self.session.last = Some(self.session_record());
+            self.session.seen = Some(self.seen_now(cx));
+            self.session.last = Some(self.session_record(cx));
             self.session.launch = None;
             self.run_queued(cx);
             return;
@@ -562,6 +654,12 @@ impl Workspace {
         self.session.restoring = false;
         for (group, note) in restored.notes {
             self.open_note_in(group, note, cx);
+        }
+        // The facet views, once the notes are open (ADR-0061): a source an
+        // editor group holds too is no conflict.
+        for (group, note, picks) in &restored.facets {
+            let picks = picks.iter().filter_map(FacetPick::to_facet).collect();
+            self.open_facet_view(*group, note.clone(), picks, cx);
         }
         if let Some(first) = restored.gone.first() {
             let more = match restored.gone.len() - 1 {
@@ -574,12 +672,39 @@ impl Workspace {
                 cx,
             );
         }
+        // A collection, once the notes and facet views are open.
+        for (group, query, picks) in &restored.collections {
+            let picks = picks.iter().filter_map(FacetPick::to_facet).collect();
+            self.open_collection(*group, query.clone(), picks, cx);
+        }
         // What the restore opened is what the file says: nothing to write
         // until something changes. The open asked for meanwhile is such a
         // change.
-        self.session.seen = Some(self.seen_now());
-        self.session.last = Some(self.session_record());
+        // A facet view shows once its source is read, a collection once its
+        // query ran: the record each will make is what the file says, so
+        // its showing is no change.
+        self.session.seen = Some(self.seen_now(cx));
+        self.session.last = Some(expected.unwrap_or_else(|| self.session_record(cx)));
         self.run_queued(cx);
+    }
+
+    /// The record a restore with facet views ends on, which the window
+    /// only reaches once each source is read; `None` without facet views.
+    fn restored_record(&self, restored: &SessionRestore) -> Option<SessionRecord> {
+        if restored.facets.is_empty() && restored.collections.is_empty() {
+            return None;
+        }
+        Some(restored.region.to_record(|group| {
+            if let Some((_, note, picks)) = restored.facets.iter().find(|(g, ..)| *g == group) {
+                return GroupHeld::Facet(note.clone(), picks.clone());
+            }
+            if let Some((_, query, picks)) = restored.collections.iter().find(|(g, ..)| *g == group)
+            {
+                return GroupHeld::Collection(query.clone(), picks.clone());
+            }
+            let note = restored.notes.iter().find(|(g, _)| *g == group);
+            GroupHeld::Note(note.map(|(_, note)| note.clone()))
+        }))
     }
 
     /// Put `region` in place of the live editor region: every group of it
@@ -661,6 +786,8 @@ mod tests {
             tabs: vec![TabRecord {
                 tree: GroupTreeRecord::Leaf {
                     note: Some(VaultPath::new(note)),
+                    facets: None,
+                    collection: None,
                 },
                 active: 0,
             }],

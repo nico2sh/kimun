@@ -511,13 +511,20 @@ impl Workspace {
     }
 
     /// [`Self::open_attachment`] in `group`, active or not.
-    fn open_attachment_in(&mut self, group: GroupId, path: &VaultPath, cx: &mut Context<Self>) {
+    pub(super) fn open_attachment_in(
+        &mut self,
+        group: GroupId,
+        path: &VaultPath,
+        cx: &mut Context<Self>,
+    ) {
         if self.closing != Closing::Open {
             return;
         }
         let Some(vault) = self.vault() else {
             return;
         };
+        // The newest request wins: a facet view still being read gives way.
+        self.forget_facet_request(group);
         let Some(state) = self.state_mut(group) else {
             return;
         };

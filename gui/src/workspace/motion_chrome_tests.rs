@@ -242,7 +242,9 @@ pub(super) fn open_vault_shell(cx: &mut TestAppContext, rt: &Runtime) -> (TestVa
         false,
         false,
     );
-    drive(rt, cx, |cx| started.text(cx) == "alpha");
+    drive(rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     let shell = Shell {
         handle: started.handle,
         workspace: started.workspace.clone(),
@@ -732,7 +734,9 @@ fn open_four_note_tabs(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, She
         false,
         false,
     );
-    drive(rt, cx, |cx| started.text(cx) == "a");
+    drive(rt, cx, |cx| {
+        started.text(cx) == "a" && !started.indexing(cx)
+    });
     for name in ["b.md", "c.md", "d.md"] {
         cx.update(|cx| {
             started

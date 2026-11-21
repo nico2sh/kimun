@@ -1901,7 +1901,9 @@ mod group_drag {
             vault_start(&v, FirstNote::Note(path("a.md"))),
             v.settings.clone(),
         );
-        drive(rt, cx, |cx| started.text(cx) == "alpha");
+        drive(rt, cx, |cx| {
+            started.text(cx) == "alpha" && !started.indexing(cx)
+        });
         (v, started)
     }
 

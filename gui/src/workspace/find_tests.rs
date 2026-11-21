@@ -39,7 +39,7 @@ fn path(p: &str) -> VaultPath {
 
 /// A vault holding `notes`, started on `first`, driven until its text
 /// shows and the index is built.
-fn started_on(
+pub(super) fn started_on(
     cx: &mut TestAppContext,
     rt: &Runtime,
     notes: &[(&str, &str)],
@@ -60,7 +60,7 @@ fn started_on(
 
 /// `alpha` is linked from `beta` and `epsilon`; labels: `rust` ×3,
 /// `go` ×1, `solo tag` (frontmatter, with a space) ×2.
-const NOTES: &[(&str, &str)] = &[
+pub(super) const NOTES: &[(&str, &str)] = &[
     ("alpha.md", "# Alpha\nthe alpha note #rust, see [[beta]]"),
     (
         "beta.md",
@@ -83,7 +83,7 @@ fn type_in(s: &Started, text: &str, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-fn click(s: &Started, id: impl Into<SharedString>, cx: &mut TestAppContext) {
+pub(super) fn click(s: &Started, id: impl Into<SharedString>, cx: &mut TestAppContext) {
     let id = id.into();
     cx.update_window(s.handle, |_, window, cx| {
         window.render_frame(cx);
@@ -126,7 +126,7 @@ fn runs(s: &Started, cx: &TestAppContext) -> usize {
     cx.read(|cx| view.read(cx).runs)
 }
 
-fn query(s: &Started, cx: &TestAppContext) -> String {
+pub(super) fn query(s: &Started, cx: &TestAppContext) -> String {
     let view = find(s, cx);
     cx.read(|cx| view.read(cx).query(cx))
 }
@@ -149,7 +149,7 @@ fn find_names(s: &Started, rt: &Runtime, cx: &mut TestAppContext) -> Vec<String>
 }
 
 /// Replace FIND's query with `q` and let it run (the debounce out).
-fn search(s: &Started, rt: &Runtime, q: &str, cx: &mut TestAppContext) {
+pub(super) fn search(s: &Started, rt: &Runtime, q: &str, cx: &mut TestAppContext) {
     press(s, select_all_key(), cx);
     press(s, "backspace", cx);
     type_in(s, q, cx);
@@ -903,7 +903,7 @@ fn the_browser_chord_opens_its_query_in_find(cx: &mut TestAppContext) {
 
 /// FIND on the open note's backlinks query, as the old leader `f b` did
 /// (that chord now shows LINKS' Backlinks tab instead).
-fn open_find_on_backlinks(started: &Started, cx: &mut TestAppContext) {
+pub(super) fn open_find_on_backlinks(started: &Started, cx: &mut TestAppContext) {
     cx.update_window(started.handle, |_, window, cx| {
         started.workspace.update(cx, |w, cx| {
             w.open_find_with_query("<{note}".to_string(), window, cx)

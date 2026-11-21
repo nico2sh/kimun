@@ -94,6 +94,7 @@ fn no_workspace(cx: &mut TestAppContext) -> (Started, SharedSettings, PathBuf, t
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let layout =

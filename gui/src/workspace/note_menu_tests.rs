@@ -18,7 +18,8 @@ use super::note_menu::{
     menu_item_hint_id, menu_items,
 };
 
-const NOTE_ITEMS: [MenuItem; 4] = [
+const NOTE_ITEMS: [MenuItem; 5] = [
+    MenuItem::FacetView,
     MenuItem::Note(FileOpKind::Properties),
     MenuItem::Note(FileOpKind::Rename),
     MenuItem::Note(FileOpKind::Move),
@@ -29,6 +30,7 @@ const NOTE_ITEMS: [MenuItem; 4] = [
 fn an_empty_group_shows_only_layout_actions() {
     let ctx = MenuContext {
         has_note: false,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
@@ -39,9 +41,32 @@ fn an_empty_group_shows_only_layout_actions() {
 }
 
 #[test]
+fn a_facet_group_offers_edit_note_and_properties_then_layout_actions() {
+    let ctx = MenuContext {
+        has_note: false,
+        facet: true,
+        groups_in_tab: 1,
+        tabs: 1,
+    };
+    let items = menu_items(&ctx);
+    assert_eq!(
+        items,
+        vec![
+            MenuItem::EditNote,
+            MenuItem::Note(FileOpKind::Properties),
+            MenuItem::SplitRight,
+            MenuItem::SplitDown,
+            MenuItem::NewTab,
+        ]
+    );
+    assert_eq!(divider_at(&items), Some(2));
+}
+
+#[test]
 fn close_group_needs_two_groups() {
     let one = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
@@ -59,6 +84,7 @@ fn close_group_needs_two_groups() {
 fn close_tab_needs_two_tabs() {
     let one = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
@@ -73,6 +99,7 @@ fn close_tab_needs_two_tabs() {
 fn a_single_note_in_one_tab_shows_note_actions_split_right_split_down_new_tab() {
     let ctx = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
@@ -81,6 +108,7 @@ fn a_single_note_in_one_tab_shows_note_actions_split_right_split_down_new_tab() 
     assert_eq!(menu_items(&ctx), want);
     let all = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 2,
         tabs: 2,
     };
@@ -137,22 +165,24 @@ fn open(
 fn the_note_actions_keep_their_letters(cx: &mut TestAppContext) {
     let ctx = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
     let (_, events, cx) = open(ctx, cx);
     assert!(visible(cx, NOTE_MENU_ID));
-    for (key, item) in ['p', 'r', 'm', 'd'].into_iter().zip(NOTE_ITEMS) {
+    for (key, item) in ['f', 'p', 'r', 'm', 'd'].into_iter().zip(NOTE_ITEMS) {
         press(cx, &key.to_string());
         assert_eq!(events.borrow().last(), Some(&NoteMenuEvent::Picked(item)));
     }
-    assert_eq!(events.borrow().len(), 4);
+    assert_eq!(events.borrow().len(), 5);
 }
 
 #[gpui_kit::test]
 fn a_hidden_letter_picks_nothing_and_arrows_enter_escape_work(cx: &mut TestAppContext) {
     let ctx = MenuContext {
         has_note: false,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
@@ -215,6 +245,7 @@ fn keys_the_menu_does_not_use_reach_its_parent(cx: &mut TestAppContext) {
                 Some(VaultPath::note_path_from("a")),
                 MenuContext {
                     has_note: true,
+                    facet: false,
                     groups_in_tab: 1,
                     tabs: 1,
                 },
@@ -247,6 +278,7 @@ fn keys_the_menu_does_not_use_reach_its_parent(cx: &mut TestAppContext) {
 fn shift_and_the_letter_still_picks(cx: &mut TestAppContext) {
     let ctx = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     };
@@ -262,12 +294,14 @@ fn shift_and_the_letter_still_picks(cx: &mut TestAppContext) {
 fn the_divider_parts_note_actions_from_layout_actions_only_when_both_show() {
     let with_note = menu_items(&MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 1,
         tabs: 1,
     });
     assert_eq!(divider_at(&with_note), Some(NOTE_ITEMS.len()));
     let empty = menu_items(&MenuContext {
         has_note: false,
+        facet: false,
         groups_in_tab: 2,
         tabs: 2,
     });
@@ -278,6 +312,7 @@ fn the_divider_parts_note_actions_from_layout_actions_only_when_both_show() {
 fn a_layout_row_shows_its_chord(cx: &mut TestAppContext) {
     let ctx = MenuContext {
         has_note: true,
+        facet: false,
         groups_in_tab: 2,
         tabs: 2,
     };
@@ -345,7 +380,9 @@ mod in_workspace {
             vault_start(&v, FirstNote::Note(path("a.md"))),
             v.settings.clone(),
         );
-        drive(rt, cx, |cx| started.text(cx) == "alpha");
+        drive(rt, cx, |cx| {
+            started.text(cx) == "alpha" && !started.indexing(cx)
+        });
         (v, started)
     }
 

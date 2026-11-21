@@ -905,12 +905,16 @@ fn ask_toggles_like_any_view_and_never_replaces_the_editor(cx: &mut TestAppConte
         window.double_click(row, cx)
     })
     .unwrap();
-    drive(&rt, cx, |cx| started.text(cx) == "beta");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "beta" && !started.indexing(cx)
+    });
     assert!(shown(&started, cx));
     assert!(drawn_el(&started, ASK_ID, cx));
     // An open request, and an attachment shown: the same.
     send(&started, AppMessage::open(path("a.md")), cx);
-    drive(&rt, cx, |cx| started.text(cx) == "alpha");
+    drive(&rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
     assert!(shown(&started, cx));
     send(&started, AppMessage::OpenAttachment(path("notes.txt")), cx);
     drive(&rt, cx, |cx| {
