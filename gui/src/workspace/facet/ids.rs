@@ -49,7 +49,8 @@ pub(crate) const COLUMN_ID: &str = "facet-column";
 pub(crate) const REFRESH_ID: &str = "facet-refresh";
 /// The view title row at the top of the view: what the view shows.
 pub(crate) const VIEW_TITLE_ID: &str = "facet-view-title";
-/// The muted `Collection` word in the title row of a collection.
+/// The small muted word above the title: `Collection`, or `Note` in a
+/// single-note view.
 pub(crate) const VIEW_TITLE_KIND_ID: &str = "facet-view-title-kind";
 /// The text of the title row: the query, or the note title.
 pub(crate) const VIEW_TITLE_TEXT_ID: &str = "facet-view-title-text";

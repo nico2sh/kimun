@@ -66,6 +66,7 @@ impl FacetView {
         let shown = div()
             .id(VIEW_TITLE_TEXT_ID)
             .min_w_0()
+            .max_w_full()
             .truncate()
             .text_size(size)
             .font_weight(FontWeight::SEMIBOLD)
