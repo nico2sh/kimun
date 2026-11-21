@@ -75,6 +75,7 @@ use super::Workspace;
 use super::files::{ClickPolicy, ClickRows, entry_row, with_click_cursor};
 use super::input_autocomplete::{InputAutocomplete, QueryFieldOwner, popup_keys, show, watch};
 use super::modal::{self, ModalKind, Slot};
+use super::note::OpenAt;
 use super::query_tools::{QueryToolIds, QueryTools};
 use super::search::SearchPreview;
 use super::sort::{chip_label, sort_chip};
@@ -166,9 +167,10 @@ pub(crate) fn picker_row_id(row: &FileListEntry) -> SharedString {
 pub(crate) enum PickerKind {
     /// Every note, and `Create:`.
     Finder,
-    /// The notes a followed link names; the pick opens in a new tab when
-    /// `new_tab` (a follow from a facet view, ADR-0061).
-    Links { new_tab: bool },
+    /// The notes a followed link names; the pick opens where `at` says
+    /// (a new tab for a follow from a facet view, ADR-0061; where the Link
+    /// menu item says for a pick there).
+    Links { at: OpenAt },
     /// The vault's query search, with a preview (the search browser).
     Search,
     /// The workspace's saved searches (rows: [`SearchItem`](kimun_notes::logic::saved_search::SearchItem)).
@@ -251,10 +253,10 @@ impl PickerRow for FileListEntry {
             (PickerKind::Search, PickerOpen::Open(path)) => {
                 workspace.search_open(path, emphasis, window, cx)
             }
-            (PickerKind::Links { new_tab: true }, PickerOpen::Open(path)) => {
+            (PickerKind::Links { at }, PickerOpen::Open(path)) if at != OpenAt::Here => {
                 workspace.close_modal(window, cx);
                 workspace.focus_panel(Panel::Editor, window, cx);
-                workspace.open_note_in_new_tab(path, cx);
+                workspace.open_note_at(path, at, cx);
                 false
             }
             (_, open) => workspace.picker_chose(open, window, cx),
@@ -1056,13 +1058,13 @@ impl Workspace {
     }
 
     /// Open the link chooser: every note the link `target` names
-    /// (`results`), to pick one, which opens in a new tab when `new_tab`.
+    /// (`results`), to pick one, which opens where `at` says.
     /// Refused while a modal is open.
     pub(crate) fn open_link_chooser(
         &mut self,
         target: &str,
         results: Vec<(NoteEntryData, NoteContentData)>,
-        new_tab: bool,
+        at: OpenAt,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1072,7 +1074,7 @@ impl Workspace {
         let title = format!("{} notes match \"{target}\"", results.len());
         let source = Arc::new(LinkResultsProvider::from_results(results));
         self.open_note_picker(
-            PickerKind::Links { new_tab },
+            PickerKind::Links { at },
             source,
             Some(title),
             None,

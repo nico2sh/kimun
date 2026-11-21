@@ -968,9 +968,7 @@ impl Workspace {
                 self.focus_panel(Panel::Editor, window, cx);
                 self.open_note_with(row.entry.path.clone(), emphasis, cx);
             }
-            DrawerListEvent::FileOp(kind, path) => {
-                self.open_file_dialog(*kind, path.clone(), window, cx)
-            }
+            DrawerListEvent::Pick(pick, path) => self.run_row_pick(*pick, path.clone(), window, cx),
             DrawerListEvent::Verb(_, EXPAND) => {
                 if let Some(view) = self.find.clone() {
                     view.update(cx, |view, cx| view.chevron_step(window, cx));

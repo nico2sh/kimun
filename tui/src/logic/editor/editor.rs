@@ -324,6 +324,21 @@ impl Editor {
         follow_target_in_line(&line, col)
     }
 
+    /// Returns the link or label target drawn in screen cell (`row`, `col`)
+    /// of the text area (the cell a pointer event carries), or `None` when
+    /// that cell draws none: plain text, blank space, a gutter, the
+    /// frontmatter block's top row. Reads the last layout and moves nothing,
+    /// neither the caret nor the selection.
+    pub fn follow_target_at_screen(&self, row: u16, col: u16) -> Option<FollowTarget> {
+        let display = &self.session.display;
+        if display.frontmatter_top_at(row as usize) {
+            return None;
+        }
+        let (lrow, lcol) = display.text_at_screen(row as usize, col as usize)?;
+        let line = self.buf.ta.row(lrow)?.into_owned();
+        follow_target_in_line(&line, lcol)
+    }
+
     // ---- Lifecycle ---------------------------------------------------------
 
     /// Set the search needles to emphasize in the rendered buffer (the note

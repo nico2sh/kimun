@@ -4,7 +4,7 @@
 //!
 //! **Rows** are the logic's (`logic::views::link_entries`, loaded off the
 //! UI thread); each is a note, drawn as FILES draws one (title over
-//! filename), with the FILES entry menu. Enter or a click opens it
+//! filename), with the row menu ([`super::row_menu`]). Enter or a click opens it
 //! through the note session (the open note is saved first).
 //!
 //! **Tabs.** A segmented control over the list; `b`, `o` and `u`, or Left
@@ -307,9 +307,7 @@ impl Workspace {
                 self.focus_panel(Panel::Editor, window, cx);
                 self.open_note(row.path.clone(), cx);
             }
-            DrawerListEvent::FileOp(kind, path) => {
-                self.open_file_dialog(*kind, path.clone(), window, cx)
-            }
+            DrawerListEvent::Pick(pick, path) => self.run_row_pick(*pick, path.clone(), window, cx),
             DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
         }

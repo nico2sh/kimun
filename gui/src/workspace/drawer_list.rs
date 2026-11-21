@@ -25,8 +25,10 @@
 //! pointing hand; `Select` (the Sources view) — a click selects, a
 //! double-click opens the row's note ([`DrawerListEvent::Verb`] with
 //! [`OPEN_NOTE`]). A
-//! right click never activates: a row that stands for a vault entry has
-//! the FILES entry menu there.
+//! right click never activates: a row that stands for a vault note has the
+//! row menu there ([`super::row_menu`]: open, copy, pin, reveal, rename,
+//! move, delete); another row may offer its own items
+//! ([`DrawerRow::menu_items`]).
 //!
 //! **The expand chevron** ([`super::chevron`]). A list whose rows have a
 //! preview shows the chevron ([`DrawerList::set_chevron`], off by default)
@@ -60,8 +62,8 @@ use kimun_notes::logic::message::{AppTx, Notifier, redraw_callback};
 use kimun_notes::settings::themes::Theme;
 
 use super::chevron::{Reach, ZoneOn, chevron};
-use super::file_dialogs::FileOpKind;
-use super::files::{ClickPolicy, ClickRows, RowClick, with_click_cursor, with_file_menu};
+use super::files::{ClickPolicy, ClickRows, RowClick, with_click_cursor};
+use super::row_menu::{RowKind, RowPick, with_row_menu};
 use crate::input;
 use crate::theme;
 
@@ -82,14 +84,14 @@ pub(crate) trait DrawerRow: ListRow {
         self.render_row(selected, theme)
     }
 
-    /// The vault entry the row stands for, when it has the FILES entry
-    /// menu (Rename…, Move…, Delete…).
+    /// The vault note the row stands for, when it has the row menu
+    /// ([`super::row_menu`], as a note row: the drawer lists hold notes).
     fn menu_target(&self) -> Option<VaultPath> {
         None
     }
 
     /// The extra items of the row's context menu, for a row that has no
-    /// FILES entry menu (an Ask source offers [`MenuItem::open_note`]). Each
+    /// row menu (an Ask source offers [`MenuItem::open_note`]). Each
     /// reaches the owner as a [`DrawerListEvent::Verb`].
     fn menu_items(&self) -> Vec<MenuItem> {
         Vec::new()
@@ -144,8 +146,9 @@ pub(crate) enum DrawerListEvent<R> {
     /// Enter, or a click under [`ClickPolicy::Open`]: do what the row
     /// stands for.
     Activate(R),
-    /// A row's context menu asked to rename, move or delete its entry.
-    FileOp(FileOpKind, VaultPath),
+    /// A pick in a row's row menu ([`DrawerRow::menu_target`]) for the
+    /// note at the path.
+    Pick(RowPick, VaultPath),
     /// A row command: a context-menu item ([`DrawerRow::menu_items`]), a
     /// click on the row's expand chevron ([`EXPAND`]; the row is selected
     /// already) or a double-click under [`ClickPolicy::Select`]
@@ -644,11 +647,13 @@ impl<R: DrawerRow> DrawerList<R> {
             }))
             .test_support();
         match row.menu_target() {
-            Some(path) => with_file_menu(
+            Some(path) => with_row_menu(
                 element,
                 path,
+                RowKind::Note,
+                false,
                 cx.entity().downgrade(),
-                DrawerListEvent::FileOp,
+                DrawerListEvent::Pick,
             ),
             None => {
                 let items = row.menu_items();

@@ -589,6 +589,8 @@ pub(crate) struct Workspace {
     pub(crate) modal: Option<ModalKind>,
     /// The note menu, while it is open ([`note_menu`]).
     pub(crate) note_menu: Option<note_menu::OpenNoteMenu>,
+    /// The Link menu, while it is open ([`link_menu`]).
+    pub(crate) link_menu: Option<link_menu::OpenLinkMenu>,
     /// Where each drawn group was last laid out ([`note_menu::GroupBounds`]).
     group_bounds: note_menu::GroupBounds,
     /// The command palette's view while it is open (tests read its rows).
@@ -887,6 +889,7 @@ impl Workspace {
             hovered_zone: None,
             modal: None,
             note_menu: None,
+            link_menu: None,
             group_bounds: Default::default(),
             palette: None,
             view_chooser: None,
@@ -989,6 +992,18 @@ impl Workspace {
             }
             // Only a read-only editor emits this; the note editors are not.
             EditorEvent::ReadOnlyFollow { .. } => {}
+            // Right-click on a link or a label: the Link menu at the
+            // pointer, for the group whose editor it is.
+            EditorEvent::LinkMenu { at, target } => {
+                let group = self
+                    .groups
+                    .iter()
+                    .find(|(_, state)| &state.editor == editor)
+                    .map(|(group, _)| *group);
+                if let Some(group) = group {
+                    self.open_link_menu_in_editor(group, *at, target.clone(), window, cx);
+                }
+            }
         }
     }
 
@@ -1911,6 +1926,10 @@ impl Workspace {
         if self.keep_focus_on_note_menu(handle.clone(), window, cx) {
             return;
         }
+        // So does the Link menu.
+        if self.keep_focus_on_link_menu(handle.clone(), window, cx) {
+            return;
+        }
         window.focus(&handle, cx);
     }
 
@@ -2783,6 +2802,8 @@ impl Workspace {
         if *action != ActionShortcuts::FileOperations {
             self.close_note_menu(window, cx);
         }
+        // The Link menu has no chord of its own: every chord closes it.
+        self.close_link_menu(window, cx);
         match action {
             ActionShortcuts::OpenCommandPalette => {
                 self.toggle_modal(ModalKind::Palette, Self::open_palette, window, cx)
@@ -3775,6 +3796,7 @@ impl Workspace {
             // Inside the workspace's key context: a key the menu does not
             // use reaches the workspace's chords.
             .children(self.render_note_menu(window, cx))
+            .children(self.render_link_menu(window, cx))
             .into_any_element()
     }
 }
@@ -3931,6 +3953,7 @@ mod key_suggestions;
 mod keyboard_help;
 mod layout_writer;
 mod leader;
+mod link_menu;
 mod links;
 mod modal;
 mod motion;
@@ -3957,6 +3980,7 @@ mod query_tools;
 mod reopen;
 mod result_row;
 mod route;
+mod row_menu;
 mod saved_searches;
 mod search;
 mod semantic;
@@ -4035,6 +4059,8 @@ mod keyboard_help_tests;
 #[cfg(test)]
 mod leader_tests;
 #[cfg(test)]
+mod link_menu_tests;
+#[cfg(test)]
 mod motion_cells_tests;
 #[cfg(test)]
 mod motion_chrome_tests;
@@ -4074,6 +4100,8 @@ mod query_builder_tests;
 mod rail_tests;
 #[cfg(test)]
 mod reopen_tests;
+#[cfg(test)]
+mod row_menu_tests;
 #[cfg(test)]
 mod saved_searches_tests;
 #[cfg(test)]

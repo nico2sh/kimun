@@ -11,10 +11,13 @@
 //! **In the window.** The workspace holds at most one open menu
 //! ([`OpenNoteMenu`]) and draws it as a deferred, anchored overlay over a
 //! window-wide layer that dismisses it on a press. It opens from the
-//! editor's right-click (at the pointer, for the clicked group, which the
-//! press already made active) and from the `FileOperations` chord (under
-//! the active group's top-right corner). It is refused while a modal is
-//! open, and gives way to one that opens. A pick closes the menu, makes the
+//! editor's right-click off any link or label (at the pointer, for the
+//! clicked group, which the press already made active; a right-click on a
+//! link or a label opens the Link menu instead, [`super::link_menu`]) and
+//! from the `FileOperations` chord (under the active group's top-right
+//! corner). It is refused while a modal is open, and gives way to one that
+//! opens. Opening it closes an open Link menu, and opening the Link menu
+//! closes it. A pick closes the menu, makes the
 //! menu's group active and runs what the matching chord runs, once the
 //! keyboard is back where it was. Escape, a press outside, and the menu's
 //! note renamed, moved or deleted, its group closed, or a drag starting
@@ -505,9 +508,12 @@ impl Workspace {
         };
         self.cancel_leader(cx);
         self.end_drag(window, cx);
-        let restore = match self.note_menu.take() {
-            Some(open) => open.restore,
-            None => window.focused(cx),
+        // An open Link menu gives way too: the keyboard goes back where it
+        // was before either menu took it.
+        let restore = match (self.note_menu.take(), self.link_menu.take()) {
+            (Some(open), _) => open.restore,
+            (None, Some(open)) => open.restore,
+            (None, None) => window.focused(cx),
         };
         let view = cx.new(|cx| NoteMenu::new(group, target.clone(), ctx, cx));
         self.read_pin_state(&view, target, cx);
@@ -588,7 +594,7 @@ impl Workspace {
             return;
         }
         self.with_window(cx, |workspace, window, cx| {
-            if workspace.note_menu.is_none() {
+            if workspace.note_menu.is_none() && workspace.link_menu.is_none() {
                 workspace.apply_focus(window, cx);
             }
         });

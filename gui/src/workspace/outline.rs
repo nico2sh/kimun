@@ -251,7 +251,7 @@ impl Workspace {
             DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
             // OUTLINE rows have no menu.
-            DrawerListEvent::FileOp(..) => {}
+            DrawerListEvent::Pick(..) => {}
         }
     }
 
