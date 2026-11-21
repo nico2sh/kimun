@@ -102,7 +102,7 @@ impl EditorView {
                 self.settle(window, cx);
                 return;
             }
-            let primary = pointer.mods == keymap::Platform::current().primary();
+            let primary = pointer.mods == keymap::primary(cx);
             let double = pointer.mods == Mods::NONE
                 && self
                     .clicks

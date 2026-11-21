@@ -14,6 +14,7 @@ use super::facet_tests::{
     shows, tab_to, tag, view_focused,
 };
 use super::facet_ui::{ring_id, ring_radius};
+use crate::keymap::{self, Keymap, Platform};
 use crate::theme::{self, contrast};
 
 const NOTE: &str = "# Head\n\nsome #a\n\nmore #b\n";
@@ -49,6 +50,20 @@ fn escape_clears_and_ctrl_z_restores(cx: &mut TestAppContext) {
     key(cx, "escape");
     assert!(picks(&view, cx).is_empty());
     key(cx, "ctrl-z");
+    assert_eq!(picks(&view, cx), [tag("a")]);
+}
+
+/// With the macOS table the undo chord is Cmd+Z, the keymap's `primary`,
+/// whatever OS runs the test: Ctrl+Z does nothing there.
+#[gpui_kit::test]
+fn the_macos_table_undoes_on_cmd_z(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, NOTE, vec![tag("a")]);
+    cx.update(|_, cx| keymap::init(cx, Keymap::defaults(Platform::MacOs)));
+    focus_view(&view, cx);
+    key(cx, "escape");
+    key(cx, "ctrl-z");
+    assert!(picks(&view, cx).is_empty(), "Ctrl+Z is not the Mac undo");
+    key(cx, "cmd-z");
     assert_eq!(picks(&view, cx), [tag("a")]);
 }
 

@@ -57,7 +57,7 @@ use super::body::to_px;
 use super::rows::column_pad;
 use super::{FacetEvent, FacetView, ListKind};
 use crate::input;
-use crate::keymap::Platform;
+use crate::keymap;
 use crate::workspace::facet_ui::focus_ring;
 
 actions!(kimun_facet, [FacetTab, FacetTabPrev]);
@@ -316,7 +316,7 @@ impl FacetView {
         }
         // Ctrl+Z (Cmd+Z on macOS) brings back the last cleared picks, in a
         // piece too: a piece has no text undo.
-        if key.key == Key::Char('z') && key.mods == Platform::current().primary() {
+        if key.key == Key::Char('z') && key.mods == keymap::primary(cx) {
             return self.undo_clear(cx);
         }
         if key.mods.ctrl || key.mods.alt || key.mods.sup {

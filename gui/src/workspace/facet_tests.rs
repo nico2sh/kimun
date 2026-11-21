@@ -599,6 +599,28 @@ fn copy_across_a_concealed_link_copies_its_markdown(cx: &mut TestAppContext) {
     );
 }
 
+/// With the macOS table a piece copies on Cmd+C, the keymap's `primary`,
+/// whatever OS runs the test.
+#[gpui_kit::test]
+fn the_macos_table_copies_on_cmd_c(cx: &mut TestAppContext) {
+    let (view, cx, _events, _sub) = open(cx, "see #idea here\n", vec![]);
+    cx.update(|_, cx| keymap::init(cx, Keymap::defaults(Platform::MacOs)));
+    let from = cell(&view, 0, 4, 0, cx);
+    let to = cell(&view, 0, 9, 0, cx);
+    drag(cx, from, to);
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("before".into()));
+    key(cx, "ctrl-c");
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(
+        copied.as_deref(),
+        Some("before"),
+        "Ctrl+C is not the Mac copy"
+    );
+    key(cx, "cmd-c");
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref(), Some("#idea"));
+}
+
 #[gpui_kit::test]
 fn copy_copies_the_selected_text_of_a_piece(cx: &mut TestAppContext) {
     let (view, cx, events, _sub) = open(cx, "see #idea here\n", vec![]);
@@ -2466,12 +2488,7 @@ pub(super) mod in_a_group {
         open_facet(&s, &rt, group, "a.md", vec![tag("x")], cx);
         press(&s, "escape", cx);
         assert!(picks(&s, group, cx).is_empty());
-        let key = if cfg!(target_os = "macos") {
-            "cmd-z"
-        } else {
-            "ctrl-z"
-        };
-        press(&s, key, cx);
+        press(&s, "ctrl-z", cx);
         assert_eq!(picks(&s, group, cx), [tag("x")]);
     }
 

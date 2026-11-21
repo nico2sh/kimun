@@ -752,6 +752,15 @@ pub fn active(cx: &App) -> Rc<Keymap> {
         .expect("keymap::init must run before any view resolves a key")
 }
 
+/// The primary modifier of the keymap in effect: Cmd for the macOS table,
+/// Ctrl for the Linux and Windows one. A view that matches a primary chord
+/// itself (Cmd+Z in the Facet view, Cmd+click to follow) reads it here, not
+/// from [`Platform::current`], so it always agrees with the chords the keymap
+/// binds.
+pub(crate) fn primary(cx: &App) -> Mods {
+    active(cx).platform.primary()
+}
+
 /// `key` written the platform's way (`Ctrl+Shift+B`, `⌘⇧B`).
 pub(crate) fn format_chord(key: KeyInput) -> String {
     Kbd::format(&crate::input::keystroke(key))
