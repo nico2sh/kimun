@@ -44,10 +44,10 @@ use super::preferences::{
 };
 use super::start_tests::{Started, drive, runtime, send, vault_start};
 use super::update::{
-    ACTION_TOAST_LIFETIME, INSTALL_LABEL, RETRY_LABEL, TITLE, TITLE_INSTALLED, UPDATE_CLOSE_ID,
-    UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID, UPDATE_LATER_ID,
-    UPDATE_NOTES_ID, UPDATE_NOW_LABEL, UPDATE_SKIP_ID, UPDATE_TEXT_ID, UPDATE_VERSIONS_ID,
-    UPDATING_TEXT, UpdateDialog, VIEW_LABEL,
+    ACTION_TOAST_LIFETIME, INSTALL_LABEL, RESTART_LABEL, RETRY_LABEL, TITLE, TITLE_INSTALLED,
+    UPDATE_CLOSE_ID, UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID,
+    UPDATE_LATER_ID, UPDATE_NOTES_ID, UPDATE_NOW_LABEL, UPDATE_RESTART_ID, UPDATE_SKIP_ID,
+    UPDATE_TEXT_ID, UPDATE_VERSIONS_ID, UPDATING_TEXT, UpdateDialog, VIEW_LABEL,
 };
 use super::{FLASH_MESSAGE_ID, LayoutStore, TOAST_ACTION_ID, ToastAction, Workspace};
 use crate::editor_view::{self, EditorView};
@@ -885,11 +885,13 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     assert_eq!(fake.installs(), 1);
     assert_eq!(
         s.up_label(UPDATE_TEXT_ID, cx),
-        Some(rules::installed_restarting_text(NEW))
+        Some(rules::installed_text(NEW))
     );
-    // The install ended the app, and asked for it to start again.
-    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
-    assert_eq!(relauncher.calls(), 1, "the app restarts once");
+    // Nothing restarts by itself: the user chooses.
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
+    assert_eq!(relauncher.calls(), 0, "no restart without the click");
+    assert!(s.shows(UPDATE_RESTART_ID, cx), "Restart now is offered");
     let dialog = s.up_dialog(cx).unwrap();
     let title = cx.read(|cx| dialog.read(cx).title());
     assert_eq!(title, TITLE_INSTALLED);
@@ -906,6 +908,11 @@ fn install_flushes_first_shows_progress_and_succeeds(cx: &mut TestAppContext) {
     s.settle_dialog(cx);
     assert!(s.up_on_window(cx, |w, _, _| !w.update_busy()
         && w.closing == super::Closing::Open));
+    // Restart now: the app ends and asks to start again.
+    s.up_route(cx);
+    s.up_click(UPDATE_RESTART_ID, cx);
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    assert_eq!(relauncher.calls(), 1, "the app restarts once");
 }
 
 /// A note that cannot be let go refuses the install, inline; nothing is
@@ -995,8 +1002,16 @@ fn the_toast_updates_in_one_click(cx: &mut TestAppContext) {
             .contains(&(UPDATING_TEXT.to_string(), false)),
         "the toast says it is updating"
     );
-    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
+    });
+    s.age_toasts(Duration::from_millis(500), cx);
     assert_eq!(fake.installs(), 1);
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
+    assert_eq!(relauncher.calls(), 0, "no restart without the click");
+    assert_eq!(s.up_action_label(cx).as_deref(), Some(RESTART_LABEL));
+    s.up_click(TOAST_ACTION_ID, cx);
+    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
     assert_eq!(relauncher.calls(), 1);
     let on_disk = rt
         .block_on(v.vault.get_note_text(&VaultPath::new("a.md")))
@@ -1030,9 +1045,13 @@ fn a_failed_toast_install_offers_retry(cx: &mut TestAppContext) {
     assert_eq!(relauncher.calls(), 0);
     fake.set_install(Ok(()));
     s.up_click(TOAST_ACTION_ID, cx);
-    drive(&rt, cx, |cx| cx.read(|cx| s.workspace.read(cx).quits) == 1);
+    drive(&rt, cx, |cx| {
+        matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
+    });
+    cx.run_until_parked();
     assert_eq!(fake.installs(), 2);
-    assert_eq!(relauncher.calls(), 1);
+    assert_eq!(cx.read(|cx| s.workspace.read(cx).quits), 0);
+    assert_eq!(relauncher.calls(), 0, "no restart without the click");
 }
 
 /// A note that cannot be let go refuses the toast's install too, as an
@@ -1083,13 +1102,15 @@ fn a_refused_quit_after_the_install_does_not_restart_later(cx: &mut TestAppConte
     drive(&rt, cx, |cx| {
         cx.read(|cx| s.workspace.read(cx).updates.machine.is_installing())
     });
-    // Something holds the window open when the install lands.
-    s.up_on_window(cx, |w, _, _| {
-        w.updates.flushing = Some(gpui_kit::Task::ready(()));
-    });
     drive(&rt, cx, |cx| {
         matches!(s.up_phase(cx), UpdatePhase::Installed { .. })
     });
+    cx.run_until_parked();
+    // Something holds the window open when the user clicks Restart now.
+    s.up_on_window(cx, |w, _, _| {
+        w.updates.flushing = Some(gpui_kit::Task::ready(()));
+    });
+    s.up_click(UPDATE_RESTART_ID, cx);
     cx.run_until_parked();
     assert_eq!(
         cx.read(|cx| s.workspace.read(cx).quits),
