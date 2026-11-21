@@ -110,10 +110,7 @@ impl EditorView {
         // a Mac) follows in one press: place the caret, then follow what is
         // under it. The find bar owns the pointer while open, so there it is
         // an ordinary press.
-        if left
-            && pointer.mods == keymap::Platform::current().primary()
-            && self.editor.find_bar().is_none()
-        {
+        if left && pointer.mods == keymap::primary(cx) && self.editor.find_bar().is_none() {
             self.clicks.end();
             self.feed_pointer(&pointer, true);
             // Stay armed even when it follows: the release must still reach

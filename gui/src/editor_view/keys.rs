@@ -63,9 +63,7 @@ impl EditorView {
         self.preedit = None;
         if self.input_blocked {
             // A read-only surface still copies what is selected in it.
-            if self.read_only
-                && key == KeyInput::new(Key::Char('c'), keymap::Platform::current().primary())
-            {
+            if self.read_only && key == KeyInput::new(Key::Char('c'), keymap::primary(cx)) {
                 self.copy_selection(cx);
             }
             // Taken, so it reaches nothing else either.

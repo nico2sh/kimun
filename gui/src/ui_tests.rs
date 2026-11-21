@@ -2264,6 +2264,35 @@ fn a_primary_read_only_press_emits_a_primary_event(cx: &mut TestAppContext) {
     assert_no_follow(&mut rx);
 }
 
+/// With the macOS table the primary press is Cmd+click, whatever OS runs the
+/// test: a Ctrl+click on a tag follows nothing there.
+#[gpui_kit::test]
+fn the_macos_table_follows_on_cmd_click(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update(|cx| keymap::init(cx, Keymap::defaults(Platform::MacOs)));
+    let press = |modifiers: gpui_kit::Modifiers, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.change_modifiers(modifiers, cx);
+            let at = cell_center(&view, 6, 0, cx);
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+            window.change_modifiers(gpui_kit::Modifiers::none(), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    press(gpui_kit::Modifiers::control(), cx);
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    press(gpui_kit::Modifiers::command(), cx);
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::ReadOnlyFollow {
+            target: kimun_notes::logic::editor::claim::FollowTarget::Label("idea".to_string()),
+        }]
+    );
+}
+
 /// A read-only editor draws its follow targets with the pointing hand with
 /// no modifier held, and plain text with the text cursor.
 #[gpui_kit::test]
