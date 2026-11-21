@@ -176,13 +176,39 @@ fn the_note_actions_keep_their_letters(cx: &mut TestAppContext) {
         groups_in_tab: 1,
         tabs: 1,
     };
-    let (_, events, cx) = open(ctx, cx);
+    let (menu, events, cx) = open(ctx, cx);
     assert!(visible(cx, NOTE_MENU_ID));
+    // The pin row waits for the read that says if the note is pinned.
+    cx.update(|_, cx| menu.update(cx, |menu, cx| menu.set_pinned(false, cx)));
     for (key, item) in ['f', 'n', 'p', 'r', 'm', 'd'].into_iter().zip(NOTE_ITEMS) {
         press(cx, &key.to_string());
         assert_eq!(events.borrow().last(), Some(&NoteMenuEvent::Picked(item)));
     }
     assert_eq!(events.borrow().len(), 6);
+}
+
+/// The pin row is a guess until the read lands: its key and Enter wait, so a
+/// fast press cannot toggle a pin the user did not mean to toggle.
+#[gpui_kit::test]
+fn the_pin_row_waits_for_the_pin_read(cx: &mut TestAppContext) {
+    let ctx = MenuContext {
+        has_note: true,
+        facet: false,
+        groups_in_tab: 1,
+        tabs: 1,
+    };
+    let (menu, events, cx) = open(ctx, cx);
+    press(cx, "n");
+    assert!(events.borrow().is_empty(), "the key waits");
+    press(cx, "down");
+    press(cx, "enter");
+    assert!(events.borrow().is_empty(), "Enter on the row waits too");
+    cx.update(|_, cx| menu.update(cx, |menu, cx| menu.set_pinned(true, cx)));
+    press(cx, "n");
+    assert_eq!(
+        events.borrow().last(),
+        Some(&NoteMenuEvent::Picked(MenuItem::Unpin))
+    );
 }
 
 #[gpui_kit::test]
@@ -696,6 +722,19 @@ mod in_workspace {
             .collect()
     }
 
+    /// Run tokio until the open menu knows if its note is pinned.
+    fn wait_for_pin_read(s: &Started, rt: &Runtime, cx: &mut TestAppContext) {
+        drive(rt, cx, |cx| {
+            cx.read(|cx| {
+                s.workspace
+                    .read(cx)
+                    .note_menu
+                    .as_ref()
+                    .is_some_and(|m| m.view.read(cx).pin_known())
+            })
+        });
+    }
+
     fn open_menu_on_active(s: &Started, cx: &mut TestAppContext) {
         let workspace = s.workspace.clone();
         let group = active(s, cx);
@@ -715,6 +754,7 @@ mod in_workspace {
         let (v, s) = start(cx, &rt);
         open_menu_on_active(&s, cx);
         assert!(shows(&s, MenuItem::Pin, cx));
+        wait_for_pin_read(&s, &rt, cx);
         click(&s, menu_item_element_id(MenuItem::Pin), cx);
         assert!(!menu_open(&s, cx));
         drive(&rt, cx, |cx| s.flash(cx).is_some());
@@ -736,6 +776,7 @@ mod in_workspace {
             shows(&s, MenuItem::Unpin, cx)
         });
         assert!(!shows(&s, MenuItem::Pin, cx));
+        wait_for_pin_read(&s, &rt, cx);
         click(&s, menu_item_element_id(MenuItem::Unpin), cx);
         drive(&rt, cx, |cx| s.flash(cx).is_some());
         assert_eq!(s.flash(cx).as_deref(), Some("unpinned"));

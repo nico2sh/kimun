@@ -235,6 +235,10 @@ pub(crate) struct NoteMenu {
     items: Vec<MenuItem>,
     focus: FocusHandle,
     selected: usize,
+    /// The read that says whether the note is pinned landed. Until then
+    /// `Pin note` is only a guess, and picking it would toggle a pin the
+    /// user may not mean to toggle, so a pick of it waits.
+    pin_known: bool,
 }
 
 impl EventEmitter<NoteMenuEvent> for NoteMenu {}
@@ -252,6 +256,7 @@ impl NoteMenu {
             items: menu_items(&ctx),
             focus: cx.focus_handle(),
             selected: 0,
+            pin_known: false,
         }
     }
 
@@ -271,6 +276,7 @@ impl NoteMenu {
     /// the menu never waits on the disk. Either row runs the same toggle,
     /// and its flash says which way it went.
     pub(crate) fn set_pinned(&mut self, pinned: bool, cx: &mut Context<Self>) {
+        self.pin_known = true;
         let (from, to) = if pinned {
             (MenuItem::Pin, MenuItem::Unpin)
         } else {
@@ -282,7 +288,17 @@ impl NoteMenu {
         }
     }
 
+    /// Whether the pin read landed (tests).
+    #[cfg(test)]
+    pub(crate) fn pin_known(&self) -> bool {
+        self.pin_known
+    }
+
     fn pick(&mut self, item: MenuItem, cx: &mut Context<Self>) {
+        // The pin row is a guess until the read lands (a few milliseconds).
+        if matches!(item, MenuItem::Pin | MenuItem::Unpin) && !self.pin_known {
+            return;
+        }
         cx.emit(NoteMenuEvent::Picked(item));
     }
 
@@ -523,9 +539,9 @@ impl Workspace {
         let reading = tokio::spawn(async move { vault.list_pinned_notes().await });
         let menu = menu.downgrade();
         cx.spawn(async move |_, cx| {
-            let Ok(Ok(pins)) = reading.await else {
-                return;
-            };
+            // A read that failed leaves the guess `Pin note` standing: the
+            // pick then pins, or says why it cannot.
+            let pins = reading.await.ok().and_then(Result::ok).unwrap_or_default();
             // Core's own comparison: its pins are absolute, the target is not.
             let pinned = pinned_notes::position_of(&pins, &target).is_some();
             menu.update(cx, |menu, cx| menu.set_pinned(pinned, cx)).ok();

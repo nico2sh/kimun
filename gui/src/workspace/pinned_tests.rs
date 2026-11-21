@@ -534,7 +534,7 @@ mod in_files {
     use gpui_kit::{AppContext as _, TestAppContext};
 
     use super::super::files::{
-        FILES_PINNED_ID, FILES_PINNED_MANAGE_ID, FILES_PINNED_TOGGLE_ID, pinned_row_id,
+        FILES_PINNED_ID, FILES_PINNED_MANAGE_ID, FILES_PINNED_TOGGLE_ID, files_pinned_row_id,
     };
     use super::super::modal::ModalKind;
     use super::super::start_tests::{drive, runtime};
@@ -588,8 +588,8 @@ mod in_files {
             let files = started.workspace.read(cx).files.clone().unwrap();
             files.read(cx).pins()[0].path.clone()
         });
-        assert!(drawn(&started, pinned_row_id(&gamma), cx));
-        click(&started, pinned_row_id(&gamma), cx);
+        assert!(drawn(&started, files_pinned_row_id(&gamma), cx));
+        click(&started, files_pinned_row_id(&gamma), cx);
         drive(&rt, cx, |cx| started.text(cx) == "# Gamma\nthe gamma note");
     }
 
@@ -660,17 +660,17 @@ mod in_files {
         });
         assert!(!is_open(&started, cx));
         assert!(drawn(&started, FILES_PINNED_TOGGLE_ID, cx));
-        assert!(!drawn(&started, pinned_row_id(&gamma), cx));
+        assert!(!drawn(&started, files_pinned_row_id(&gamma), cx));
         assert!(!drawn(&started, FILES_PINNED_MANAGE_ID, cx));
 
         click(&started, FILES_PINNED_TOGGLE_ID, cx);
         assert!(is_open(&started, cx));
-        assert!(drawn(&started, pinned_row_id(&gamma), cx));
+        assert!(drawn(&started, files_pinned_row_id(&gamma), cx));
         assert!(drawn(&started, FILES_PINNED_MANAGE_ID, cx));
 
         click(&started, FILES_PINNED_TOGGLE_ID, cx);
         assert!(!is_open(&started, cx));
-        assert!(!drawn(&started, pinned_row_id(&gamma), cx));
+        assert!(!drawn(&started, files_pinned_row_id(&gamma), cx));
     }
 
     /// The chevrons of the heading are bundled: a missing SVG paints an
@@ -753,7 +753,7 @@ mod in_files {
         let last_bottom: f32 = cx
             .update_window(started.handle, |_, window, cx| {
                 window.render_frame(cx);
-                let b = window.find(pinned_row_id(&last)).bounds();
+                let b = window.find(files_pinned_row_id(&last)).bounds();
                 (b.origin.y + b.size.height).into()
             })
             .unwrap();
@@ -771,7 +771,7 @@ mod in_files {
         assert!(0.0 < closing && closing < full, "closing: {closing}");
         step(1000, cx);
         assert_eq!(frame(cx), 0.0);
-        assert!(!drawn(&started, pinned_row_id(&last), cx));
+        assert!(!drawn(&started, files_pinned_row_id(&last), cx));
     }
 
     /// `Manage` opens the dialog.

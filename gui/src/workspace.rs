@@ -3590,7 +3590,7 @@ impl Workspace {
             .test_support()
             .role(Role::Group)
             .aria_label(SharedString::from(empty.title.clone()))
-            .aria_description(SharedString::from(empty.detail.clone()))
+            .aria_description(SharedString::from(empty_description(empty)))
             .flex()
             .flex_1()
             .min_h_0()
@@ -3622,6 +3622,21 @@ impl Workspace {
                     }),
             )
     }
+}
+
+/// What a screen reader says under an empty state's title: the detail, or,
+/// when the state lists actions, each action with its chord (the list is
+/// what the screen shows in place of the detail).
+fn empty_description(empty: &EmptyState) -> String {
+    if empty.shortcuts.is_empty() {
+        return empty.detail.clone();
+    }
+    empty
+        .shortcuts
+        .iter()
+        .map(|(label, chord)| format!("{label}: {chord}"))
+        .collect::<Vec<_>>()
+        .join(". ")
 }
 
 /// The empty group's actions: a label at the left and its chord at the
