@@ -66,7 +66,7 @@ pub use index::search_terms::{
 pub use index::{
     IndexDiff, IndexObserver, NoteChange, NoteSuggestion, PropertySortValue, TagSuggestion,
 };
-pub use nfs::pinned_notes::{PinToggle, PINNED_NOTES_CAP};
+pub use nfs::pinned_notes::{PinOutcome, PinToggle, PINNED_NOTES_CAP};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
@@ -905,6 +905,32 @@ impl NoteVault {
             }
             let outcome = pinned_notes::toggle(all, path);
             (Ok(outcome), outcome != PinToggle::Full)
+        })
+        .await?
+    }
+
+    /// Pin `path` (appended last), never unpin it: a note that is already
+    /// pinned stays so ([`PinOutcome::AlreadyPinned`], nothing written). The
+    /// check and the append run under one lock, so a stale caller or a race
+    /// cannot turn a pin into an unpin. Same rules as
+    /// [`Self::toggle_pinned_note`]: `path` must be a note, a note not on
+    /// disk cannot be newly pinned, and a full list gives
+    /// [`PinOutcome::Full`].
+    pub async fn pin_note(&self, path: &VaultPath) -> Result<PinOutcome, VaultError> {
+        path.ensure_note()?;
+        let exists = nfs::path_exists(self.workspace_path(), path).await?;
+        pinned_notes::edit(self.workspace_path(), |all| {
+            if pinned_notes::position_of(all, path).is_some() {
+                return (Ok(PinOutcome::AlreadyPinned), false);
+            }
+            if !exists {
+                let err = FSError::VaultPathNotFound { path: path.clone() };
+                return (Err(VaultError::FSError(err)), false);
+            }
+            match pinned_notes::toggle(all, path) {
+                PinToggle::Pinned { position } => (Ok(PinOutcome::Pinned { position }), true),
+                _ => (Ok(PinOutcome::Full), false),
+            }
         })
         .await?
     }
@@ -3442,6 +3468,70 @@ mod tests {
             PinToggle::Unpinned
         );
         assert!(vault.list_pinned_notes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pin_note_pins_once_and_never_unpins() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let a = VaultPath::new("a.md");
+        vault.create_note(&a, "hi").await.unwrap();
+        assert_eq!(
+            vault.pin_note(&a).await.unwrap(),
+            PinOutcome::Pinned { position: 0 }
+        );
+        assert_eq!(vault.pin_note(&a).await.unwrap(), PinOutcome::AlreadyPinned);
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap(),
+            vec![VaultPath::new("/a.md")]
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_note_refuses_a_directory_a_missing_note_and_a_full_list() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        assert!(vault.pin_note(&VaultPath::new("dir")).await.is_err());
+        match vault.pin_note(&VaultPath::new("gone.md")).await {
+            Err(VaultError::FSError(FSError::VaultPathNotFound { .. })) => {}
+            other => panic!("expected VaultPathNotFound, got {:?}", other),
+        }
+        for i in 0..PINNED_NOTES_CAP {
+            let n = VaultPath::new(format!("n{i}.md"));
+            vault.create_note(&n, "hi").await.unwrap();
+            vault.pin_note(&n).await.unwrap();
+        }
+        let extra = VaultPath::new("extra.md");
+        vault.create_note(&extra, "hi").await.unwrap();
+        assert_eq!(vault.pin_note(&extra).await.unwrap(), PinOutcome::Full);
+        assert_eq!(vault.list_pinned_notes().await.unwrap().len(), PINNED_NOTES_CAP);
+    }
+
+    #[tokio::test]
+    async fn pin_note_keeps_a_pin_past_the_cap_that_a_hand_edit_left() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let mut all = Vec::new();
+        for i in 0..=PINNED_NOTES_CAP {
+            let n = VaultPath::new(format!("n{i}.md"));
+            vault.create_note(&n, "hi").await.unwrap();
+            all.push(n);
+        }
+        pinned_notes::write_pinned_notes(vault.workspace_path(), &all)
+            .await
+            .unwrap();
+        let tenth = all.last().unwrap();
+        assert_eq!(vault.pin_note(tenth).await.unwrap(), PinOutcome::AlreadyPinned);
+        let on_disk = pinned_notes::read_pinned_notes(vault.workspace_path())
+            .await
+            .unwrap();
+        assert_eq!(on_disk.len(), PINNED_NOTES_CAP + 1);
     }
 
     #[tokio::test]
