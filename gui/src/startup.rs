@@ -20,7 +20,7 @@ use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::SystemPath;
-use kimun_notes::logic::editor_region::EditorRegion;
+use kimun_notes::logic::editor_region::{CollectionViews, EditorRegion, FacetViews};
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::startup::{RestoreTarget, VaultOpen, restore_target};
@@ -190,12 +190,19 @@ fn note_only(path: VaultPath, shown: &str) -> Result<VaultPath, String> {
 pub(crate) struct SessionRestore {
     pub(crate) region: EditorRegion,
     pub(crate) notes: Vec<(GroupId, VaultPath)>,
+    /// The facet views to show (ADR-0061), once the notes are open: only
+    /// those of notes that exist.
+    pub(crate) facets: FacetViews,
+    /// The collections to show, after the facet views: their query runs
+    /// again, with no check (a collection holds no note).
+    pub(crate) collections: CollectionViews,
     pub(crate) gone: Vec<VaultPath>,
 }
 
 /// Where a start that restores lands, once the vault indexed.
 pub(crate) enum Landing {
-    /// The session record, which still has a note to open.
+    /// The session record, which still has something to show: a note to
+    /// open, a facet view whose source is still there, or a collection.
     Session(SessionRestore),
     /// The history's newest note (the vault root when it has none), and
     /// what to say when the last note is gone: the record had no note left
@@ -208,8 +215,9 @@ pub(crate) enum Landing {
 /// (or `VaultConflict` for names that differ only by case).
 ///
 /// With `session` (the stored record), the answer is where to land, and
-/// nothing more is sent: that record when it still has a note to open
-/// ([`Landing::Session`]), else, when `history`, the history's newest note
+/// nothing more is sent: that record when it still has something to show
+/// (a note, a facet view of a note still there, or a collection:
+/// [`Landing::Session`]), else, when `history`, the history's newest note
 /// ([`Landing::History`]), else nothing. Without `session`, when `history`,
 /// the history's newest note is sent: a `FlashMessage` when the last note
 /// is gone, then an `OpenPath` for the note to land on (the vault root when
@@ -249,7 +257,8 @@ pub(crate) async fn index_and_restore(
         return None;
     };
     let restored = session_restore(&vault, &record, indexed).await;
-    if !restored.notes.is_empty() {
+    if !restored.notes.is_empty() || !restored.facets.is_empty() || !restored.collections.is_empty()
+    {
         return Some(Landing::Session(restored));
     }
     if !history {
@@ -289,20 +298,23 @@ async fn session_restore(
             }
         }
     }
-    let (region, notes) =
+    let (region, notes, facets, collections) =
         EditorRegion::from_record(record, |note| !gone.iter().any(|g| g.is_like(note)));
     SessionRestore {
         region,
         notes,
+        facets,
+        collections,
         gone,
     }
 }
 
-/// Every note `record` names, tab by tab, in reading order.
+/// Every note `record` names, tab by tab, in reading order: an editor
+/// group's note and a facet view's source alike.
 fn record_notes(record: &SessionRecord) -> Vec<VaultPath> {
     fn walk(tree: &GroupTreeRecord, out: &mut Vec<VaultPath>) {
         match tree {
-            GroupTreeRecord::Leaf { note } => out.extend(note.iter().cloned()),
+            GroupTreeRecord::Leaf { note, .. } => out.extend(note.iter().cloned()),
             GroupTreeRecord::Split { children, .. } => {
                 children.iter().for_each(|child| walk(child, out))
             }

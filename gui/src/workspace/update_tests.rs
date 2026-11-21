@@ -69,6 +69,7 @@ fn open_with(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let layout = crate::shell_tree::restore(&Default::default(), crate::shell_tree::RESTORE_CAPS);

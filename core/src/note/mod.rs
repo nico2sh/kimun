@@ -1,4 +1,9 @@
+pub(crate) mod blocks;
+pub(crate) mod collection;
 pub(crate) mod content_extractor;
+pub(crate) mod facet_counts;
+pub(crate) mod facet_view;
+pub(crate) mod facets;
 pub(crate) mod link_target;
 pub(crate) mod properties;
 mod walk;
@@ -7,6 +12,18 @@ pub use properties::{
     is_list_property_key, property_keys_match, property_search_key, FrontmatterFormat,
     PropertyDateTime, PropertyEntry, PropertyInput, PropertyKind, PropertyValue,
 };
+
+// Facets: what a user can pick to narrow a note to the blocks tied to it
+// (see `CONTEXT.md`, **Facet**). Pure functions over note text.
+pub use blocks::{BlockKind, NoteBlock};
+pub use collection::{
+    in_view_count_collection, merge_entries, plan_collection, select_collection, NotePlan,
+};
+pub use facet_counts::{in_view_count, in_view_counts};
+pub use facet_view::{
+    plan_chunks, reveal, reveal_gap, ChunkPlan, Crumb, Reveal, GAP_SHOW_ALL_MAX, MAX_RANGES,
+};
+pub use facets::{note_facets, select_blocks, Facet, FacetEntry, FacetKind, NoteFacets};
 
 pub(crate) use link_target::unique_wikilink;
 pub use link_target::{markdown_attachment, NoteTarget};

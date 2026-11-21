@@ -1,6 +1,6 @@
 //! The app's asset source: the kit's default component icons plus the few
-//! Lucide icons the rail and the FILES rows need that the default bundle
-//! leaves out. One icon
+//! Lucide icons the rail, the FILES rows and the facet view need that the
+//! default bundle leaves out. One icon
 //! family (Lucide) throughout; only the listed SVGs are embedded.
 
 use std::borrow::Cow;
@@ -56,7 +56,11 @@ gpui_kit::assets::icon_assets!(
         Paperclip,
         Plus,
         Circle,
-        CircleQuestionMark
+        CircleQuestionMark,
+        Funnel,
+        Layers,
+        ArrowDownToLine,
+        ArrowUpToLine
     ]
 );
 
@@ -138,6 +142,59 @@ mod tests {
     #[test]
     fn every_group_header_icon_is_bundled() {
         for icon in crate::workspace::GROUP_HEADER_ICONS {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
+    /// The facet view's funnel (the header button and the mark) is bundled.
+    #[test]
+    fn the_facet_icon_is_bundled() {
+        let path = crate::workspace::FACET_ICON.path();
+        assert!(
+            AppAssets.load(&path).unwrap().is_some(),
+            "{path} is not bundled"
+        );
+    }
+
+    /// FIND's "Open as collection" icon is bundled.
+    #[test]
+    fn the_collection_icon_is_bundled() {
+        let path = crate::workspace::COLLECTION_ICON.path();
+        assert!(
+            AppAssets.load(&path).unwrap().is_some(),
+            "{path} is not bundled"
+        );
+    }
+
+    /// The facet gap buttons' icons are bundled. Each points the way its
+    /// button reveals text, so the two buttons of one gap look different.
+    #[test]
+    fn the_facet_gap_icons_are_bundled_and_point_their_way() {
+        let down = crate::workspace::FACET_GAP_DOWN_ICON;
+        let up = crate::workspace::FACET_GAP_UP_ICON;
+        assert_eq!(down, IconName::ArrowDownToLine);
+        assert_eq!(up, IconName::ArrowUpToLine);
+        for icon in [down, up] {
+            let path = icon.path();
+            assert!(
+                AppAssets.load(&path).unwrap().is_some(),
+                "{path} is not bundled"
+            );
+        }
+    }
+
+    /// The facet bar's search, caret and tick icons are bundled. They are
+    /// Lucide icons, the one icon family of the app, not text glyphs.
+    #[test]
+    fn every_facet_bar_icon_is_bundled() {
+        let icons = crate::workspace::FACET_BAR_ICONS;
+        let want = [IconName::Search, IconName::ChevronDown, IconName::Check];
+        assert_eq!(icons, want);
+        for icon in icons {
             let path = icon.path();
             assert!(
                 AppAssets.load(&path).unwrap().is_some(),

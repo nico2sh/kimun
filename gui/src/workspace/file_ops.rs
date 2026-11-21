@@ -490,6 +490,7 @@ impl Workspace {
         self.file_status = None;
         self.files_file_op(&op, cx);
         self.attachment_file_op(&op, cx);
+        self.facet_file_op(&op, cx);
         let active = self.layout.active_group();
         if !touched.contains(&active) {
             self.refresh_note_counts();

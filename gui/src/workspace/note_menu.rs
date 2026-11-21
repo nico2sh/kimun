@@ -1,6 +1,7 @@
 //! The **note menu**: one pointer-anchored menu that holds the actions on
-//! a group's note (`Properties…`, `Rename…`, `Move…`, `Delete…`) and the
-//! layout actions (split, new tab, close group, close tab).
+//! a group's note (`Facet view`, `Properties…`, `Rename…`, `Move…`,
+//! `Delete…`; `Edit note` and `Properties…` in a group showing a facet
+//! view) and the layout actions (split, new tab, close group, close tab).
 //!
 //! The items are a pure function of a small [`MenuContext`] ([`menu_items`]):
 //! an item that cannot act is hidden, never grayed out. The view only emits
@@ -63,6 +64,10 @@ const EDGE_MARGIN: f32 = 8.;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuItem {
     Note(FileOpKind),
+    /// Show the group's note as a facet view (ADR-0061).
+    FacetView,
+    /// Back from a facet view to the editor on its note.
+    EditNote,
     SplitRight,
     SplitDown,
     NewTab,
@@ -77,6 +82,8 @@ impl MenuItem {
             MenuItem::Note(FileOpKind::Rename) => "Rename…",
             MenuItem::Note(FileOpKind::Move) => "Move…",
             MenuItem::Note(FileOpKind::Delete) => "Delete…",
+            MenuItem::FacetView => "Facet view",
+            MenuItem::EditNote => "Edit note",
             MenuItem::SplitRight => "Split right",
             MenuItem::SplitDown => "Split down",
             MenuItem::NewTab => "New tab",
@@ -86,9 +93,12 @@ impl MenuItem {
     }
 
     /// The key that picks a note item (the TUI menu's R, M, D; P for
-    /// properties). Layout items have none.
+    /// properties; F for the facet view, E to edit the note). Layout items
+    /// have none.
     fn letter(self) -> Option<char> {
         match self {
+            MenuItem::FacetView => Some('f'),
+            MenuItem::EditNote => Some('e'),
             MenuItem::Note(FileOpKind::Properties) => Some('p'),
             MenuItem::Note(FileOpKind::Rename) => Some('r'),
             MenuItem::Note(FileOpKind::Move) => Some('m'),
@@ -105,20 +115,25 @@ impl MenuItem {
             MenuItem::NewTab => Some(ActionShortcuts::NewTab),
             MenuItem::CloseGroup => Some(ActionShortcuts::CloseSlot),
             MenuItem::CloseTab => Some(ActionShortcuts::CloseTab),
-            MenuItem::Note(_) => None,
+            MenuItem::Note(_) | MenuItem::FacetView | MenuItem::EditNote => None,
         }
     }
 
     fn is_note(self) -> bool {
-        matches!(self, MenuItem::Note(_))
+        matches!(
+            self,
+            MenuItem::Note(_) | MenuItem::FacetView | MenuItem::EditNote
+        )
     }
 }
 
 /// What decides which items show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MenuContext {
-    /// The group holds a note.
+    /// The group's editor holds a note.
     pub has_note: bool,
+    /// The group shows a facet view (its editor holds no note).
+    pub facet: bool,
     /// How many editor groups the group's tab has.
     pub groups_in_tab: usize,
     /// How many tabs there are.
@@ -126,11 +141,16 @@ pub(crate) struct MenuContext {
 }
 
 /// The items to show, in order. The note items come first; the view draws
-/// a divider at the boundary between them and the layout items.
+/// a divider at the boundary between them and the layout items. A facet
+/// group offers `Edit note` and the properties: renaming, moving and
+/// deleting need the note open in the editor.
 pub(crate) fn menu_items(ctx: &MenuContext) -> Vec<MenuItem> {
     let mut items = Vec::new();
-    if ctx.has_note {
+    if ctx.facet {
+        items.extend([MenuItem::EditNote, MenuItem::Note(FileOpKind::Properties)]);
+    } else if ctx.has_note {
         items.extend([
+            MenuItem::FacetView,
             MenuItem::Note(FileOpKind::Properties),
             MenuItem::Note(FileOpKind::Rename),
             MenuItem::Note(FileOpKind::Move),
@@ -165,6 +185,8 @@ pub(crate) fn menu_item_element_id(item: MenuItem) -> &'static str {
         MenuItem::Note(FileOpKind::Rename) => "note-menu-rename",
         MenuItem::Note(FileOpKind::Move) => "note-menu-move",
         MenuItem::Note(FileOpKind::Delete) => "note-menu-delete",
+        MenuItem::FacetView => "note-menu-facet-view",
+        MenuItem::EditNote => "note-menu-edit-note",
         MenuItem::SplitRight => "note-menu-split-right",
         MenuItem::SplitDown => "note-menu-split-down",
         MenuItem::NewTab => "note-menu-new-tab",
@@ -212,7 +234,8 @@ impl NoteMenu {
         self.group
     }
 
-    /// The note the group holds, if any.
+    /// The note the group shows (its editor's, or its facet view's
+    /// source), if any.
     pub(crate) fn target(&self) -> Option<&VaultPath> {
         self.target.as_ref()
     }
@@ -409,13 +432,16 @@ impl Workspace {
         let Some(host) = self.host_in(group) else {
             return;
         };
-        let target = host.note.clone();
+        let has_note = host.note.is_some();
+        let facet = self.facet_source_in(group, cx).is_some();
+        let target = self.shown_note_in(group, cx);
         let region = self.layout.region();
         let Some(tab) = region.group_tab(group) else {
             return;
         };
         let ctx = MenuContext {
-            has_note: target.is_some(),
+            has_note,
+            facet,
             groups_in_tab: region.groups(tab).len(),
             tabs: region.tabs().len(),
         };
@@ -582,11 +608,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(state) = self.state(group) else {
+        if self.state(group).is_none() {
             return;
-        };
-        let now = state.notes.as_ref().and_then(|h| h.note.as_ref());
-        if now != target.as_ref() {
+        }
+        if self.shown_note_in(group, cx) != target {
             self.close_note_menu(window, cx);
             self.flash(MENU_NOTE_CHANGED, cx);
             return;
@@ -599,6 +624,12 @@ impl Workspace {
                     self.open_file_dialog(kind, target, window, cx);
                 }
             }
+            MenuItem::FacetView => {
+                if let Some(target) = target {
+                    self.open_facet_view(group, target, Vec::new(), cx);
+                }
+            }
+            MenuItem::EditNote => self.close_facet_view(group, cx),
             MenuItem::SplitRight => {
                 self.split_focused(TreeAxis::Horizontal, window, cx);
             }

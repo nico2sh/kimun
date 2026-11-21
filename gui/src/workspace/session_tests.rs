@@ -41,6 +41,8 @@ const NOTES: &[(&str, &str)] = &[
 fn leaf(note: Option<&str>) -> GroupTreeRecord {
     GroupTreeRecord::Leaf {
         note: note.map(VaultPath::new),
+        facets: None,
+        collection: None,
     }
 }
 
@@ -72,7 +74,7 @@ impl Win {
 
     /// The window's own record of what it shows now.
     fn record(&self, cx: &TestAppContext) -> SessionRecord {
-        cx.read(|cx| self.workspace.read(cx).session_record())
+        cx.read(|cx| self.workspace.read(cx).session_record(cx))
     }
 
     /// The note `group` shows.
@@ -1322,4 +1324,599 @@ fn a_restored_session_is_drawn_in_place(cx: &mut TestAppContext) {
         (first - rest).abs() < 0.5,
         "{first} on landing, {rest} at rest"
     );
+}
+
+// ── Facet views (ADR-0061) ────────────────────────────────────────────────
+
+mod facets {
+    use kimun_core::note::{Facet, FacetKind};
+    use kimun_notes::settings::session::FacetPick;
+
+    use super::*;
+
+    const FNOTES: &[(&str, &str)] = &[
+        ("n.md", "# Head\n\nsome #a\n\nmore #b\n"),
+        ("m.md", "plain"),
+    ];
+
+    fn tag(key: &str) -> Facet {
+        Facet::new(FacetKind::Tag, key)
+    }
+
+    fn picks_of(keys: &[&str]) -> Vec<FacetPick> {
+        keys.iter().map(|k| FacetPick::from(&tag(k))).collect()
+    }
+
+    fn facet_leaf(note: &str, keys: &[&str]) -> GroupTreeRecord {
+        GroupTreeRecord::Leaf {
+            note: Some(path(note)),
+            facets: Some(picks_of(keys)),
+            collection: None,
+        }
+    }
+
+    fn split(children: Vec<GroupTreeRecord>) -> SessionRecord {
+        SessionRecord {
+            version: SESSION_VERSION,
+            tabs: vec![TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Horizontal,
+                    weights: vec![0.5; children.len()],
+                    children,
+                },
+                active: 0,
+            }],
+            shown: 0,
+        }
+    }
+
+    impl Win {
+        /// The source and picks of the facet view `group` shows.
+        fn facet_in(&self, group: GroupId, cx: &TestAppContext) -> Option<(VaultPath, Vec<Facet>)> {
+            cx.read(|cx| {
+                let view = self.workspace.read(cx).state(group)?.facet.clone()?;
+                let view = view.read(cx);
+                Some((view.source()?.clone(), view.picks().to_vec()))
+            })
+        }
+
+        fn facet_count(&self, cx: &TestAppContext) -> usize {
+            self.groups_of_shown(cx)
+                .into_iter()
+                .filter(|g| self.facet_in(*g, cx).is_some())
+                .count()
+        }
+
+        /// Pick or unpick `facet` in `group`'s view, as a click does.
+        fn toggle(&self, group: GroupId, facet: Facet, cx: &mut TestAppContext) {
+            let view = cx
+                .read(|cx| self.workspace.read(cx).state(group).unwrap().facet.clone())
+                .expect("a facet view");
+            view.update(cx, |view, cx| view.toggle(facet, cx));
+            cx.run_until_parked();
+        }
+    }
+
+    fn restored(
+        cx: &mut TestAppContext,
+        rt: &Runtime,
+        record: &SessionRecord,
+        facets: usize,
+    ) -> (TestVault, Win) {
+        let v = rt.block_on(test_vault(FNOTES, &[]));
+        session_of(&v).save(record).unwrap();
+        let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+        let win = Win(started);
+        drive(rt, cx, |cx| {
+            !win.indexing(cx) && win.all_idle(cx) && win.facet_count(cx) == facets
+        });
+        (v, win)
+    }
+
+    #[gpui_kit::test]
+    fn a_facet_view_and_its_picks_survive_a_restart(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        // First run: a facet view of n.md with #a picked, beside m.md.
+        let v = rt.block_on(test_vault(FNOTES, &[]));
+        let win = Win(open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("n.md"))),
+            v.settings.clone(),
+        ));
+        drive(&rt, cx, |cx| !win.indexing(cx) && win.all_idle(cx));
+        win.with(cx, |w, cx| {
+            w.open_note_in_split(path("m.md"), Axis::Horizontal, cx)
+        });
+        drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "plain");
+        let first = win.groups_of_shown(cx)[0];
+        win.with(cx, |w, cx| {
+            w.open_facet_view(first, path("n.md"), vec![tag("a")], cx)
+        });
+        drive(&rt, cx, |cx| win.facet_count(cx) == 1);
+        win.after_debounce(cx);
+        let saved = session_of(&v).load().expect("the record is written");
+        let mut expected = split(vec![facet_leaf("n.md", &["a"]), leaf(Some("m.md"))]);
+        expected.tabs[0].active = 1; // the split's new group has the focus
+        assert_eq!(saved, expected);
+        // Second run, from that record.
+        let (_v, win) = restored(cx, &rt, &saved, 1);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(
+            win.facet_in(groups[0], cx),
+            Some((path("n.md"), vec![tag("a")]))
+        );
+        assert_eq!(win.note_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[1], cx), Some(path("m.md")));
+        assert_eq!(win.record(cx), saved);
+    }
+
+    #[gpui_kit::test]
+    fn changing_a_pick_triggers_a_session_write(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![facet_leaf("n.md", &["a"]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        win.after_debounce(cx);
+        assert_eq!(
+            session_of(&v).load(),
+            Some(record.clone()),
+            "the restore writes nothing"
+        );
+        let group = win.groups_of_shown(cx)[0];
+        win.toggle(group, tag("b"), cx);
+        win.after_debounce(cx);
+        let saved = session_of(&v).load().expect("a record");
+        assert_ne!(saved, record);
+        assert_eq!(saved, win.record(cx));
+        let GroupTreeRecord::Split { children, .. } = &saved.tabs[0].tree else {
+            panic!("a split: {saved:?}");
+        };
+        let GroupTreeRecord::Leaf {
+            facets: Some(picks),
+            ..
+        } = &children[0]
+        else {
+            panic!("a facet leaf: {children:?}");
+        };
+        assert!(picks.contains(&FacetPick::from(&tag("b"))), "{picks:?}");
+    }
+
+    #[gpui_kit::test]
+    fn a_gone_source_restores_as_an_empty_group_with_the_gone_flash(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![facet_leaf("gone.md", &["a"]), leaf(Some("m.md"))]);
+        let (_v, win) = restored(cx, &rt, &record, 0);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(win.facet_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[1], cx), Some(path("m.md")));
+        let flash = win.flash(cx).expect("the gone note is said");
+        assert!(flash.contains("gone.md"), "{flash}");
+        assert!(
+            flash.contains("is gone (moved or deleted outside kimün)"),
+            "{flash}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_pick_the_note_lost_is_dropped_on_restore(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![facet_leaf("n.md", &["a", "lost"]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        let group = win.groups_of_shown(cx)[0];
+        assert_eq!(
+            win.facet_in(group, cx),
+            Some((path("n.md"), vec![tag("a")]))
+        );
+        win.after_debounce(cx);
+        assert_eq!(
+            session_of(&v).load(),
+            Some(split(vec![facet_leaf("n.md", &["a"]), leaf(Some("m.md"))])),
+            "the dropped pick is written"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_editor_group_and_a_facet_group_of_one_note_both_restore(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![leaf(Some("n.md")), facet_leaf("n.md", &["b"])]);
+        let (_v, win) = restored(cx, &rt, &record, 1);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(win.note_in(groups[0], cx), Some(path("n.md")));
+        assert_eq!(win.facet_in(groups[0], cx), None);
+        assert_eq!(
+            win.facet_in(groups[1], cx),
+            Some((path("n.md"), vec![tag("b")]))
+        );
+        assert_eq!(win.record(cx), record);
+    }
+}
+
+mod collections {
+    use kimun_core::note::{Facet, FacetKind};
+    use kimun_notes::settings::session::{CollectionRecord, FacetPick};
+
+    use super::*;
+
+    const CNOTES: &[(&str, &str)] = &[
+        ("n.md", "# Head\n\nsome #a\n\nmore #b\n"),
+        ("m.md", "plain #a"),
+        ("o.md", "other"),
+    ];
+
+    fn tag(key: &str) -> Facet {
+        Facet::new(FacetKind::Tag, key)
+    }
+
+    fn coll_leaf(query: &str, keys: &[&str]) -> GroupTreeRecord {
+        GroupTreeRecord::Leaf {
+            note: None,
+            facets: None,
+            collection: Some(CollectionRecord {
+                query: query.to_string(),
+                facets: keys.iter().map(|k| FacetPick::from(&tag(k))).collect(),
+            }),
+        }
+    }
+
+    fn split(children: Vec<GroupTreeRecord>) -> SessionRecord {
+        SessionRecord {
+            version: SESSION_VERSION,
+            tabs: vec![TabRecord {
+                tree: GroupTreeRecord::Split {
+                    axis: AxisRecord::Horizontal,
+                    weights: vec![0.5; children.len()],
+                    children,
+                },
+                active: 0,
+            }],
+            shown: 0,
+        }
+    }
+
+    impl Win {
+        /// The resolved query and picks of the collection `group` shows.
+        fn coll_in(&self, group: GroupId, cx: &TestAppContext) -> Option<(String, Vec<Facet>)> {
+            cx.read(|cx| {
+                let view = self.workspace.read(cx).state(group)?.facet.clone()?;
+                let view = view.read(cx);
+                Some((view.query()?.to_owned(), view.picks().to_vec()))
+            })
+        }
+
+        fn coll_count(&self, cx: &TestAppContext) -> usize {
+            self.groups_of_shown(cx)
+                .into_iter()
+                .filter(|g| self.coll_in(*g, cx).is_some())
+                .count()
+        }
+
+        /// The member notes of the collection `group` shows, sorted.
+        fn coll_members(&self, group: GroupId, cx: &TestAppContext) -> Vec<String> {
+            let view = cx
+                .read(|cx| self.workspace.read(cx).state(group).unwrap().facet.clone())
+                .expect("a collection");
+            let mut paths: Vec<String> = cx.read(|cx| {
+                view.read(cx)
+                    .member_paths()
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect()
+            });
+            paths.sort();
+            paths
+        }
+    }
+
+    /// Restore `record` over `v`, driven until `count` collections show.
+    fn restore_in(
+        cx: &mut TestAppContext,
+        rt: &Runtime,
+        v: &TestVault,
+        record: &SessionRecord,
+        count: usize,
+    ) -> Win {
+        session_of(v).save(record).unwrap();
+        let started = open_started(cx, vault_start(v, FirstNote::Restore), v.settings.clone());
+        let win = Win(started);
+        drive(rt, cx, |cx| {
+            !win.indexing(cx) && win.all_idle(cx) && win.coll_count(cx) == count
+        });
+        win
+    }
+
+    fn restored(
+        cx: &mut TestAppContext,
+        rt: &Runtime,
+        record: &SessionRecord,
+        count: usize,
+    ) -> (TestVault, Win) {
+        let v = rt.block_on(test_vault(CNOTES, &[]));
+        let win = restore_in(cx, rt, &v, record, count);
+        (v, win)
+    }
+
+    #[gpui_kit::test]
+    fn a_collection_and_its_picks_survive_a_restart(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        // First run: a collection of #a with #b picked, beside m.md.
+        let v = rt.block_on(test_vault(CNOTES, &[]));
+        let win = Win(open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("n.md"))),
+            v.settings.clone(),
+        ));
+        drive(&rt, cx, |cx| !win.indexing(cx) && win.all_idle(cx));
+        win.with(cx, |w, cx| {
+            w.open_note_in_split(path("m.md"), Axis::Horizontal, cx)
+        });
+        drive(&rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "plain #a");
+        let first = win.groups_of_shown(cx)[0];
+        win.with(cx, |w, cx| {
+            w.open_collection(first, "#a".into(), vec![tag("a")], cx)
+        });
+        drive(&rt, cx, |cx| win.coll_count(cx) == 1);
+        win.after_debounce(cx);
+        let saved = session_of(&v).load().expect("the record is written");
+        let mut expected = split(vec![coll_leaf("#a", &["a"]), leaf(Some("m.md"))]);
+        expected.tabs[0].active = 1;
+        assert_eq!(saved, expected);
+        // Second run, from that record.
+        let (_v, win) = restored(cx, &rt, &saved, 1);
+        win.assert_states_in_step(cx);
+        let groups = win.groups_of_shown(cx);
+        assert_eq!(
+            win.coll_in(groups[0], cx),
+            Some(("#a".to_string(), vec![tag("a")]))
+        );
+        assert_eq!(win.note_in(groups[0], cx), None);
+        assert_eq!(win.note_in(groups[1], cx), Some(path("m.md")));
+        assert_eq!(win.record(cx), saved);
+        // No write loop: a further debounce builds nothing more.
+        win.after_debounce(cx);
+        let builds = win.builds(cx);
+        win.after_debounce(cx);
+        assert_eq!(win.builds(cx), builds);
+    }
+
+    #[gpui_kit::test]
+    fn a_restore_runs_the_query_again_and_shows_new_results(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let v = rt.block_on(test_vault(CNOTES, &[]));
+        // A note that came after the record was written.
+        std::fs::write(v.workspace.as_path().join("p.md"), "late #a").unwrap();
+        let record = split(vec![coll_leaf("#a", &[]), leaf(Some("m.md"))]);
+        let win = restore_in(cx, &rt, &v, &record, 1);
+        let group = win.groups_of_shown(cx)[0];
+        assert_eq!(
+            win.coll_members(group, cx),
+            ["/m.md", "/n.md", "/p.md"],
+            "the query ran again"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_restore_with_a_query_that_now_returns_nothing_keeps_the_view_and_the_record(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![coll_leaf("#nothing", &[]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        let group = win.groups_of_shown(cx)[0];
+        assert!(win.coll_members(group, cx).is_empty());
+        win.after_debounce(cx);
+        assert_eq!(session_of(&v).load(), Some(record.clone()));
+        // Still kept after a later change.
+        win.with(cx, |w, cx| w.new_tab(cx));
+        win.after_debounce(cx);
+        let GroupTreeRecord::Split { children, .. } = &session_of(&v).load().unwrap().tabs[0].tree
+        else {
+            panic!("a split");
+        };
+        assert_eq!(children[0], coll_leaf("#nothing", &[]));
+    }
+
+    #[gpui_kit::test]
+    fn a_pick_the_collection_lost_is_dropped_on_restore(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![coll_leaf("#a", &["b", "lost"]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        let group = win.groups_of_shown(cx)[0];
+        assert_eq!(
+            win.coll_in(group, cx),
+            Some(("#a".to_string(), vec![tag("b")]))
+        );
+        win.after_debounce(cx);
+        assert_eq!(
+            session_of(&v).load(),
+            Some(split(vec![coll_leaf("#a", &["b"]), leaf(Some("m.md"))])),
+            "the dropped pick is written"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn changing_a_pick_triggers_a_session_write(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![coll_leaf("#a", &["a"]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        win.after_debounce(cx);
+        let group = win.groups_of_shown(cx)[0];
+        let view = cx
+            .read(|cx| win.workspace.read(cx).state(group).unwrap().facet.clone())
+            .expect("a collection");
+        view.update(cx, |view, cx| view.toggle(tag("b"), cx));
+        cx.run_until_parked();
+        win.after_debounce(cx);
+        let saved = session_of(&v).load().expect("a record");
+        assert_ne!(saved, record);
+        assert_eq!(saved, win.record(cx));
+        let GroupTreeRecord::Split { children, .. } = &saved.tabs[0].tree else {
+            panic!("a split");
+        };
+        let GroupTreeRecord::Leaf {
+            collection: Some(c),
+            ..
+        } = &children[0]
+        else {
+            panic!("a collection leaf: {children:?}");
+        };
+        assert!(c.facets.contains(&FacetPick::from(&tag("b"))), "{c:?}");
+    }
+
+    #[gpui_kit::test]
+    fn a_new_query_in_the_group_triggers_a_session_write(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let record = split(vec![coll_leaf("#a", &[]), leaf(Some("m.md"))]);
+        let (v, win) = restored(cx, &rt, &record, 1);
+        win.after_debounce(cx);
+        let group = win.groups_of_shown(cx)[0];
+        win.with(cx, |w, cx| {
+            w.open_collection(group, "#b".into(), vec![], cx)
+        });
+        drive(&rt, cx, |cx| {
+            win.coll_in(group, cx).is_some_and(|(q, _)| q == "#b")
+        });
+        win.after_debounce(cx);
+        assert_eq!(
+            session_of(&v).load(),
+            Some(split(vec![coll_leaf("#b", &[]), leaf(Some("m.md"))]))
+        );
+    }
+
+    /// Started on `n.md` beside `m.md` (active), the split written.
+    fn n_beside_m(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Win, GroupId) {
+        let v = rt.block_on(test_vault(CNOTES, &[]));
+        let win = Win(open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("n.md"))),
+            v.settings.clone(),
+        ));
+        drive(rt, cx, |cx| !win.indexing(cx) && win.all_idle(cx));
+        win.with(cx, |w, cx| {
+            w.open_note_in_split(path("m.md"), Axis::Horizontal, cx)
+        });
+        drive(rt, cx, |cx| win.all_idle(cx) && win.text(cx) == "plain #a");
+        win.after_debounce(cx);
+        let first = win.groups_of_shown(cx)[0];
+        (v, win, first)
+    }
+
+    /// The first group's leaf in `record`'s first tab.
+    fn first_leaf(record: &SessionRecord) -> GroupTreeRecord {
+        let GroupTreeRecord::Split { children, .. } = &record.tabs[0].tree else {
+            panic!("a split: {record:?}");
+        };
+        children[0].clone()
+    }
+
+    /// A write while the query is still loading (a real change, then a
+    /// quit's write) records the collection the group is opening, with its
+    /// query and picks: not the note it still holds.
+    #[gpui_kit::test]
+    fn a_write_during_the_load_keeps_the_collection(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (v, win, first) = n_beside_m(cx, &rt);
+        win.with(cx, |w, cx| {
+            w.open_collection(first, "#a".into(), vec![tag("a")], cx);
+            // A real change while it loads.
+            w.new_tab(cx);
+        });
+        assert_eq!(win.coll_in(first, cx), None, "still loading");
+        let record = win.record(cx);
+        assert_eq!(first_leaf(&record), coll_leaf("#a", &["a"]));
+        // A quit's write in that window keeps it on disk.
+        win.with(cx, |w, cx| w.write_session_now(cx));
+        assert_eq!(session_of(&v).load(), Some(record.clone()));
+        // Once it shows, the record is the same.
+        drive(&rt, cx, |cx| win.coll_in(first, cx).is_some());
+        assert_eq!(win.record(cx), record);
+    }
+
+    /// A note opened in the group while its collection loads replaces the
+    /// load: the record holds the note, not the collection.
+    #[gpui_kit::test]
+    fn a_load_replaced_by_a_note_open_drops_the_pending_collection(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (v, win, first) = n_beside_m(cx, &rt);
+        win.with(cx, |w, cx| {
+            w.open_collection(first, "#a".into(), vec![], cx);
+            w.open_note_in(first, path("o.md"), cx);
+        });
+        assert_eq!(first_leaf(&win.record(cx)), leaf(Some("o.md")));
+        win.with(cx, |w, cx| w.write_session_now(cx));
+        assert_eq!(
+            first_leaf(&session_of(&v).load().unwrap()),
+            leaf(Some("o.md"))
+        );
+        drive(&rt, cx, |cx| {
+            win.all_idle(cx) && win.note_in(first, cx) == Some(path("o.md"))
+        });
+        for _ in 0..10 {
+            rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(5)));
+            cx.run_until_parked();
+        }
+        assert_eq!(win.coll_in(first, cx), None);
+        assert_eq!(first_leaf(&win.record(cx)), leaf(Some("o.md")));
+    }
+
+    #[gpui_kit::test]
+    fn a_collection_only_record_lands_on_the_session_not_the_history(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let v = rt.block_on(test_vault(CNOTES, &["o.md"]));
+        let record = SessionRecord::new(
+            vec![TabRecord {
+                tree: coll_leaf("#a", &[]),
+                active: 0,
+            }],
+            0,
+        );
+        let win = restore_in(cx, &rt, &v, &record, 1);
+        let group = win.groups_of_shown(cx)[0];
+        assert_eq!(win.coll_members(group, cx), ["/m.md", "/n.md"]);
+        assert_eq!(
+            win.note_in(group, cx),
+            None,
+            "the history's note did not open"
+        );
+        assert_eq!(win.record(cx), record);
+    }
+
+    #[gpui_kit::test]
+    fn a_note_query_restores_the_same_notes_whatever_note_is_open(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        // The stored query is the resolved one: no reference to a note.
+        let record = SessionRecord::new(
+            vec![TabRecord {
+                tree: coll_leaf("#a", &[]),
+                active: 0,
+            }],
+            0,
+        );
+        let mut seen = Vec::new();
+        for newest in ["n.md", "o.md"] {
+            let v = rt.block_on(test_vault(CNOTES, &[newest]));
+            let win = restore_in(cx, &rt, &v, &record, 1);
+            let group = win.groups_of_shown(cx)[0];
+            seen.push(win.coll_members(group, cx));
+        }
+        assert_eq!(seen[0], seen[1]);
+        assert_eq!(seen[0], ["/m.md", "/n.md"]);
+    }
 }

@@ -31,6 +31,9 @@ pub(crate) const NOT_YET: &str = "Not in the desktop app yet";
 pub(crate) const SOON: &str = "Coming soon";
 /// The command acts on the open note and there is none.
 pub(crate) const NO_NOTE: &str = "No note open";
+/// The facet toggle in a collection group: it shows no one note, so there
+/// is no editor to go back to.
+pub(crate) const NO_EDITOR_TO_RETURN_TO: &str = "No editor to go back to";
 /// The command needs a workspace (a vault) and the window has none.
 pub(crate) const NO_WORKSPACE: &str = "No workspace open";
 /// The command edits or searches the note and the note did not have the

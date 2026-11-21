@@ -310,7 +310,7 @@ impl Workspace {
         // The old workspace's arrangement, under the old workspace, before
         // anything of it goes; the next starts from one empty group and
         // its own record.
-        self.write_session_now();
+        self.write_session_now(cx);
         self.leave_vault(window, cx);
         self.replace_region(EditorRegion::new(), cx);
         // The editor engine the settings name now (the setup or the
@@ -385,6 +385,12 @@ impl Workspace {
             // The attachment view, with its subscription.
             state.attachment = None;
             state._attachment_events = None;
+            // The facet view's reads (the view went with the note).
+            state.facet_loading = None;
+            state.collection_pending = None;
+            state.facet_flushing = None;
+            state.facet_reading = None;
+            state.collection_reading.clear();
         }
         // Every task over the old vault: dropped, so none lands here.
         self.reopening = None;

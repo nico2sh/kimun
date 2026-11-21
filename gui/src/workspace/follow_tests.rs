@@ -288,9 +288,9 @@ fn a_modifier_click_on_a_link_follows_it(cx: &mut TestAppContext) {
         false,
     );
     let on_link = started.cell(7, 0, cx);
+    // The harness installs the Linux keymap, so the primary key is Ctrl on every OS.
     let held = gpui_kit::Modifiers {
-        control: !cfg!(target_os = "macos"),
-        platform: cfg!(target_os = "macos"),
+        control: true,
         ..Default::default()
     };
     cx.update_window(started.handle, |_, window, cx| {

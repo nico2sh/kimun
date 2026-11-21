@@ -65,6 +65,8 @@ pub(crate) const TAB_CLOSE_ID: &str = "tab-close";
 const TAB_TRAIL_ID: &str = "tab-trail";
 /// A label's id prefix, with the tab's position.
 const TAB_LABEL_ID: &str = "tab-label";
+/// The facet mark on a tab pill (id prefix, with the tab's position).
+pub(crate) const TAB_FACET_MARK_ID: &str = "tab-facet-mark";
 /// The prefix of the clip box ids ([`tab_box_id`]).
 const TAB_BOX_ID: &str = "tab-box";
 /// A label's drop zone's id prefix, with the tab's position.
@@ -78,7 +80,7 @@ const NEW_ICON: IconName = IconName::Plus;
 /// Every glyph the strip draws, for the bundle test: an icon the asset
 /// source does not carry paints nothing.
 #[cfg(test)]
-pub(crate) const ICONS: [IconName; 2] = [chrome::CLOSE_ICON, NEW_ICON];
+pub(crate) const ICONS: [IconName; 3] = [chrome::CLOSE_ICON, NEW_ICON, chrome::FACET_ICON];
 /// The widest a pill grows before its name is cut with an ellipsis.
 const LABEL_MAX_REMS: f32 = 14.;
 /// A pill's height (and the plus button's size): a comfortable click
@@ -172,12 +174,17 @@ pub(crate) fn tab_drop_id(index: usize) -> ElementId {
 }
 
 /// What `group` shows, named as the Footer names it: the attachment in
-/// place of the editor, else the note. `None` for an empty group.
+/// place of the editor, else the note, else a facet view's source (no
+/// prefix), or a collection's query. `None` for an empty group.
 pub(super) fn group_name(workspace: &Workspace, group: GroupId, cx: &App) -> Option<String> {
     let state = workspace.state(group)?;
+    // A collection is named by its query.
+    if let Some(query) = workspace.collection_query_in(group, cx) {
+        return Some(query);
+    }
     let shown: Option<VaultPath> = match state.attachment.as_ref() {
         Some(view) => Some(view.read(cx).path().clone()),
-        None => state.notes.as_ref().and_then(|h| h.note.clone()),
+        None => workspace.shown_note_in(group, cx),
     };
     shown.map(|path| path.get_name())
 }
@@ -199,6 +206,16 @@ pub(crate) fn tab_label(workspace: &Workspace, tab: TabId, cx: &App) -> SharedSt
         0 | 1 => name.into(),
         n => format!("{name} +{}", n - 1).into(),
     }
+}
+
+/// Whether the group `tab` is named for shows a facet view: its tab wears
+/// the facet mark.
+pub(crate) fn tab_shows_facet(workspace: &Workspace, tab: TabId, cx: &App) -> bool {
+    let region = workspace.layout.region();
+    region
+        .active_group_of(tab)
+        .or_else(|| region.groups(tab).first().copied())
+        .is_some_and(|group| workspace.facet_group_in(group, cx))
 }
 
 /// Whether any group of `tab` has unsaved text: its label carries the dot.
@@ -509,6 +526,7 @@ impl Workspace {
         match self.layout.region_mut().close_group(group) {
             Some(CloseOutcome::Emptied) => {
                 self.forget_attachment_request(group);
+                self.forget_facet_request(group);
                 self.drop_attachment_in(group);
                 self.release_note_in(group, cx);
             }
@@ -789,6 +807,7 @@ impl Workspace {
             );
         }
         let dirty = !leaving && tab_dirty(self, tab, cx);
+        let marked = !leaving && tab_shows_facet(self, tab, cx);
         let hover = theme::hover_background(&theme);
         let spoken = chrome::spoken_label(&label, dirty);
         let presence = self.motion.borrow().presence(MotionKey::Tab(tab));
@@ -865,6 +884,12 @@ impl Workspace {
                 .on_click(cx.listener(
                     move |this, _: &ClickEvent, _: &mut Window, cx| this.show_tab(tab, cx),
                 ))
+            })
+            .when(marked, |pill| {
+                pill.child(chrome::facet_mark(chrome::indexed_id(
+                    TAB_FACET_MARK_ID,
+                    at,
+                )))
             })
             .child(
                 div()

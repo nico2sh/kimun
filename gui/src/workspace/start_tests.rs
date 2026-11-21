@@ -255,6 +255,7 @@ pub(super) fn open_started_motion(
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
         cx.set_reduce_motion(reduce);
     });
@@ -639,6 +640,7 @@ fn a_flash_without_a_toast_layer_is_dropped(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
         keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
     });
     let layout =

@@ -18,6 +18,7 @@
 //! history's `<workspace>.txt`.
 
 use kimun_core::nfs::VaultPath;
+use kimun_core::note::{Facet, FacetKind};
 use kimun_core::system::{self, SystemError, SystemPath};
 use serde::{Deserialize, Serialize};
 
@@ -59,9 +60,18 @@ impl From<AxisRecord> for crate::logic::layout::Axis {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GroupTreeRecord {
     /// One editor group: the note it shows, or `None` for an empty group.
+    /// With `facets` and a note, a facet view of that note with those facets
+    /// picked. An older build, which does not know the field, reads it as a
+    /// plain note.
     Leaf {
         #[serde(with = "note_as_string", default)]
         note: Option<VaultPath>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        facets: Option<Vec<FacetPick>>,
+        /// With no note, a collection group: the resolved query it shows and
+        /// the facets picked. An older build reads it as an empty group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collection: Option<CollectionRecord>,
     },
     /// Children laid out along `axis` by relative `weights` (one per child).
     Split {
@@ -69,6 +79,54 @@ pub enum GroupTreeRecord {
         weights: Vec<f64>,
         children: Vec<GroupTreeRecord>,
     },
+}
+
+/// A collection group as stored: the **resolved** query (so a restore shows
+/// the same notes whichever note is open then) and the picked facets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionRecord {
+    pub query: String,
+    #[serde(default)]
+    pub facets: Vec<FacetPick>,
+}
+
+/// A picked facet as stored: its kind (`"heading"`, `"tag"` or `"link"`) and
+/// its already normalized key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FacetPick {
+    pub kind: String,
+    pub key: String,
+}
+
+impl From<&Facet> for FacetPick {
+    fn from(facet: &Facet) -> Self {
+        let kind = match facet.kind {
+            FacetKind::Heading => "heading",
+            FacetKind::Tag => "tag",
+            FacetKind::NoteLink => "link",
+        };
+        Self {
+            kind: kind.to_string(),
+            key: facet.key.clone(),
+        }
+    }
+}
+
+impl FacetPick {
+    /// The facet this pick names, or `None` for a kind this build does not
+    /// know. Built as is: the stored key is already normalized.
+    pub fn to_facet(&self) -> Option<Facet> {
+        let kind = match self.kind.as_str() {
+            "heading" => FacetKind::Heading,
+            "tag" => FacetKind::Tag,
+            "link" => FacetKind::NoteLink,
+            _ => return None,
+        };
+        Some(Facet {
+            kind,
+            key: self.key.clone(),
+        })
+    }
 }
 
 impl GroupTreeRecord {

@@ -152,8 +152,9 @@ pub(crate) fn picker_row_id(row: &FileListEntry) -> SharedString {
 pub(crate) enum PickerKind {
     /// Every note, and `Create:`.
     Finder,
-    /// The notes a followed link names.
-    Links,
+    /// The notes a followed link names; the pick opens in a new tab when
+    /// `new_tab` (a follow from a facet view, ADR-0061).
+    Links { new_tab: bool },
     /// The vault's query search, with a preview (the search browser).
     Search,
     /// The workspace's saved searches (rows: [`SearchItem`](kimun_notes::logic::saved_search::SearchItem)).
@@ -236,6 +237,12 @@ impl PickerRow for FileListEntry {
             (PickerKind::Search, PickerOpen::Open(path)) => {
                 workspace.search_open(path, emphasis, window, cx)
             }
+            (PickerKind::Links { new_tab: true }, PickerOpen::Open(path)) => {
+                workspace.close_modal(window, cx);
+                workspace.focus_panel(Panel::Editor, window, cx);
+                workspace.open_note_in_new_tab(path, cx);
+                false
+            }
             (_, open) => workspace.picker_chose(open, window, cx),
         }
     }
@@ -289,7 +296,7 @@ impl<R: PickerRow> NotePicker<R> {
             .map(|vault| InputAutocomplete::new(vault, redraw.clone()));
         let placeholder = match kind {
             PickerKind::Finder => "Find a note, or name a new one",
-            PickerKind::Links => "Filter the matches",
+            PickerKind::Links { .. } => "Filter the matches",
             PickerKind::Search => "Search notes: words, #tag, <note, prop:key=value",
             PickerKind::SavedSearches => "Filter by name or number",
         };
@@ -587,7 +594,9 @@ impl<R: PickerRow> NotePicker<R> {
     fn click_policy(&self) -> ClickPolicy {
         match self.kind {
             PickerKind::Search => ClickPolicy::Select,
-            PickerKind::Finder | PickerKind::Links | PickerKind::SavedSearches => ClickPolicy::Open,
+            PickerKind::Finder | PickerKind::Links { .. } | PickerKind::SavedSearches => {
+                ClickPolicy::Open
+            }
         }
     }
 
@@ -737,7 +746,7 @@ impl<R: PickerRow> Render for NotePicker<R> {
         };
         let (label, rows_label) = match self.kind {
             PickerKind::Finder => ("Find a note, or name a new one", "Notes"),
-            PickerKind::Links => ("Filter the matching notes", "Notes"),
+            PickerKind::Links { .. } => ("Filter the matching notes", "Notes"),
             PickerKind::Search => ("Search notes", "Notes"),
             PickerKind::SavedSearches => ("Filter the saved searches", "Saved searches"),
         };
@@ -1006,11 +1015,13 @@ impl Workspace {
     }
 
     /// Open the link chooser: every note the link `target` names
-    /// (`results`), to pick one. Refused while a modal is open.
+    /// (`results`), to pick one, which opens in a new tab when `new_tab`.
+    /// Refused while a modal is open.
     pub(crate) fn open_link_chooser(
         &mut self,
         target: &str,
         results: Vec<(NoteEntryData, NoteContentData)>,
+        new_tab: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1020,7 +1031,7 @@ impl Workspace {
         let title = format!("{} notes match \"{target}\"", results.len());
         let source = Arc::new(LinkResultsProvider::from_results(results));
         self.open_note_picker(
-            PickerKind::Links,
+            PickerKind::Links { new_tab },
             source,
             Some(title),
             None,
@@ -1113,7 +1124,7 @@ impl Workspace {
         };
         let modal = match kind {
             PickerKind::Finder => ModalKind::Finder,
-            PickerKind::Links => ModalKind::LinkChooser,
+            PickerKind::Links { .. } => ModalKind::LinkChooser,
             PickerKind::Search => ModalKind::Search,
             PickerKind::SavedSearches => ModalKind::SavedSearches,
         };

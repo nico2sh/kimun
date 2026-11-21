@@ -14,6 +14,10 @@
 //! this file shapes it, caches the result per row content
 //! ([`crate::row_cache`]), and draws it. The face comes from
 //! [`EditorFonts`], which makes bold real (or synthetic) on every machine.
+//!
+//! The pointer is the I-beam over the text and the pointing hand over every
+//! follow target, in a read-only editor as in one that edits, with or
+//! without a modifier held.
 
 use std::rc::Rc;
 
@@ -276,6 +280,24 @@ impl EditorElement {
             }
         });
     }
+
+    /// The layout of a text-sized editor: its full width, and the height
+    /// its measure finds for its wrapped text. A measured node has no
+    /// children, and a read-only editor never opens the popup.
+    fn request_measured(&self, window: &mut Window, cx: &mut App) -> LayoutId {
+        debug_assert!(
+            self.view.read(cx).autocomplete_state().is_none(),
+            "a text-sized editor opens no popup"
+        );
+        // A new frame: its first measure lays the text out again.
+        self.view.update(cx, |view, _| view.measured_width = None);
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        let view = self.view.clone();
+        window.request_measured_layout(style, move |known, available, window, cx| {
+            view.update(cx, |view, cx| view.measure(known, available, window, cx))
+        })
+    }
 }
 
 impl IntoElement for EditorElement {
@@ -300,7 +322,8 @@ pub struct EditorPrepaint {
     /// The text rows only (the pane minus the mode line): where the pointer
     /// is an I-beam. The mode line keeps the default arrow.
     text_hitbox: Option<Hitbox>,
-    /// Cells drawing a follow target: a pointing hand there.
+    /// Cells drawing a follow target: a pointing hand there, in every
+    /// editor, read-only or not.
     target_hitboxes: Vec<Hitbox>,
     text_area: Bounds<Pixels>,
     target_areas: Vec<Bounds<Pixels>>,
@@ -352,6 +375,9 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
+        if self.view.read(cx).sized_to_text {
+            return (self.request_measured(window, cx), None);
+        }
         // Fill the pane; the grid is whatever fits.
         let mut style = Style::default();
         style.size.width = relative(1.).into();
@@ -392,7 +418,14 @@ impl Element for EditorElement {
             let base_font = fonts.face(false, false);
             let cells =
                 CellMetrics::from_text_system(&text_system, &base_font, font_size, line_height);
-            let (cols, pane_rows) = cells.fit(bounds.size.width.into(), bounds.size.height.into());
+            let (fit_cols, pane_rows) =
+                cells.fit(bounds.size.width.into(), bounds.size.height.into());
+            // A text-sized editor draws at the columns its measure laid out
+            // at: its height was measured for that wrap.
+            let cols = match view.measured_cols {
+                Some(cols) if view.sized_to_text => cols,
+                _ => fit_cols,
+            };
             let cell_bounds = |col: u16, row: u16, n: u16| {
                 Bounds::new(
                     point(
@@ -416,14 +449,24 @@ impl Element for EditorElement {
                 .map_or(0, find_bar::rows)
                 .min(pane_rows - chrome);
             let rows = pane_rows - chrome - bar_rows;
-            view.editor.prepare_frame(cols, rows);
+            if view.sized_to_text {
+                // When the measure prepared this frame at these columns, with
+                // a viewport that shows every row, nothing is left to do. The
+                // guard assumes no edit since the measure: see
+                // `measured_this_frame`.
+                if !view.measured_this_frame(cols) {
+                    view.prepare_counted(cols, rows, self.view.entity_id());
+                }
+            } else {
+                view.editor.prepare_frame(cols, rows);
+            }
             // The bar has the keyboard while open: no caret in the text.
             let bar_open = view.editor.find_open();
             let frame = view
                 .editor
                 .session()
                 .display
-                .frame(cols, focused && !bar_open);
+                .frame(cols, focused && !bar_open && !view.read_only);
             let theme_in_effect = theme::current(view_cx);
             let theme = &*theme_in_effect;
 
@@ -660,6 +703,8 @@ impl Element for EditorElement {
                 caret_glyph: caret_glyph.as_ref().map(|g| g.at),
                 find_bar: bar_paint,
                 popup: None,
+                #[cfg(test)]
+                hand_areas: target_areas.clone(),
             });
             // The popup hangs from the caret's cell: nowhere to hang from
             // (scrolled off, the find bar has the keyboard), nothing drawn.
@@ -824,7 +869,10 @@ impl Element for EditorElement {
             let view = self.view.clone();
             let hitbox = prepaint.hitbox.clone();
             move |event: &ScrollEvent, phase, window, cx| {
-                if phase.bubble() && hitbox.should_handle_scroll(window) {
+                // A read-only editor (a facet view's chunk) is sized to its
+                // text: the wheel scrolls the column it sits in.
+                if phase.bubble() && hitbox.should_handle_scroll(window) && !view.read(cx).read_only
+                {
                     view.update(cx, |v, cx| {
                         v.scroll_wheel(event, origin, &cells, window, cx)
                     });

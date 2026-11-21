@@ -129,6 +129,7 @@ impl Scope {
             ActionShortcuts::MoveViewToNeighbour(_) => Scope::Everywhere,
             ActionShortcuts::YankRow
             | ActionShortcuts::SaveCurrentQuery
+            | ActionShortcuts::OpenQueryAsCollection
             | ActionShortcuts::OpenSortDialog => Scope::Shell,
             ActionShortcuts::QuerySyntax | ActionShortcuts::QueryBuilder => Scope::Query,
             ActionShortcuts::OpenQueryInSidebar => Scope::Browser,
@@ -352,6 +353,13 @@ fn default_chords(action: &ActionShortcuts, platform: Platform) -> Option<&'stat
         A::NewDirectory => &["primary+shift+n"],
         // The TUI's note-or-directory menu; the desktop has the two chords.
         A::NewEntry => return None,
+        // The facet view toggle (ADR-0061): reached from the group header's
+        // button, the note menu and the palette; no chord until the user
+        // binds one.
+        A::ToggleFacetView => return None,
+        // The collection commands (the Find button, the palette): no chord
+        // until the user binds one.
+        A::OpenQueryAsCollection | A::RefreshCollection => return None,
     })
 }
 
@@ -742,6 +750,15 @@ pub fn active(cx: &App) -> Rc<Keymap> {
     cx.try_global::<ActiveKeymap>()
         .map(|active| active.0.clone())
         .expect("keymap::init must run before any view resolves a key")
+}
+
+/// The primary modifier of the keymap in effect: Cmd for the macOS table,
+/// Ctrl for the Linux and Windows one. A view that matches a primary chord
+/// itself (Cmd+Z in the Facet view, Cmd+click to follow) reads it here, not
+/// from [`Platform::current`], so it always agrees with the chords the keymap
+/// binds.
+pub(crate) fn primary(cx: &App) -> Mods {
+    active(cx).platform.primary()
 }
 
 /// `key` written the platform's way (`Ctrl+Shift+B`, `⌘⇧B`).
