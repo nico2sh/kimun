@@ -81,6 +81,13 @@ pub(crate) const FILES_SORT_ID: &str = "files-sort";
 pub(crate) const FILES_NEW_ID: &str = "files-new";
 pub(crate) const FILES_NEW_NOTE_ID: &str = "files-new-note";
 pub(crate) const FILES_NEW_DIRECTORY_ID: &str = "files-new-directory";
+pub(crate) const FILES_NEW_JOURNAL_ID: &str = "files-new-journal";
+pub(crate) const FILES_NEW_QUICK_NOTE_ID: &str = "files-new-quick-note";
+/// The `New` menu's journal and quick note rows.
+/// The `New` button's tooltip and accessibility label.
+pub(crate) const NEW_MENU_LABEL: &str = "New note, directory, journal or quick note";
+pub(crate) const JOURNAL_LABEL: &str = "Today's journal";
+pub(crate) const QUICK_NOTE_LABEL: &str = "Quick note";
 
 /// A note row's height, in rems: two lines of small text and their gap
 /// (a title over its filename). Every FILES row has it (the list is
@@ -137,6 +144,9 @@ pub(crate) const ICONS: [IconName; 7] = [
 pub(crate) enum FilesEvent {
     /// Open this note in the editor and give it the keyboard.
     Open(VaultPath),
+    /// The `New` menu's journal and quick note rows: run what the chord
+    /// runs.
+    Command(ActionShortcuts),
     /// The `+` menu or a `Create:` row asked for the new note / directory
     /// dialog; `initial` is the name the row offered.
     NewEntry {
@@ -677,18 +687,22 @@ impl FilesPane {
             .icon(IconName::Plus)
             .label("New")
             .small()
-            .accessibility_label("New note or directory")
+            .accessibility_label(NEW_MENU_LABEL)
             .tooltip(super::chrome::tooltip_with_chord(
-                "New note or directory",
+                NEW_MENU_LABEL,
                 &ActionShortcuts::NewNote,
                 cx,
             ))
             .dropdown_menu(move |menu, _, _| {
-                let item = |kind: NewEntryKind, id: &'static str, action: ActionShortcuts| {
+                let item = |title: &'static str,
+                            id: &'static str,
+                            action: ActionShortcuts,
+                            event: FilesEvent| {
                     let owner = owner.clone();
+                    let hint_action = action.clone();
                     PopupMenuItem::element(move |_, cx| {
                         let theme = theme::current(cx);
-                        let hint = keymap::chord_label(cx, &action);
+                        let hint = keymap::chord_label(cx, &hint_action);
                         div()
                             .id(id)
                             .test_support()
@@ -697,7 +711,7 @@ impl FilesPane {
                             .justify_between()
                             .gap_4()
                             .w_full()
-                            .child(kind.title())
+                            .child(title)
                             .children(hint.map(|chord| {
                                 div()
                                     .text_xs()
@@ -709,27 +723,40 @@ impl FilesPane {
                         // After the menu has given the keyboard back, so the
                         // dialog it opens returns it there too.
                         let owner = owner.clone();
+                        let event = event.clone();
                         window.defer(cx, move |_, cx| {
-                            owner
-                                .update(cx, |_, cx| {
-                                    cx.emit(FilesEvent::NewEntry {
-                                        kind,
-                                        initial: None,
-                                    })
-                                })
-                                .ok();
+                            owner.update(cx, |_, cx| cx.emit(event)).ok();
                         });
                     })
                 };
+                let entry = |kind: NewEntryKind| FilesEvent::NewEntry {
+                    kind,
+                    initial: None,
+                };
                 menu.item(item(
-                    NewEntryKind::Note,
+                    NewEntryKind::Note.title(),
                     FILES_NEW_NOTE_ID,
                     ActionShortcuts::NewNote,
+                    entry(NewEntryKind::Note),
                 ))
                 .item(item(
-                    NewEntryKind::Directory,
+                    NewEntryKind::Directory.title(),
                     FILES_NEW_DIRECTORY_ID,
                     ActionShortcuts::NewDirectory,
+                    entry(NewEntryKind::Directory),
+                ))
+                .separator()
+                .item(item(
+                    JOURNAL_LABEL,
+                    FILES_NEW_JOURNAL_ID,
+                    ActionShortcuts::NewJournal,
+                    FilesEvent::Command(ActionShortcuts::NewJournal),
+                ))
+                .item(item(
+                    QUICK_NOTE_LABEL,
+                    FILES_NEW_QUICK_NOTE_ID,
+                    ActionShortcuts::QuickNote,
+                    FilesEvent::Command(ActionShortcuts::QuickNote),
                 ))
             })
     }
@@ -1304,6 +1331,9 @@ impl Workspace {
             }
             FilesEvent::NewEntry { kind, initial } => {
                 self.open_new_entry_here(*kind, initial.clone(), window, cx)
+            }
+            FilesEvent::Command(action) => {
+                self.workspace_command(action, None, window, cx);
             }
             FilesEvent::OpenAttachment(path) => {
                 self.focus_panel(Panel::Editor, window, cx);
