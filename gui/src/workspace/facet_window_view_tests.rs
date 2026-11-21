@@ -351,7 +351,7 @@ fn a_forged_height_trips_the_table_check(cx: &mut TestAppContext) {
 
 /// How many layouts the pieces not drawn in the last frame asked for
 /// since the last call.
-fn undrawn_layouts(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> usize {
+pub(super) fn undrawn_layouts(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> usize {
     let log = measure_probe::take();
     let drawn = drawn(view, cx);
     let chunks = view.read_with(cx, |v, _| v.chunks().to_vec());
@@ -382,18 +382,17 @@ fn a_steady_or_scroll_frame_lays_out_no_undrawn_piece(cx: &mut TestAppContext) {
     );
 }
 
-/// Piece `i`'s rows in the height table, and its real wrap at the width
-/// the table measured at.
-fn table_and_real(
+/// Piece `i`'s rows in the height table, and its real wrap at the editor
+/// width the table measured at.
+pub(super) fn table_and_real(
     view: &Entity<FacetView>,
     i: usize,
     cx: &mut VisualTestContext,
 ) -> (Option<usize>, usize) {
     cx.update(|window, cx| {
         let (rows, width) = view.read(cx).table_rows(i, cx);
-        let pane = window.rem_size() * 2.;
         let piece = view.read(cx).chunks()[i].clone();
-        let real = piece.update(cx, |p, cx| p.rows_at(width - pane, window, cx));
+        let real = piece.update(cx, |p, cx| p.rows_at(width, window, cx));
         (rows, real)
     })
 }

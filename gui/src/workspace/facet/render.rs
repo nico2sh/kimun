@@ -329,10 +329,28 @@ impl FacetView {
         // takes it once drawn. Else, when the stop with the keyboard went
         // away (`Undo` once used), the view takes it.
         let gone = self.stops.get_mut().end();
-        let asked = self
-            .focus_after
-            .take()
-            .and_then(|stop| self.stops.get_mut().handle(&stop));
+        let asked = self.focus_after.take().and_then(|stop| {
+            let handle = self.stops.get_mut().handle(&stop);
+            // A stop not drawn yet (one that the next frame scrolls in)
+            // gets one more frame, then the request goes. The retry takes
+            // the keyboard only where it was when the request waited.
+            let now = window.focused(cx);
+            let retry = self
+                .focus_retry
+                .take()
+                .filter(|(waited, _)| *waited == stop);
+            match retry {
+                Some((_, at)) if at != now => return None,
+                Some(_) => {}
+                None if handle.is_none() => {
+                    self.focus_retry = Some((stop.clone(), now));
+                    self.focus_after = Some(stop);
+                    window.request_animation_frame();
+                }
+                None => {}
+            }
+            handle
+        });
         if let Some(handle) = asked {
             window.focus(&handle, cx);
         } else if gone {

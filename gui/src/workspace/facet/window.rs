@@ -48,10 +48,9 @@ pub(crate) struct Shape {
     pub tail_hidden: bool,
 }
 
-/// The keys a measured row count is good for.
+/// What a measured row count is good for besides the width.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Keys {
-    width: Pixels,
     font: Pixels,
     rem: Pixels,
     /// A hash of the editor face's family inputs.
@@ -69,6 +68,8 @@ type Slot = Option<(usize, PieceId, EditStamp)>;
 #[derive(Default)]
 pub(crate) struct Heights {
     keys: Option<Keys>,
+    /// The editor width the rows were measured at; `None` until known.
+    width: Option<Pixels>,
     metrics: Metrics,
     shapes: Vec<Shape>,
     rows: Vec<Slot>,
@@ -80,8 +81,40 @@ pub(crate) struct Heights {
 }
 
 impl Heights {
-    /// Use these keys and metrics. New keys clear every row count; the
-    /// result says whether they did.
+    /// Use this font, rem, face and these metrics. A new font, rem or face
+    /// clears every row count; the result says whether it did.
+    pub(crate) fn set_metrics(&mut self, font: Pixels, rem: Pixels, face: u64, m: Metrics) -> bool {
+        if self.metrics != m {
+            self.touch();
+        }
+        self.metrics = m;
+        let keys = Some(Keys { font, rem, face });
+        let old = std::mem::replace(&mut self.keys, keys);
+        old.is_some() && old != keys && self.clear()
+    }
+
+    /// The editor width the rows are measured at. A new width clears every
+    /// row count; the result says whether it did. A width of 0 is no
+    /// measure and changes nothing, and so does the first width known: the
+    /// rows recorded before it were measured at it.
+    pub(crate) fn set_width(&mut self, width: Pixels) -> bool {
+        if width <= px(0.) {
+            return false;
+        }
+        // Two sums of the same width can differ in their last bit.
+        let same = |old: Pixels| (old - width).abs() < px(0.01);
+        match self.width.replace(width) {
+            None => false,
+            Some(old) if same(old) => {
+                self.width = Some(old);
+                false
+            }
+            Some(_) => self.clear(),
+        }
+    }
+
+    /// Both steps at once (tests).
+    #[cfg(test)]
     pub(crate) fn fit(
         &mut self,
         width: Pixels,
@@ -90,20 +123,12 @@ impl Heights {
         face: u64,
         m: Metrics,
     ) -> bool {
-        let keys = Some(Keys {
-            width,
-            font,
-            rem,
-            face,
-        });
-        if self.metrics != m {
-            self.touch();
-        }
-        self.metrics = m;
-        if self.keys == keys {
-            return false;
-        }
-        self.keys = keys;
+        let metrics = self.set_metrics(font, rem, face, m);
+        self.set_width(width) || metrics
+    }
+
+    /// Forget every row count. True.
+    fn clear(&mut self) -> bool {
         self.rows.iter_mut().for_each(|row| *row = None);
         self.touch();
         true
@@ -264,9 +289,10 @@ impl Heights {
         self.stale.get()
     }
 
-    /// The width the rows were measured at.
+    /// The editor width the rows were measured at; 0 until known (tests).
+    #[cfg(test)]
     pub(crate) fn width(&self) -> Pixels {
-        self.keys.map_or(px(0.), |keys| keys.width)
+        self.width.unwrap_or(px(0.))
     }
 
     /// The first piece that ends below `y`.
@@ -394,12 +420,17 @@ impl Element for Spacer {
                 return size(px(0.), heights.borrow().span(range.clone()));
             };
             let mut table = heights.borrow_mut();
-            table.fit(width, fit.font, fit.rem, fit.face, fit.metrics);
-            for (piece, i) in pieces.iter().zip(range.clone()) {
-                let (id, stamp) = (piece.entity_id().as_u64(), piece.read(cx).edit_stamp());
-                if table.rows(i, id, stamp).is_none() {
-                    let rows = piece.update(cx, |p, cx| p.rows_at(width - fit.pane, window, cx));
-                    table.set_rows(i, rows, id, stamp);
+            let inner = width - fit.pane;
+            // An editor with no width lays out nothing and stores no rows:
+            // one column gives far too many.
+            if inner > px(0.) {
+                table.set_width(inner);
+                for (piece, i) in pieces.iter().zip(range.clone()) {
+                    let (id, stamp) = (piece.entity_id().as_u64(), piece.read(cx).edit_stamp());
+                    if table.rows(i, id, stamp).is_none() {
+                        let rows = piece.update(cx, |p, cx| p.rows_at(inner, window, cx));
+                        table.set_rows(i, rows, id, stamp);
+                    }
                 }
             }
             size(width, table.span(range.clone()))

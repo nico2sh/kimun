@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 use gpui_kit::component::input::InputState;
-use gpui_kit::{App, Entity, Pixels, SharedString};
+use gpui_kit::{App, Entity, FocusHandle, Pixels, SharedString};
 use kimun_core::note::Facet;
 
 use super::keys::Stop;
@@ -116,13 +116,30 @@ impl FacetView {
         self.forged = extra;
     }
 
-    /// The rows the height table holds for piece `i` now, and the width
-    /// it measured at (tests).
+    /// The rows the height table holds for piece `i` now, and the editor
+    /// width it measured at (tests).
     pub(crate) fn table_rows(&self, i: usize, cx: &App) -> (Option<usize>, Pixels) {
         let heights = self.heights.borrow();
         let chunk = &self.chunks[i];
         let stamp = chunk.read(cx).edit_stamp();
         let rows = heights.rows(i, chunk.entity_id().as_u64(), stamp);
         (rows, heights.width())
+    }
+
+    /// How many piece editors were asked for the keyboard so far (tests).
+    pub(crate) fn focus_scans(&self) -> usize {
+        self.focus_scans.get()
+    }
+
+    /// The focus handle of piece `i`'s `Open note`, while it is drawn
+    /// (tests).
+    pub(crate) fn open_handle(&self, i: usize) -> Option<FocusHandle> {
+        self.stops.borrow().handle(&Stop::Open(i))
+    }
+
+    /// Ask that piece `i`'s `Open note` takes the keyboard once drawn
+    /// (tests).
+    pub(crate) fn ask_focus_open(&mut self, i: usize) {
+        self.focus_after = Some(Stop::Open(i));
     }
 }

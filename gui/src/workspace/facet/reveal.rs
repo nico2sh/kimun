@@ -18,7 +18,8 @@ use crate::workspace::facet_ui::ring_room;
 /// for a stop of the bar or the empty message.
 pub(super) fn stop_row(stop: &Stop, gaps: &[PieceGaps]) -> Option<Row> {
     match *stop {
-        Stop::Crumb(i, _) | Stop::Open(i) => Some(Row::Crumbs(i)),
+        // A stop of the last frame can name a piece a new plan dropped.
+        Stop::Crumb(i, _) | Stop::Open(i) => (i < gaps.len()).then_some(Row::Crumbs(i)),
         Stop::GapDown(g) | Stop::GapUp(g) | Stop::ShowAll(g) => {
             gaps.iter().enumerate().find_map(|(i, p)| {
                 (p.lead == Some(g))
@@ -51,26 +52,49 @@ pub(super) fn reveal_offset(
     }
 }
 
+/// The scroll offset that brings the next (`down`) or previous piece to
+/// the top, from the pieces' tops in the column (`tops`, in order), the
+/// column's offset now (`current`, ≥ 0) and how far it scrolls (`max`).
+/// `None` when no piece lies that way. Above the first piece (the column's
+/// inset) the first piece is the one shown: down goes to the second.
+pub(super) fn piece_offset(tops: &[f32], current: f32, max: f32, down: bool) -> Option<f32> {
+    let target = if down {
+        let current = current.max(tops.first().copied().unwrap_or(0.0));
+        tops.iter().copied().find(|&y| y > current + 0.5)
+    } else {
+        tops.iter().copied().rev().find(|&y| y < current - 0.5)
+    }?;
+    Some(target.clamp(0.0, max.max(0.0)))
+}
+
 impl FacetView {
     /// When a column stop took the keyboard since the last frame (by Tab
     /// most often), scroll the column so its row shows with its ring.
     /// Called before the drawn range is picked, so the range follows.
+    /// A stop that arrives while the column has no height yet waits for
+    /// the next frame, as long as it keeps the keyboard.
     pub(super) fn reveal_column(&self, gaps: &[PieceGaps], heights: &Heights, rem: Pixels) {
-        let row = self
-            .stops
-            .borrow()
-            .arrived()
-            .and_then(|stop| stop_row(stop, gaps));
-        if let Some(row) = row {
-            self.reveal_row(row, heights, rem);
+        let stop = {
+            let stops = self.stops.borrow();
+            let held = self.held_reveal.take().filter(|stop| stops.holds(stop));
+            stops.arrived().cloned().or(held)
+        };
+        let Some(stop) = stop else {
+            return;
+        };
+        if let Some(row) = stop_row(&stop, gaps)
+            && !self.reveal_row(row, heights, rem)
+        {
+            self.held_reveal.replace(Some(stop));
         }
     }
 
     /// Scroll the column by the least amount that shows `row` and its ring.
-    fn reveal_row(&self, row: Row, heights: &Heights, rem: Pixels) {
+    /// False when the column has no height to show it in.
+    fn reveal_row(&self, row: Row, heights: &Heights, rem: Pixels) -> bool {
         let viewport = self.scroll.bounds().size.height;
         if viewport <= px(0.) {
-            return;
+            return false;
         }
         // The table starts under the column's `py_3`.
         let pad = column_pad(rem);
@@ -80,6 +104,7 @@ impl FacetView {
         if let Some(y) = reveal_offset(span, -now.y, viewport, ring_room()) {
             self.scroll.set_offset(point(now.x, -y));
         }
+        true
     }
 
     /// Tab from the stop just before the column, or Shift+Tab (`back`) from
@@ -195,5 +220,32 @@ mod tests {
         assert_eq!(y, Some(px(183.)));
         let y = reveal_offset((px(250.), px(500.)), px(100.), px(100.), px(3.));
         assert_eq!(y, Some(px(247.)));
+    }
+}
+
+#[cfg(test)]
+mod piece_offset_tests {
+    use super::piece_offset;
+
+    const TOPS: [f32; 3] = [12.0, 200.0, 400.0];
+
+    #[test]
+    fn down_goes_to_the_first_piece_below_the_top() {
+        assert_eq!(piece_offset(&TOPS, 0.0, 1000.0, true), Some(200.0));
+        assert_eq!(piece_offset(&TOPS, 12.0, 1000.0, true), Some(200.0));
+        assert_eq!(piece_offset(&TOPS, 400.0, 1000.0, true), None);
+    }
+
+    #[test]
+    fn up_goes_to_the_last_piece_above_the_top() {
+        assert_eq!(piece_offset(&TOPS, 200.0, 1000.0, false), Some(12.0));
+        assert_eq!(piece_offset(&TOPS, 150.0, 1000.0, false), Some(12.0));
+        assert_eq!(piece_offset(&TOPS, 12.0, 1000.0, false), None);
+    }
+
+    #[test]
+    fn the_offset_stops_where_the_column_ends() {
+        assert_eq!(piece_offset(&TOPS, 0.0, 150.0, true), Some(150.0));
+        assert_eq!(piece_offset(&TOPS, 200.0, 300.0, true), Some(300.0));
     }
 }

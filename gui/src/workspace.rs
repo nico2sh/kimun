@@ -3919,6 +3919,8 @@ mod facet_tests;
 #[cfg(test)]
 mod facet_undo_tests;
 #[cfg(test)]
+mod facet_window_edge_tests;
+#[cfg(test)]
 mod facet_window_jump_tests;
 #[cfg(test)]
 mod facet_window_keys_tests;

@@ -163,6 +163,11 @@ impl Stops {
             .filter(|stop| self.before.as_ref() != Some(*stop))
     }
 
+    /// Whether `stop` had the keyboard when this frame began.
+    pub(super) fn holds(&self, stop: &Stop) -> bool {
+        self.focused.as_ref() == Some(stop)
+    }
+
     /// The stop that took the keyboard since the last frame began, while
     /// this frame draws it. A stop that went away (`Clear` after a click on
     /// it) is not one.
@@ -217,21 +222,6 @@ impl Stops {
             el
         }
     }
-}
-
-/// The scroll offset that brings the next (`down`) or previous piece to
-/// the top, from the pieces' tops in the column (`tops`, in order), the
-/// column's offset now (`current`, ≥ 0) and how far it scrolls (`max`).
-/// `None` when no piece lies that way. Above the first piece (the column's
-/// inset) the first piece is the one shown: down goes to the second.
-pub(super) fn piece_offset(tops: &[f32], current: f32, max: f32, down: bool) -> Option<f32> {
-    let target = if down {
-        let current = current.max(tops.first().copied().unwrap_or(0.0));
-        tops.iter().copied().find(|&y| y > current + 0.5)
-    } else {
-        tops.iter().copied().rev().find(|&y| y < current - 0.5)
-    }?;
-    Some(target.clamp(0.0, max.max(0.0)))
 }
 
 /// The view's keys on its root element. See the module docs.
@@ -297,11 +287,17 @@ impl FacetView {
         })
     }
 
-    /// Whether the keyboard is inside a piece (its read-only editor).
-    fn piece_has_keyboard(&self, window: &Window, cx: &App) -> bool {
-        self.chunks
-            .iter()
-            .any(|chunk| chunk.read(cx).focus_handle(cx).contains_focused(window, cx))
+    /// The piece whose read-only editor holds the keyboard. Nothing is
+    /// scanned while the keyboard is outside the view.
+    pub(super) fn focused_piece(&self, window: &Window, cx: &App) -> Option<usize> {
+        if !self.focus.contains_focused(window, cx) {
+            return None;
+        }
+        self.chunks.iter().position(|chunk| {
+            #[cfg(test)]
+            self.focus_scans.set(self.focus_scans.get() + 1);
+            chunk.read(cx).focus_handle(cx).contains_focused(window, cx)
+        })
     }
 
     /// A key anywhere in the view. True when taken.
@@ -325,7 +321,7 @@ impl FacetView {
         if key.mods.ctrl || key.mods.alt || key.mods.sup {
             return false;
         }
-        let in_piece = self.piece_has_keyboard(window, cx);
+        let in_piece = self.focused_piece(window, cx).is_some();
         match key.key {
             // Shift is how some layouts type a slash. With every facet
             // picked, `open_list` opens nothing.
@@ -432,7 +428,7 @@ impl FacetView {
         let offset = handle.offset();
         let current = -f32::from(offset.y);
         let max = f32::from(handle.max_offset().y);
-        if let Some(y) = piece_offset(&tops, current, max, down) {
+        if let Some(y) = super::reveal::piece_offset(&tops, current, max, down) {
             handle.set_offset(point(offset.x, px(-y)));
             cx.notify();
         }
@@ -467,32 +463,5 @@ impl FacetView {
         if let Some(facet) = rows.into_iter().nth(lit).map(|row| row.facet) {
             self.toggle_row(facet, window, cx);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::piece_offset;
-
-    const TOPS: [f32; 3] = [12.0, 200.0, 400.0];
-
-    #[test]
-    fn down_goes_to_the_first_piece_below_the_top() {
-        assert_eq!(piece_offset(&TOPS, 0.0, 1000.0, true), Some(200.0));
-        assert_eq!(piece_offset(&TOPS, 12.0, 1000.0, true), Some(200.0));
-        assert_eq!(piece_offset(&TOPS, 400.0, 1000.0, true), None);
-    }
-
-    #[test]
-    fn up_goes_to_the_last_piece_above_the_top() {
-        assert_eq!(piece_offset(&TOPS, 200.0, 1000.0, false), Some(12.0));
-        assert_eq!(piece_offset(&TOPS, 150.0, 1000.0, false), Some(12.0));
-        assert_eq!(piece_offset(&TOPS, 12.0, 1000.0, false), None);
-    }
-
-    #[test]
-    fn the_offset_stops_where_the_column_ends() {
-        assert_eq!(piece_offset(&TOPS, 0.0, 150.0, true), Some(150.0));
-        assert_eq!(piece_offset(&TOPS, 200.0, 300.0, true), Some(300.0));
     }
 }
