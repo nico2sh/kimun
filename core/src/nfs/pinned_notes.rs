@@ -15,7 +15,7 @@
 //! Every writer goes through [`edit`]: one in-process lock per pin file
 //! around the read-modify-write, and an atomic replace for the write
 //! itself, so neither two overlapping edits (a rename hook racing a
-//! toggle) nor a crash mid-write can lose or corrupt the list.
+//! toggle or a pin) nor a crash mid-write can lose or corrupt the list.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,9 +47,7 @@ pub enum PinToggle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinOutcome {
     /// Appended; `position` is 0-based.
-    Pinned {
-        position: usize,
-    },
+    Pinned { position: usize },
     /// Already in the list, anywhere (even past the cap). Nothing written.
     AlreadyPinned,
     /// Not pinned and the list already holds [`PINNED_NOTES_CAP`] entries.
@@ -88,7 +86,8 @@ fn file_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
 /// has none. Entries are canonicalized on read, so a hand-edited relative
 /// entry still matches.
 ///
-/// Not truncated to `PINNED_NOTES_CAP`: only `toggle` guards the cap, and
+/// Not truncated to `PINNED_NOTES_CAP`: only `toggle` (and so
+/// `NoteVault::toggle_pinned_note` and `NoteVault::pin_note`) guards the cap, and
 /// the file lives inside the vault by design, so a hand-edit or a three-way
 /// text merge of `notes = [ … ]` across two synced machines (a union, not a
 /// cap) can leave more on disk. Every writer writes back what it read, so

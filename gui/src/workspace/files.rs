@@ -74,7 +74,6 @@ use super::query_field::query_field_with;
 use super::row_menu::{PinnedPaths, RowKind, RowPick, with_row_menu};
 use super::sort::{chip_label, sort_chip};
 use crate::keymap;
-use crate::tasks;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -296,22 +295,32 @@ impl FilesPane {
         self.pins_gen += 1;
         let generation = self.pins_gen;
         let vault = self.vault.clone();
-        let reading = tokio::spawn(async move { pinned::load(&vault).await });
+        let reading = tokio::spawn(async move {
+            // The rows are the display list (cut at the cap); the row menus
+            // need every pin, or a pin past the cap reads as not pinned.
+            (
+                pinned::load(&vault).await,
+                vault.list_all_pinned_notes().await,
+            )
+        });
         cx.spawn(async move |this, cx| {
-            let rows = tasks::joined(reading).await;
+            let read = reading.await;
             this.update(cx, |pane, cx| {
                 // A failed read keeps the rows on screen: the section is a
                 // convenience, and the dialog says why when it fails.
-                let Ok(rows) = rows else {
+                let Ok((Ok(rows), all)) = read else {
                     return;
                 };
                 if generation != pane.pins_gen {
                     return;
                 }
-                // The row menus read it for `Pin note` / `Unpin note`.
-                cx.set_global(PinnedPaths(
-                    rows.iter().map(|row| row.path.clone()).collect(),
-                ));
+                // The row menus read it for `Pin note` / `Unpin note`: every
+                // pin, past the cap too. If that read failed, the rows' own.
+                let paths = match all {
+                    Ok(all) => all,
+                    Err(_) => rows.iter().map(|row| row.path.clone()).collect(),
+                };
+                cx.set_global(PinnedPaths(paths));
                 if rows != pane.pins {
                     pane.pins = rows;
                     cx.notify();

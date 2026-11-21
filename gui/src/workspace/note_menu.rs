@@ -542,7 +542,9 @@ impl Workspace {
         let (Some(target), Some(vault)) = (target, self.vault()) else {
             return;
         };
-        let reading = tokio::spawn(async move { vault.list_pinned_notes().await });
+        // Every pin, past the cap too: the truncated list would call a pin
+        // past the cap "not pinned", and the toggle would then unpin it.
+        let reading = tokio::spawn(async move { vault.list_all_pinned_notes().await });
         let menu = menu.downgrade();
         cx.spawn(async move |_, cx| {
             // A read that failed leaves the guess `Pin note` standing: the
