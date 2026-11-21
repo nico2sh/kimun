@@ -876,14 +876,24 @@ impl NoteVault {
     /// [`PINNED_NOTES_CAP`] of them. A vault with no pin file has none.
     ///
     /// Truncated here, at the display seam, and nowhere else: only
-    /// `toggle_pinned_note` refuses a pin past the cap, and a hand-edit or a
-    /// sync merge of the file can hold more. Those extras are kept on disk
+    /// `toggle_pinned_note` and `pin_note` refuse a pin past the cap, and a
+    /// hand-edit or a sync merge of the file can hold more. A question of
+    /// "is this note pinned?" must not use this list: ask
+    /// [`Self::list_all_pinned_notes`], or a pin past the cap reads as not
+    /// pinned. Those extras are kept on disk
     /// by every edit — truncating on read would let the next unrelated
     /// rename or unpin silently delete them.
     pub async fn list_pinned_notes(&self) -> Result<Vec<VaultPath>, VaultError> {
         let mut all = pinned_notes::read_pinned_notes(self.workspace_path()).await?;
         all.truncate(PINNED_NOTES_CAP);
         Ok(all)
+    }
+
+    /// Every pin on disk, in order, past [`PINNED_NOTES_CAP`] too. For
+    /// deciding whether a note is pinned; use [`Self::list_pinned_notes`]
+    /// to show the pins.
+    pub async fn list_all_pinned_notes(&self) -> Result<Vec<VaultPath>, VaultError> {
+        Ok(pinned_notes::read_pinned_notes(self.workspace_path()).await?)
     }
 
     /// Pin `path` (appended last) or unpin it if it is already pinned.
@@ -929,7 +939,17 @@ impl NoteVault {
             }
             match pinned_notes::toggle(all, path) {
                 PinToggle::Pinned { position } => (Ok(PinOutcome::Pinned { position }), true),
-                _ => (Ok(PinOutcome::Full), false),
+                PinToggle::Full => (Ok(PinOutcome::Full), false),
+                // `position_of` said "not pinned" just above, so the toggle
+                // cannot unpin. If the two rules ever disagree, nothing is
+                // written (the edit is not saved) and the note stays pinned.
+                PinToggle::Unpinned => {
+                    debug_assert!(
+                        false,
+                        "pin_note: toggle unpinned a note it just found absent"
+                    );
+                    (Ok(PinOutcome::AlreadyPinned), false)
+                }
             }
         })
         .await?
@@ -3508,7 +3528,10 @@ mod tests {
         let extra = VaultPath::new("extra.md");
         vault.create_note(&extra, "hi").await.unwrap();
         assert_eq!(vault.pin_note(&extra).await.unwrap(), PinOutcome::Full);
-        assert_eq!(vault.list_pinned_notes().await.unwrap().len(), PINNED_NOTES_CAP);
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap().len(),
+            PINNED_NOTES_CAP
+        );
     }
 
     #[tokio::test]
@@ -3527,11 +3550,78 @@ mod tests {
             .await
             .unwrap();
         let tenth = all.last().unwrap();
-        assert_eq!(vault.pin_note(tenth).await.unwrap(), PinOutcome::AlreadyPinned);
+        assert_eq!(
+            vault.pin_note(tenth).await.unwrap(),
+            PinOutcome::AlreadyPinned
+        );
+        // The display list stops at the cap; the full list does not.
+        assert_eq!(
+            vault.list_pinned_notes().await.unwrap().len(),
+            PINNED_NOTES_CAP
+        );
+        let all = vault.list_all_pinned_notes().await.unwrap();
+        assert_eq!(all.len(), PINNED_NOTES_CAP + 1);
+        assert!(pinned_notes::position_of(&all, tenth).is_some());
         let on_disk = pinned_notes::read_pinned_notes(vault.workspace_path())
             .await
             .unwrap();
         assert_eq!(on_disk.len(), PINNED_NOTES_CAP + 1);
+    }
+
+    /// The doc promises "already pinned" wins over "not on disk": a pin
+    /// whose note is gone stays, and is not an error.
+    #[tokio::test]
+    async fn pin_note_on_a_pinned_note_that_is_gone_is_already_pinned() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let gone = VaultPath::new("gone.md");
+        pinned_notes::write_pinned_notes(vault.workspace_path(), std::slice::from_ref(&gone))
+            .await
+            .unwrap();
+        assert_eq!(
+            vault.pin_note(&gone).await.unwrap(),
+            PinOutcome::AlreadyPinned
+        );
+        assert_eq!(vault.list_pinned_notes().await.unwrap().len(), 1);
+    }
+
+    /// Many `pin_note` calls on one note at once: one pins, the rest find
+    /// it pinned, and the list holds it once. The lock around the check and
+    /// the append is what makes that so.
+    #[tokio::test]
+    async fn concurrent_pin_note_calls_pin_a_note_exactly_once() {
+        let dir = TempDir::new().unwrap();
+        let vault = make_vault(dir.path()).await;
+        vault.validate_and_init().await.unwrap();
+
+        let a = VaultPath::new("a.md");
+        vault.create_note(&a, "hi").await.unwrap();
+        let calls: Vec<_> = (0..12)
+            .map(|_| {
+                let (vault, a) = (vault.clone(), a.clone());
+                tokio::spawn(async move { vault.pin_note(&a).await.unwrap() })
+            })
+            .collect();
+        let mut outcomes = Vec::new();
+        for call in calls {
+            outcomes.push(call.await.unwrap());
+        }
+        let pinned = outcomes
+            .iter()
+            .filter(|o| matches!(o, PinOutcome::Pinned { .. }))
+            .count();
+        assert_eq!(pinned, 1, "{outcomes:?}");
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == PinOutcome::AlreadyPinned)
+                .count(),
+            11,
+            "{outcomes:?}"
+        );
+        assert_eq!(vault.list_pinned_notes().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

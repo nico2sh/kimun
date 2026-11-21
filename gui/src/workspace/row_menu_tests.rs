@@ -623,6 +623,49 @@ pub(super) mod in_workspace {
         });
     }
 
+    /// A pin past the cap, left by a hand-edit or a sync merge, still counts
+    /// as pinned: the row offers `Unpin note`, and the pick unpins it.
+    #[gpui_kit::test]
+    fn a_pin_past_the_cap_offers_unpin_and_unpins(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let v = rt.block_on(test_vault(NOTES, &[]));
+        let mut pins: Vec<VaultPath> = (0..kimun_core::PINNED_NOTES_CAP)
+            .map(|i| path(&format!("filler{i}.md")))
+            .collect();
+        pins.push(path("beta.md"));
+        rt.block_on(kimun_core::nfs::pinned_notes::write_pinned_notes(
+            v.vault.workspace_path(),
+            &pins,
+        ))
+        .unwrap();
+        let started = open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("a.md"))),
+            v.settings.clone(),
+        );
+        drive(&rt, cx, |cx| {
+            started.text(cx) == "alpha" && !started.indexing(cx) && files_listed(&started, cx)
+        });
+        drive(&rt, cx, |cx| {
+            cx.read(|cx| {
+                cx.try_global::<PinnedPaths>()
+                    .is_some_and(|p| p.0.len() == pins.len())
+            })
+        });
+        right_click(&started, files_row(&started, "beta.md", cx), cx);
+        let labels = menu_labels(&started, cx);
+        assert!(labels.contains(&"Unpin note".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"Pin note".to_string()), "{labels:?}");
+        pick(&started, "Unpin note", cx);
+        drive(&rt, cx, |cx| {
+            started.flash(cx).as_deref() == Some("unpinned")
+        });
+        let all = rt.block_on(v.vault.list_all_pinned_notes()).unwrap();
+        assert_eq!(all.len(), kimun_core::PINNED_NOTES_CAP, "{all:?}");
+        assert!(!all.iter().any(|p| p.is_like(&path("beta.md"))), "{all:?}");
+    }
+
     /// A stale `Unpin note` on a note that is not pinned pins nothing.
     #[gpui_kit::test]
     fn a_stale_unpin_on_a_note_that_is_not_pinned_leaves_it_unpinned(cx: &mut TestAppContext) {
