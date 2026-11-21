@@ -288,3 +288,20 @@ fn a_new_face_clears_the_rows() {
         "same face"
     );
 }
+
+#[test]
+fn the_first_known_width_keeps_the_rows_and_a_new_width_clears_them() {
+    let mut h = Heights::default();
+    h.set_metrics(px(14.), px(16.), 0, metrics());
+    h.set_shapes(vec![Shape::default(); 3]);
+    h.set_rows(0, 4, 0, stamp(1));
+    assert!(!h.set_width(px(0.)), "0 is no measure");
+    assert_eq!(h.rows(0, 0, stamp(1)), Some(4));
+    assert!(!h.set_width(px(400.)), "the first width");
+    assert_eq!(h.rows(0, 0, stamp(1)), Some(4));
+    assert!(!h.set_width(px(400.004)), "the same width");
+    assert!(!h.set_width(px(0.)), "0 again");
+    assert_eq!(h.rows(0, 0, stamp(1)), Some(4));
+    assert!(h.set_width(px(420.)), "a new width");
+    assert_eq!(h.rows(0, 0, stamp(1)), None);
+}

@@ -53,8 +53,7 @@ impl FacetView {
         let shapes = gaps.iter().map(|g| self.shape(g)).collect();
         let range = {
             let mut heights = self.heights.borrow_mut();
-            let width = heights.width();
-            heights.fit(width, fit.font, fit.rem, fit.face, fit.metrics);
+            heights.set_metrics(fit.font, fit.rem, fit.face, fit.metrics);
             heights.set_shapes(shapes);
             self.reveal_column(&gaps, &heights, fit.rem);
             self.near(fit.rem, window, &heights)
@@ -232,11 +231,7 @@ impl FacetView {
             Row::Lead(i) | Row::Crumbs(i) | Row::Tail(i) => Some(i),
             Row::End => None,
         });
-        let of_editor = || {
-            self.chunks
-                .iter()
-                .position(|c| c.read(cx).focus_handle.contains_focused(window, cx))
-        };
+        let of_editor = || self.focused_piece(window, cx);
         let dragging = self.chunks.iter().position(|c| c.read(cx).dragging());
         pinned(of_stop.or_else(of_editor), dragging)
     }
@@ -289,45 +284,72 @@ pub(super) struct Check {
     checked: Rc<Cell<usize>>,
 }
 
+/// A drawn piece the verify step compares: its number and its first and
+/// last item in the column.
+type Known = (usize, usize, usize);
+
 impl Check {
-    /// Run after the column's children are laid out.
+    /// Run after the column's children are laid out: record, then verify
+    /// in a debug build.
     pub(super) fn run(&self, window: &Window, cx: &App) {
+        let known = self.record(window, cx);
+        if cfg!(debug_assertions) {
+            self.verify(&known);
+        }
+    }
+
+    /// The step a release build runs too. Each drawn piece's rows go into
+    /// the table. When a jump in width, font or text moved the pieces and
+    /// the range at the offset now is not the drawn one, it asks for one
+    /// more frame, or the viewport can show only a spacer. It returns the
+    /// pieces to verify, none in a release build.
+    fn record(&self, window: &Window, cx: &App) -> Vec<Known> {
+        let verify = cfg!(debug_assertions);
+        let mut known = Vec::with_capacity(if verify { self.drawn.len() } else { 0 });
         let mut heights = self.heights.borrow_mut();
-        let mut known = Vec::with_capacity(self.drawn.len());
         for (i, piece, first, last) in &self.drawn {
             let editor = piece.read(cx);
             let stamp = editor.edit_stamp();
             // The editor element clears `measured_width` each frame before
             // its measure, so `Some` means measured in this frame.
-            if let (Some(rows), Some(_), Some(at)) = (
+            if let (Some(rows), Some(width), Some(at)) = (
                 editor.measured_rows,
                 editor.measured_width,
                 editor.measured_stamp,
             ) && at == stamp
+                // No rows are kept for an editor with no width: one column
+                // gives far too many.
+                && width > px(0.)
             {
+                heights.set_width(width);
                 heights.set_rows(*i, rows, piece.entity_id().as_u64(), stamp);
-                known.push((*i, *first, *last));
+                if verify {
+                    known.push((*i, *first, *last));
+                }
             }
         }
-        // A jump in width, font or text moved the pieces: when the range at
-        // the offset now is not the drawn one, draw again, or the viewport
-        // can show only a spacer.
         if heights.take_changed()
             && let Some((near, rem)) = &self.near
             && near_range(&self.scroll, *rem, window, &heights) != *near
         {
             window.request_animation_frame();
         }
+        known
+    }
+
+    /// The debug step: each piece in `known` must sit where the table
+    /// says, within a pixel. Tests panic on a mismatch. A debug run of the
+    /// app warns once per mismatch, until the table matches again.
+    fn verify(&self, known: &[Known]) {
+        // No item laid out: nothing to compare.
         let Some(origin) = self.scroll.bounds_for_item(0).map(|b| b.top()) else {
             return;
         };
-        if !cfg!(debug_assertions) {
-            return;
-        }
+        let heights = self.heights.borrow();
         #[cfg(test)]
         let mut checked = 0;
         let mut wrong = None;
-        for (i, first, last) in known {
+        for &(i, first, last) in known {
             let (Some(a), Some(b)) = (
                 self.scroll.bounds_for_item(first),
                 self.scroll.bounds_for_item(last),
@@ -349,8 +371,6 @@ impl Check {
                 checked += 1;
             }
         }
-        // Tests fail on a wrong table. A debug run of the app says so once
-        // per mismatch, until the table matches again, and goes on.
         #[cfg(test)]
         if let Some(wrong) = wrong {
             panic!("{wrong}");

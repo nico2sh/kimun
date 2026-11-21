@@ -217,6 +217,12 @@ pub struct FacetView {
     /// after Enter or Space on `Clear`, a column's first or last stop after
     /// Tab into the column.
     focus_after: Option<Stop>,
+    /// The `focus_after` stop that already waited one frame to be drawn,
+    /// and where the keyboard was then.
+    focus_retry: Option<(Stop, Option<FocusHandle>)>,
+    /// A column stop that arrived while the column had no height: the
+    /// next frame with a height reveals it.
+    held_reveal: RefCell<Option<Stop>>,
     /// The focus handle of a list's field that [`Self::plan`] closed: the
     /// next frame gives the keyboard to the view if the field still had it.
     stranded: Option<FocusHandle>,
@@ -236,6 +242,9 @@ pub struct FacetView {
     /// (tests).
     #[cfg(test)]
     checked: Rc<std::cell::Cell<usize>>,
+    /// How many piece editors were asked for the keyboard (tests).
+    #[cfg(test)]
+    focus_scans: std::cell::Cell<usize>,
     /// Added to the crumbs row the table counts, to forge a wrong table
     /// (tests).
     #[cfg(test)]
@@ -291,6 +300,8 @@ impl FacetView {
             corner_room: None,
             undo: Undo::default(),
             focus_after: None,
+            focus_retry: None,
+            held_reveal: RefCell::default(),
             stranded: None,
             heights: Rc::default(),
             #[cfg(test)]
@@ -301,6 +312,8 @@ impl FacetView {
             warned: Rc::default(),
             #[cfg(test)]
             checked: Rc::default(),
+            #[cfg(test)]
+            focus_scans: Default::default(),
             #[cfg(test)]
             forged: gpui_kit::px(0.),
             #[cfg(test)]
