@@ -9,14 +9,15 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::rc::Rc;
 
-use gpui_kit::{AnyElement, App, Context, Entity, IntoElement, Pixels, ScrollHandle, Window, px};
+use gpui_kit::{
+    AnyElement, App, Context, Entity, IntoElement, Pixels, Rems, ScrollHandle, Window, px,
+};
 use kimun_notes::settings::themes::Theme;
 
 use super::FacetView;
 use super::reveal::stop_row;
-use super::window::{
-    Fit, Heights, Metrics, Row, Shape, Spacer, column_gap, column_pad, drawn_range, pinned,
-};
+use super::rows;
+use super::window::{Fit, Heights, Metrics, Row, Shape, Spacer, drawn_range, pinned};
 use crate::editor_font;
 use crate::editor_view::{EditorView, SLACK, line_height};
 use crate::workspace::facet_ui::ring_room;
@@ -174,10 +175,10 @@ impl FacetView {
             let line = window.text_style().line_height.to_pixels(size.into(), rem);
             px((f32::from(line) * scale).round() / scale)
         };
-        // `gap_3`, `h_6` and `text_xs`.
-        let column_gap = column_gap(rem);
-        let button = rem * 1.5;
-        let small = text_line(rem * 0.75);
+        // The same numbers the rows are drawn with ([`rows`]).
+        let column_gap = to_px(rows::column_gap(), rem);
+        let button = to_px(rows::button(), rem);
+        let small = text_line(to_px(rows::small_text(), rem));
         let row = button.max(small);
         let font = editor_font::font_size(cx);
         #[cfg(test)]
@@ -187,11 +188,11 @@ impl FacetView {
         let metrics = Metrics {
             line: line_height(font),
             dateline: text_line(title_size).max(small) + column_gap,
-            dateline_margin: column_gap,
+            dateline_margin: to_px(rows::dateline_margin(), rem),
             gap_row: row + column_gap,
             crumbs: button + ring_room() * 2. + forged,
-            // The editor's `py_2` and the measure's slack.
-            inset: rem + px(SLACK),
+            // The editor pane's padding and the measure's slack.
+            inset: to_px(rows::pane_y(), rem) + px(SLACK),
             column_gap,
         };
         Fit {
@@ -199,8 +200,7 @@ impl FacetView {
             rem,
             face: face_key(cx),
             metrics,
-            // The editor's `px_4`.
-            pane: rem * 2.,
+            pane: to_px(rows::pane_x(), rem),
         }
     }
 
@@ -237,6 +237,12 @@ impl FacetView {
     }
 }
 
+/// A row value of [`rows`] in pixels at the rem size `rem`: the one place
+/// the table side turns one into pixels.
+pub(super) fn to_px(value: Rems, rem: Pixels) -> Pixels {
+    value.to_pixels(rem)
+}
+
 /// The pieces near the viewport of the column that `scroll` tracks.
 fn near_range(
     scroll: &ScrollHandle,
@@ -253,7 +259,7 @@ fn near_range(
     };
     // The offset is negative down the column; the table starts under
     // the column's padding.
-    let offset = -scroll.offset().y - column_pad(rem);
+    let offset = -scroll.offset().y - to_px(rows::column_pad(), rem);
     drawn_range(offset, viewport, heights)
 }
 

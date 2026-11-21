@@ -10,8 +10,10 @@ use kimun_core::note::GAP_SHOW_ALL_MAX;
 
 use super::FacetView;
 use super::body::PieceGaps;
+use super::body::to_px;
 use super::keys::Stop;
-use super::window::{Heights, Row, column_pad};
+use super::rows::column_pad;
+use super::window::{Heights, Row};
 use crate::workspace::facet_ui::ring_room;
 
 /// The row of the column that holds `stop`, from each piece's gaps. `None`
@@ -97,7 +99,7 @@ impl FacetView {
             return false;
         }
         // The table starts under the column's `py_3`.
-        let pad = column_pad(rem);
+        let pad = to_px(column_pad(), rem);
         let (top, bottom) = heights.row_span(row);
         let now = self.scroll.offset();
         let span = (pad + top, pad + bottom);

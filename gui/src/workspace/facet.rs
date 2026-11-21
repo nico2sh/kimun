@@ -97,6 +97,7 @@ mod members;
 mod more;
 mod render;
 mod reveal;
+pub(super) mod rows;
 #[cfg(test)]
 mod test_seams;
 mod timed;
