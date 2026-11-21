@@ -18,8 +18,9 @@ use super::note_menu::{
     menu_item_hint_id, menu_items,
 };
 
-const NOTE_ITEMS: [MenuItem; 5] = [
+const NOTE_ITEMS: [MenuItem; 6] = [
     MenuItem::FacetView,
+    MenuItem::Pin,
     MenuItem::Note(FileOpKind::Properties),
     MenuItem::Note(FileOpKind::Rename),
     MenuItem::Note(FileOpKind::Move),
@@ -53,13 +54,14 @@ fn a_facet_group_offers_edit_note_and_properties_then_layout_actions() {
         items,
         vec![
             MenuItem::EditNote,
+            MenuItem::Pin,
             MenuItem::Note(FileOpKind::Properties),
             MenuItem::SplitRight,
             MenuItem::SplitDown,
             MenuItem::NewTab,
         ]
     );
-    assert_eq!(divider_at(&items), Some(2));
+    assert_eq!(divider_at(&items), Some(3));
 }
 
 #[test]
@@ -128,6 +130,11 @@ fn visible(cx: &mut gpui_kit::VisualTestContext, id: &'static str) -> bool {
     cx.update(|window, _| window.find(id).visible())
 }
 
+/// Whether `id` is drawn at all (`visible` panics on an id that is not).
+fn drawn(cx: &mut gpui_kit::VisualTestContext, id: &'static str) -> bool {
+    cx.update(|window, _| window.try_find(id).is_some_and(|e| e.visible()))
+}
+
 /// A menu in a bare window, with the events it emits collected.
 fn open(
     ctx: MenuContext,
@@ -171,11 +178,37 @@ fn the_note_actions_keep_their_letters(cx: &mut TestAppContext) {
     };
     let (_, events, cx) = open(ctx, cx);
     assert!(visible(cx, NOTE_MENU_ID));
-    for (key, item) in ['f', 'p', 'r', 'm', 'd'].into_iter().zip(NOTE_ITEMS) {
+    for (key, item) in ['f', 'n', 'p', 'r', 'm', 'd'].into_iter().zip(NOTE_ITEMS) {
         press(cx, &key.to_string());
         assert_eq!(events.borrow().last(), Some(&NoteMenuEvent::Picked(item)));
     }
-    assert_eq!(events.borrow().len(), 5);
+    assert_eq!(events.borrow().len(), 6);
+}
+
+#[gpui_kit::test]
+fn a_pinned_note_offers_unpin_in_the_same_place_with_the_same_letter(cx: &mut TestAppContext) {
+    let ctx = MenuContext {
+        has_note: true,
+        facet: false,
+        groups_in_tab: 1,
+        tabs: 1,
+    };
+    let (menu, events, cx) = open(ctx, cx);
+    assert!(visible(cx, menu_item_element_id(MenuItem::Pin)));
+    cx.update(|_, cx| menu.update(cx, |menu, cx| menu.set_pinned(true, cx)));
+    cx.run_until_parked();
+    assert!(!drawn(cx, menu_item_element_id(MenuItem::Pin)));
+    assert!(drawn(cx, menu_item_element_id(MenuItem::Unpin)));
+    press(cx, "n");
+    assert_eq!(
+        events.borrow().last(),
+        Some(&NoteMenuEvent::Picked(MenuItem::Unpin))
+    );
+    // And back: a late answer of "not pinned" restores the first label.
+    cx.update(|_, cx| menu.update(cx, |menu, cx| menu.set_pinned(false, cx)));
+    cx.run_until_parked();
+    assert!(drawn(cx, menu_item_element_id(MenuItem::Pin)));
+    assert!(!drawn(cx, menu_item_element_id(MenuItem::Unpin)));
 }
 
 #[gpui_kit::test]
@@ -652,6 +685,61 @@ mod in_workspace {
         assert_eq!(g[0], left);
         assert_eq!(g[1], right, "the new group comes after the menu's group");
         assert_eq!(active(&s, cx), g[2]);
+    }
+
+    /// The pins core keeps, by name.
+    fn pinned(rt: &Runtime, v: &TestVault) -> Vec<String> {
+        rt.block_on(v.vault.list_pinned_notes())
+            .unwrap()
+            .iter()
+            .map(VaultPath::get_clean_name)
+            .collect()
+    }
+
+    fn open_menu_on_active(s: &Started, cx: &mut TestAppContext) {
+        let workspace = s.workspace.clone();
+        let group = active(s, cx);
+        cx.update_window(s.handle, |_, window, cx| {
+            workspace.update(cx, |w, cx| {
+                w.open_note_menu(group, point(px(400.), px(200.)), window, cx)
+            })
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn picking_pin_pins_the_menu_note_and_says_so(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (v, s) = start(cx, &rt);
+        open_menu_on_active(&s, cx);
+        assert!(shows(&s, MenuItem::Pin, cx));
+        click(&s, menu_item_element_id(MenuItem::Pin), cx);
+        assert!(!menu_open(&s, cx));
+        drive(&rt, cx, |cx| s.flash(cx).is_some());
+        assert_eq!(s.flash(cx).as_deref(), Some("pinned as 1 of 9"));
+        assert_eq!(pinned(&rt, &v), ["a"]);
+    }
+
+    #[gpui_kit::test]
+    fn a_pinned_note_shows_unpin_once_the_read_lands_and_unpins(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (v, s) = start(cx, &rt);
+        rt.block_on(v.vault.toggle_pinned_note(&path("a.md")))
+            .unwrap();
+        open_menu_on_active(&s, cx);
+        drive(&rt, cx, |cx| {
+            cx.update_window(s.handle, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            shows(&s, MenuItem::Unpin, cx)
+        });
+        assert!(!shows(&s, MenuItem::Pin, cx));
+        click(&s, menu_item_element_id(MenuItem::Unpin), cx);
+        drive(&rt, cx, |cx| s.flash(cx).is_some());
+        assert_eq!(s.flash(cx).as_deref(), Some("unpinned"));
+        assert!(pinned(&rt, &v).is_empty());
     }
 
     #[gpui_kit::test]

@@ -323,7 +323,7 @@ impl Workspace {
 
     /// Spawn an asynchronous leaf (`leader_route::jobs`) on the window's
     /// runtime; it reports on the app channel.
-    fn run_leader_job(&mut self, job: LeaderJob, cx: &mut Context<Self>) {
+    pub(super) fn run_leader_job(&mut self, job: LeaderJob, cx: &mut Context<Self>) {
         let (Some(tx), Some(vault)) = (self.tx.clone(), self.vault()) else {
             return;
         };
