@@ -1,6 +1,6 @@
 # GUI feature discoverability: design brief
 
-Status: in progress, 2026-11-21. Built: note menu pin item, Find panel saved searches button, Files "New" menu rows. Next: empty editor group.
+Status: in progress, 2026-11-21. Built: note menu pin item, Find panel saved searches button, Files "New" menu rows. Also built: empty editor group, pinned section in the Files panel (collapsible, closed at the start of every run, animated), the pinned and saved searches empty states. Left: nothing. The facet view wording stays "Facet view" (decision, 2026-11-21): revisit only after a user test, and test "Narrow by tag, link or section", not "Show note in parts". The palette hint is covered by the empty group's list.
 
 Decision, 2026-11-21: the chord is the primary route for the journal entry and the quick note. The Files "New" menu rows exist to teach the chords, so they show them. A one-click surface (the rail footer row) stays rejected unless a user test shows that people do not find these two features. The empty editor group is the main place that teaches the chords, so it comes before the pinned section.
 
@@ -54,10 +54,10 @@ The list shows the intended order. Item 5, the empty editor group, was moved ahe
 4. Pinned section in the Files panel. A quiet heading, "Pinned", and up to nine rows in pin order, each with its digit. A click opens the note. A row whose note is missing shows dimmed, as the dialog does. The section header has a "Manage" text link that opens the existing dialog.
 5. Empty states that teach.
    - Empty editor group: three or four lines, each an action and its chord: open a note, today's journal, quick note, command palette.
-   - Pinned dialog and section: say what pinning does, then the chord.
-   - Saved searches: say what a saved search is, then name the Save button.
-   - New facet or collection view: name what the user can narrow by.
-6. Facet view wording. Change the button tooltip and the menu item to describe the result ("Show note in parts"), and keep "Facet view" as the term in the keyboard reference and the documentation.
+   - Pinned dialog (built): name the two routes to pin a note.
+   - Saved searches (built): a line in the list while nothing is saved, naming the Save chord. Short on purpose: no sentence that explains what a saved search is.
+   - New facet or collection view: already covered. The facet view shows a hint under its bar until the first pick, which names tags, links and sections.
+6. Facet view wording (not done, see the status line). Change the button tooltip and the menu item to describe the result ("Show note in parts"), and keep "Facet view" as the term in the keyboard reference and the documentation.
 7. Palette hint. One line in the empty editor group says the palette lists every command. No modal, no tour, no first-run tip.
 
 ## Out of scope
