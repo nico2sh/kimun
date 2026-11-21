@@ -329,7 +329,14 @@ impl Workspace {
         };
         match job {
             LeaderJob::TogglePin(path) => {
-                tokio::spawn(jobs::toggle_pin(vault, path, tx));
+                let job = tokio::spawn(jobs::toggle_pin(vault, path, tx));
+                // The Files pinned section follows the toggle.
+                cx.spawn(async move |this, cx| {
+                    job.await.ok();
+                    this.update(cx, |workspace, cx| workspace.reload_pins(cx))
+                        .ok();
+                })
+                .detach();
             }
             LeaderJob::JumpToPinned(n) => {
                 tokio::spawn(jobs::jump_to_pinned(vault, n, tx));

@@ -227,7 +227,13 @@ impl PinnedNotesDialog {
         self.loaded = true;
         self.pending = false;
         match rows {
-            Ok(rows) => self.list.replace_rows(rows),
+            Ok(rows) => {
+                self.list.replace_rows(rows);
+                // The Files pinned section follows every edit made here.
+                self.workspace
+                    .update(cx, |workspace, cx| workspace.reload_pins(cx))
+                    .ok();
+            }
             Err(error) => {
                 self.workspace
                     .update(cx, |workspace, cx| workspace.flash_error(error, cx))
