@@ -18,8 +18,8 @@ strip = true      # strip debug symbols from the final binary
 # table), retriggering an endless "update Cargo.toml dependencies" patch loop.
 # The pin lives on tui's dependency instead. See tui/Cargo.toml.
 serde = { version = "1.0", features = ["derive"] }
-toml = "1.1.2"
+toml = "1.2.2"
 log = "0.4"
-tokio = { version = "1.52.3", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 pulldown-cmark = "0.13"

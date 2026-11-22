@@ -22,11 +22,12 @@
 //! behavior and the TUI ignores them.
 //!
 //! `reduce_motion = true` keeps the desktop app's decorative motion still (the
-//! Welcome wordmark's bounce, loading spinners). It is the desktop app's
-//! Preferences > Display > Reduce motion, applied as soon as it is saved; the
-//! TUI never shows it. Missing means `false`: the system's own reduced-motion
-//! setting is not read (GPUI offers no query for it). The user docs describe
-//! the key on the desktop-app page (`docs/content/using-kimun/desktop-app.md`).
+//! Welcome wordmark's bounce, loading spinners); `false` always allows it.
+//! Missing follows the system's own reduced-motion setting (see
+//! [`ReduceMotion`]). It is the desktop app's Preferences > Display > Reduce
+//! motion, applied as soon as it is saved; the TUI never shows it. The user
+//! docs describe the key on the desktop-app page
+//! (`docs/content/using-kimun/desktop-app.md`).
 //!
 //! `editor_font_family` (a font name) and `editor_font_size` (whole pixels,
 //! clamped to 8..=32) set the font of the desktop app's Edit surface. Missing,
@@ -81,6 +82,36 @@ impl WindowDecorations {
         match self {
             WindowDecorations::Client => "client",
             WindowDecorations::System => "system",
+        }
+    }
+}
+
+/// `reduce_motion`: whether the GUI keeps its decorative motion still.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ReduceMotion {
+    /// The key is missing: follow the operating system's setting.
+    #[default]
+    System,
+    /// `true`: motion stays still whatever the system says.
+    Reduce,
+    /// `false`: motion plays whatever the system says.
+    Allow,
+}
+
+impl ReduceMotion {
+    /// Every choice, in the order Preferences lists them.
+    pub const ALL: [ReduceMotion; 3] = [
+        ReduceMotion::System,
+        ReduceMotion::Reduce,
+        ReduceMotion::Allow,
+    ];
+
+    /// The choice's name in Preferences.
+    pub fn label(self) -> &'static str {
+        match self {
+            ReduceMotion::System => "System",
+            ReduceMotion::Reduce => "Reduce",
+            ReduceMotion::Allow => "Allow",
         }
     }
 }
@@ -168,26 +199,40 @@ impl GuiSettings {
     }
 
     /// `reduce_motion`: `true` keeps the GUI's decorative motion still (the
-    /// Welcome wordmark's bounce, the kit's spinners). Read when the app
-    /// starts and after every Preferences save. Missing reads as `false`;
-    /// any other value than a boolean is logged and reads as `false` too.
-    pub fn reduce_motion(&self) -> bool {
+    /// Welcome wordmark's bounce, the kit's spinners), `false` always plays
+    /// it. Read when the app starts and after every Preferences save.
+    /// Missing reads as [`ReduceMotion::System`]; any other value than a
+    /// boolean is logged and reads as `System` too.
+    pub fn reduce_motion(&self) -> ReduceMotion {
         match self.table.get(REDUCE_MOTION) {
-            None => false,
-            Some(Value::Boolean(reduce)) => *reduce,
+            None => ReduceMotion::System,
+            Some(Value::Boolean(true)) => ReduceMotion::Reduce,
+            Some(Value::Boolean(false)) => ReduceMotion::Allow,
             Some(other) => {
                 tracing::warn!(
-                    "[gui] reduce_motion: expected true or false, got {other}; using false"
+                    "[gui] reduce_motion: expected true or false, got {other}; \
+                     following the system"
                 );
-                false
+                ReduceMotion::System
             }
         }
     }
 
-    /// Records `reduce_motion`.
-    pub fn set_reduce_motion(&mut self, reduce: bool) {
-        self.table
-            .insert(REDUCE_MOTION.into(), Value::Boolean(reduce));
+    /// Records `reduce_motion`; `System` removes the key.
+    pub fn set_reduce_motion(&mut self, reduce: ReduceMotion) {
+        match reduce {
+            ReduceMotion::System => {
+                self.table.remove(REDUCE_MOTION);
+            }
+            ReduceMotion::Reduce => {
+                self.table
+                    .insert(REDUCE_MOTION.into(), Value::Boolean(true));
+            }
+            ReduceMotion::Allow => {
+                self.table
+                    .insert(REDUCE_MOTION.into(), Value::Boolean(false));
+            }
+        }
     }
 
     /// `editor_font_family`: the Edit surface's font name, trimmed. `None`
@@ -448,9 +493,9 @@ mod tests {
         target.set_editor_font_size(Some(15));
         let before = GuiSettings::default();
         let mut after = GuiSettings::default();
-        after.set_reduce_motion(true);
+        after.set_reduce_motion(ReduceMotion::Reduce);
         target.apply_changes(&before, &after);
-        assert!(target.reduce_motion());
+        assert_eq!(target.reduce_motion(), ReduceMotion::Reduce);
         assert_eq!(target.editor_font_family().as_deref(), Some("Fira Code"));
         assert_eq!(target.editor_font_size(), Some(15));
     }
@@ -541,26 +586,42 @@ ToggleSidebar = ["primary+t", 3]
 
     #[test]
     fn reduce_motion_is_read_leniently_and_round_trips() {
-        assert!(!AppSettings::default().gui.reduce_motion());
+        assert_eq!(
+            AppSettings::default().gui.reduce_motion(),
+            ReduceMotion::System
+        );
         let read = |value: &str| gui(&format!("[gui]\nreduce_motion = {value}\n"));
-        assert!(read("true").reduce_motion());
-        assert!(!read("false").reduce_motion());
-        // Wrong types fall back to motion, and the config still loads.
+        assert_eq!(read("true").reduce_motion(), ReduceMotion::Reduce);
+        assert_eq!(read("false").reduce_motion(), ReduceMotion::Allow);
+        // Wrong types follow the system, and the config still loads.
         for garbage in ["\"yes\"", "1", "\"true\"", "[true]", "{ on = true }"] {
-            assert!(!read(garbage).reduce_motion(), "{garbage}");
+            assert_eq!(
+                read(garbage).reduce_motion(),
+                ReduceMotion::System,
+                "{garbage}"
+            );
         }
 
         let mut settings = AppSettings::default();
-        settings.gui.set_reduce_motion(true);
-        let written = toml::to_string(&settings).unwrap();
-        assert!(written.contains("reduce_motion = true"), "{written}");
-        let back: AppSettings = toml::from_str(&written).unwrap();
-        assert!(back.gui.reduce_motion());
-        assert_eq!(back.gui, settings.gui);
+        for (choice, line) in [
+            (ReduceMotion::Reduce, Some("reduce_motion = true")),
+            (ReduceMotion::Allow, Some("reduce_motion = false")),
+            (ReduceMotion::System, None),
+        ] {
+            settings.gui.set_reduce_motion(choice);
+            let written = toml::to_string(&settings).unwrap();
+            match line {
+                Some(line) => assert!(written.contains(line), "{written}"),
+                None => assert!(!written.contains("reduce_motion"), "{written}"),
+            }
+            let back: AppSettings = toml::from_str(&written).unwrap();
+            assert_eq!(back.gui.reduce_motion(), choice);
+            assert_eq!(back.gui, settings.gui);
+        }
         // Next to the other `[gui]` keys, which it leaves alone.
         let mut both = read("true");
         both.set_window_decorations(WindowDecorations::System);
-        assert!(both.reduce_motion());
+        assert_eq!(both.reduce_motion(), ReduceMotion::Reduce);
         assert_eq!(both.window_decorations(), WindowDecorations::System);
     }
 
@@ -570,11 +631,11 @@ ToggleSidebar = ["primary+t", 3]
     fn apply_changes_moves_only_the_changed_keys() {
         let before = gui("[gui]\nreduce_motion = false\nwindow_decorations = \"system\"\n");
         let mut after = before.clone();
-        after.set_reduce_motion(true);
+        after.set_reduce_motion(ReduceMotion::Reduce);
         after.table.remove(WINDOW_DECORATIONS);
         let mut target = gui("[gui]\nkept = 300.0\nwindow_decorations = \"system\"\n");
         target.apply_changes(&before, &after);
-        assert!(target.reduce_motion());
+        assert_eq!(target.reduce_motion(), ReduceMotion::Reduce);
         assert_eq!(
             target.window_decorations(),
             WindowDecorations::Client,
@@ -715,7 +776,7 @@ views = ["files"]
         g.set_rail(RailPosition::Right);
         g.set_rail_hidden(true);
         assert_eq!(g.layout_preset().as_deref(), Some("a"));
-        assert!(g.reduce_motion());
+        assert_eq!(g.reduce_motion(), ReduceMotion::Reduce);
     }
 
     #[test]

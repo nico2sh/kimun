@@ -371,7 +371,7 @@ fn dirty_tracks_each_field() {
         ("nerd fonts", |m| m.use_nerd_fonts = !m.use_nerd_fonts),
         ("update check", |m| m.update_check = !m.update_check),
         ("mouse", |m| m.mouse = !m.mouse),
-        ("reduce motion", |m| m.reduce_motion = !m.reduce_motion),
+        ("reduce motion", |m| m.reduce_motion = ReduceMotion::Reduce),
         ("editor font family", |m| {
             m.editor_font_family = Some("X".into())
         }),
@@ -413,7 +413,7 @@ fn apply_writes_every_section() {
     m.use_nerd_fonts = true;
     m.update_check = false;
     m.mouse = false;
-    m.reduce_motion = true;
+    m.reduce_motion = ReduceMotion::Reduce;
     m.rail = crate::logic::layout_tree::RailPosition::Bottom;
     m.leader_timeout_ms = 100;
     m.default_sort_field = SortFieldSetting::Title;
@@ -430,7 +430,7 @@ fn apply_writes_every_section() {
     assert!(out.use_nerd_fonts);
     assert!(!out.update_check());
     assert!(!out.mouse());
-    assert!(out.gui.reduce_motion());
+    assert_eq!(out.gui.reduce_motion(), ReduceMotion::Reduce);
     assert_eq!(
         out.gui.rail(),
         crate::logic::layout_tree::RailPosition::Bottom
@@ -1010,21 +1010,25 @@ fn indexed_in_reads_as_a_short_duration() {
 fn reduce_motion_is_written_only_when_changed() {
     let s = with_workspaces(&["main"], "main");
     let m = PreferencesModel::new(&s);
-    assert!(!m.reduce_motion);
+    assert_eq!(m.reduce_motion, ReduceMotion::System);
     let mut out = s.clone();
     m.apply(&mut out);
     assert_eq!(out.gui, s.gui, "an untouched draft adds no [gui] key");
 
     let mut s = s;
-    s.gui.set_reduce_motion(true);
+    s.gui.set_reduce_motion(ReduceMotion::Reduce);
     s.gui
         .set_window_decorations(crate::settings::gui::WindowDecorations::System);
     let mut m = PreferencesModel::new(&s);
-    assert!(m.reduce_motion, "read from the config");
-    m.reduce_motion = false;
+    assert_eq!(
+        m.reduce_motion,
+        ReduceMotion::Reduce,
+        "read from the config"
+    );
+    m.reduce_motion = ReduceMotion::Allow;
     let mut out = s.clone();
     m.apply(&mut out);
-    assert!(!out.gui.reduce_motion());
+    assert_eq!(out.gui.reduce_motion(), ReduceMotion::Allow);
     assert_eq!(
         out.gui.window_decorations(),
         crate::settings::gui::WindowDecorations::System,

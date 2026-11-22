@@ -21,7 +21,7 @@ use kimun_core::system::SystemPath;
 use kimun_notes::logic::layout::{Panel, Side};
 use kimun_notes::logic::leader_route::LeaderRoute;
 use kimun_notes::logic::onboarding::{OnbStep, OnboardingModel};
-use kimun_notes::settings::gui::GuiSettings;
+use kimun_notes::settings::gui::{GuiSettings, ReduceMotion};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use tokio::runtime::Runtime;
@@ -524,7 +524,7 @@ fn reduce_motion_keeps_the_wordmark_still(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let f = fresh();
     let mut gui = GuiSettings::default();
-    gui.set_reduce_motion(true);
+    gui.set_reduce_motion(ReduceMotion::Reduce);
     cx.update(|cx| crate::apply_reduce_motion(gui.reduce_motion(), cx));
     assert!(cx.read(|cx| cx.reduce_motion()));
     let s = first_run(cx, &rt, &f);
@@ -536,8 +536,8 @@ fn reduce_motion_keeps_the_wordmark_still(cx: &mut TestAppContext) {
     assert_eq!(dots(&s, cx), rest);
     assert_eq!(pending_frames(&s, cx), 0);
     assert_eq!(wordmark(&s, cx).0.as_deref(), Some(WORDMARK));
-    // Unset again, the default: motion.
-    cx.update(|cx| crate::apply_reduce_motion(GuiSettings::default().reduce_motion(), cx));
+    // `false` plays motion even where the system would ask for less.
+    cx.update(|cx| crate::apply_reduce_motion(ReduceMotion::Allow, cx));
     assert!(!cx.read(|cx| cx.reduce_motion()));
 }
 
@@ -1335,7 +1335,7 @@ fn the_dots_are_their_own_element_over_the_u(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let f = fresh();
     let mut gui = GuiSettings::default();
-    gui.set_reduce_motion(true);
+    gui.set_reduce_motion(ReduceMotion::Reduce);
     cx.update(|cx| crate::apply_reduce_motion(gui.reduce_motion(), cx));
     let s = first_run(cx, &rt, &f);
     let (word, dots) = cx
