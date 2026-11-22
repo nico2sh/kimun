@@ -196,6 +196,7 @@ impl Workspace {
         // The note menu gives way, the keyboard back where it was first,
         // so the dialog returns it there.
         self.close_note_menu(window, cx);
+        self.close_link_menu(window, cx);
         if let Slot::Own(kind) = slot {
             self.modal = Some(kind);
         }

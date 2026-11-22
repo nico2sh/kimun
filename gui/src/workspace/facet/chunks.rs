@@ -45,11 +45,17 @@ impl FacetView {
                 None => {
                     let editor = cx.new(|cx| EditorView::new_read_only(&plan.text, cx));
                     let events = cx.subscribe(&editor, |this, editor, event: &EditorEvent, cx| {
-                        let EditorEvent::ReadOnlyFollow { target } = event else {
+                        let Some(i) = this.chunks.iter().position(|c| *c == editor) else {
                             return;
                         };
-                        if let Some(i) = this.chunks.iter().position(|c| *c == editor) {
-                            this.follow(i, target.clone(), cx);
+                        match event {
+                            EditorEvent::ReadOnlyFollow { target } => {
+                                this.follow(i, target.clone(), cx)
+                            }
+                            EditorEvent::LinkMenu { at, target } => {
+                                this.link_menu(i, *at, target.clone(), cx)
+                            }
+                            _ => {}
                         }
                     });
                     self.chunks.push(editor);

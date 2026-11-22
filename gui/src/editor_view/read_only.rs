@@ -73,7 +73,8 @@ impl ReadOnlyClicks {
 impl EditorView {
     /// A press in read-only text. A left press places the caret, may start
     /// a drag selection and may arm a click on a follow target. A right
-    /// press does nothing.
+    /// press on a follow target asks for the Link menu
+    /// ([`EditorEvent::LinkMenu`]); elsewhere it does nothing.
     pub(super) fn read_only_press(
         &mut self,
         pointer: PointerInput,
@@ -87,9 +88,18 @@ impl EditorView {
         // same target follows ([`Self::pointer_up`]), unless the pointer
         // moved more than [`CLICK_SLOP`] pixels. A primary press on
         // a target follows at once. Presses right after a click that
-        // followed are plain presses. Never a follow on the channel, a
-        // menu or an edit; a right press does nothing.
+        // followed are plain presses. Never a follow on the channel or an
+        // edit. A right press on a target, with nothing selected, asks for
+        // the Link menu; any other right press does nothing.
         self.clicks_ro.pressed = None;
+        if let Some(target) = self.link_menu_target(&pointer) {
+            self.clicks.end();
+            cx.emit(EditorEvent::LinkMenu {
+                at: self.pressed_at,
+                target,
+            });
+            return;
+        }
         if left {
             let now = (self.clock)();
             let after_follow = self

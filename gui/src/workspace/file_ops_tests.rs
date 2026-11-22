@@ -735,9 +735,7 @@ fn a_files_row_has_a_context_menu(cx: &mut TestAppContext) {
         })
         .unwrap();
         cx.run_until_parked();
-        // The menu has the keyboard: the first item is Rename….
-        started.hit("down", cx);
-        started.hit("enter", cx);
+        super::row_menu_tests::in_workspace::pick(&started, "Rename…", cx);
         settle(&started, cx);
         assert_eq!(started.modal(cx), Some(ModalKind::Rename), "{kind}");
         assert!(started.rename_target(cx).is_like(&path(entry)), "{kind}");

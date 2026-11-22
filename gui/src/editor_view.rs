@@ -24,6 +24,14 @@
 //! `FollowLink` chord bubbles to the owner like any app command. With the find
 //! bar open a press never follows, as in the TUI.
 //!
+//! **Right-click.** With a selection a right press copies it and asks for
+//! nothing. Without one, a right press on a link or a label asks the owner
+//! for the Link menu ([`EditorEvent::LinkMenu`]), and anywhere else for the
+//! note menu ([`EditorEvent::ContextMenu`]). Neither moves the caret: the
+//! target is read from the cell under the pointer
+//! ([`EditorView::target_under`]). A read-only editor asks for the Link menu
+//! the same way, and does nothing on a right press off a target.
+//!
 //! **Read-only.** A read-only editor (a facet view's piece) is text: a press
 //! places the caret, a drag selects, a double press on text selects a word,
 //! and the copy chord copies. A click on a link or label (a press and its
@@ -33,7 +41,8 @@
 //! a click that followed, on the same cell, are plain presses. A drag that
 //! leaves the target selects and follows nothing. It never follows on the
 //! channel (ADR-0061). Its targets show the pointing hand at all times, as
-//! in an editor that edits.
+//! in an editor that edits. A right press on a target asks for the Link
+//! menu; elsewhere it does nothing.
 //!
 //! **The keymap.** Every key-down is first resolved against the GUI keymap
 //! ([`crate::keymap`]) with the editor focused. Find and replace are the
@@ -129,6 +138,15 @@ pub enum EditorEvent {
     /// the presses right after a follow emit nothing: they are text presses
     /// (caret, selection).
     ReadOnlyFollow { target: FollowTarget },
+    /// A right-press with no selection on a **follow target** (a link, a
+    /// label), in an editor that edits or a read-only one: open the Link
+    /// menu for `target` at `at`, the pointer in window coordinates. It
+    /// replaces [`Self::ContextMenu`] for that press. The caret stays where
+    /// it was.
+    LinkMenu {
+        at: Point<Pixels>,
+        target: FollowTarget,
+    },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
