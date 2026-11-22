@@ -160,6 +160,7 @@ impl Workspace {
     pub(in crate::workspace) fn empty_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
         // A menu on the group names the note it no longer holds.
         self.forget_note_menu_of(group, cx);
+        self.forget_link_menu_of(group, cx);
         self.drop_facet_in(group);
         let Some(state) = self.state_mut(group) else {
             return;

@@ -73,7 +73,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use gpui_kit::{Context, Entity, EventEmitter, FocusHandle, Rems, ScrollHandle, Subscription};
+use gpui_kit::{
+    Context, Entity, EventEmitter, FocusHandle, Pixels, Point, Rems, ScrollHandle, Subscription,
+};
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{Facet, FacetKind, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
@@ -135,6 +137,13 @@ pub enum FacetEvent {
     /// link resolves against.
     Follow {
         from: VaultPath,
+        target: FollowTarget,
+    },
+    /// A right-click on a link or tag in a piece of `from`, at `at` (window
+    /// coordinates): the host opens the Link menu.
+    LinkMenu {
+        from: VaultPath,
+        at: Point<Pixels>,
         target: FollowTarget,
     },
     /// The picks changed; the workspace saves the session.
@@ -419,6 +428,24 @@ impl FacetView {
     fn follow(&mut self, i: usize, target: FollowTarget, cx: &mut Context<Self>) {
         if let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) {
             cx.emit(FacetEvent::Follow { from: note, target });
+        }
+    }
+
+    /// Chunk `i` asks for the Link menu on `target` at `at`: the host opens
+    /// it, from the chunk's own note.
+    fn link_menu(
+        &mut self,
+        i: usize,
+        at: Point<Pixels>,
+        target: FollowTarget,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) {
+            cx.emit(FacetEvent::LinkMenu {
+                from: note,
+                at,
+                target,
+            });
         }
     }
 

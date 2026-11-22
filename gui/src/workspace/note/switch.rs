@@ -197,6 +197,7 @@ impl Workspace {
                 // A menu on the group names the note it showed before.
                 if previous.as_ref() != Some(&path) {
                     self.forget_note_menu_of(group, cx);
+                    self.forget_link_menu_of(group, cx);
                 }
                 if group == self.layout.active_group() {
                     self.status.note = Some(path.clone());

@@ -2308,17 +2308,409 @@ fn a_read_only_target_shows_the_hand_without_a_modifier(cx: &mut TestAppContext)
     .unwrap();
 }
 
+// --- right-click on a link: the Link menu ---
+
+/// An editor that edits over `text`, on a channel the test holds, and the
+/// events it emits.
+fn open_editing(
+    cx: &mut TestAppContext,
+    text: &str,
+) -> (
+    AnyWindowHandle,
+    Entity<EditorView>,
+    tokio::sync::mpsc::UnboundedReceiver<kimun_notes::logic::message::AppMessage>,
+    Events,
+    gpui_kit::Subscription,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        editor_view::init(cx);
+        crate::workspace::init_facet_keys(cx);
+        keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+    });
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let text = text.to_string();
+    let events = Events::default();
+    let sink = events.clone();
+    let (handle, view, sub) = cx.update(|cx| {
+        let mut sub = None;
+        let (handle, view) = gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Default::default(),
+                    size(px(640.), px(480.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                let view = cx.new(|cx| {
+                    let mut view = EditorView::on_channel(false, tx, cx);
+                    view.editor.set_text(text);
+                    view
+                });
+                window.focus(&view.read(cx).focus_handle(cx), cx);
+                sub = Some(cx.subscribe(&view, move |_, event, _| {
+                    sink.borrow_mut().push(event.clone());
+                }));
+                view
+            },
+        )
+        .expect("open test window");
+        (handle, view, sub.unwrap())
+    });
+    (handle, view, rx, events, sub)
+}
+
+/// A right press and its release at `at`.
+fn right_click(window: &mut gpui_kit::Window, at: Point<Pixels>, cx: &mut gpui_kit::App) {
+    window.pointer_down(at, MouseButton::Right, cx);
+    window.pointer_up(at, MouseButton::Right, cx);
+}
+
+/// The cell column where `needle` starts on painted row `row`.
+fn col_of(view: &Entity<EditorView>, row: usize, needle: &str, cx: &gpui_kit::App) -> u16 {
+    let text = painted_row(view, row, cx).text();
+    let at = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("no {needle:?} on row {row}: {text:?}"));
+    text[..at].chars().count() as u16
+}
+
+fn wikilink(target: &str) -> kimun_notes::logic::editor::claim::FollowTarget {
+    kimun_notes::logic::editor::claim::FollowTarget::Link {
+        target: target.to_string(),
+        kind: kimun_core::note::scan::LinkSpanKind::WikiLink,
+    }
+}
+
+/// A right press on a link, with no selection, asks for the Link menu at
+/// the pointer, with the link's target. No note menu.
 #[gpui_kit::test]
-fn read_only_right_press_emits_nothing(cx: &mut TestAppContext) {
-    let (handle, view, _rx, events, _sub) = open_read_only(cx, "see #idea here");
+fn a_right_click_on_a_link_emits_link_menu_with_its_target(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see [[note]] here\nplain");
+    let at = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = cell_center(&view, 7, 0, cx);
+            right_click(window, at, cx);
+            at
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::LinkMenu {
+            at,
+            target: wikilink("note"),
+        }]
+    );
+}
+
+/// A right press on a label asks for the Link menu with the label.
+#[gpui_kit::test]
+fn a_right_click_on_a_label_emits_link_menu_with_the_label(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see #idea here");
+    let at = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let at = cell_center(&view, 6, 0, cx);
+            right_click(window, at, cx);
+            at
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::LinkMenu {
+            at,
+            target: kimun_notes::logic::editor::claim::FollowTarget::Label("idea".to_string()),
+        }]
+    );
+}
+
+/// With the caret off the link its brackets are hidden, so the link's
+/// first and last drawn cells are `n` and `e` of `note`: both are on the
+/// link, and the cells just outside it are not.
+#[gpui_kit::test]
+fn a_right_click_on_the_first_and_last_cell_of_a_link_emits_link_menu(cx: &mut TestAppContext) {
+    // The link draws as `note`, its brackets hidden off the caret.
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see [[note]] here");
+    let first = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let first = col_of(&view, 0, "note", cx);
+            for col in [first, first + 3] {
+                let at = cell_center(&view, col, 0, cx);
+                right_click(window, at, cx);
+            }
+            first
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let menus: Vec<_> = events
+        .borrow()
+        .iter()
+        .map(|e| match e {
+            editor_view::EditorEvent::LinkMenu { target, .. } => Some(target.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(menus, vec![Some(wikilink("note")), Some(wikilink("note"))]);
+    events.borrow_mut().clear();
     cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let at = cell_center(&view, 6, 0, cx);
-        window.pointer_down(at, MouseButton::Right, cx);
-        window.pointer_up(at, MouseButton::Right, cx);
+        for col in [first - 1, first + 4] {
+            let at = cell_center(&view, col, 0, cx);
+            right_click(window, at, cx);
+        }
     })
     .unwrap();
-    assert!(events.borrow().is_empty());
+    cx.run_until_parked();
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .all(|e| matches!(e, editor_view::EditorEvent::ContextMenu { .. })),
+        "next to the link is plain text: {:?}",
+        events.borrow()
+    );
+    assert_eq!(events.borrow().len(), 2);
+}
+
+/// With the caret inside the link its brackets show: a right press on the
+/// first `[` and on the last `]` still finds the link.
+#[gpui_kit::test]
+fn a_right_click_on_the_revealed_brackets_of_a_link_emits_link_menu(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see [[note]] here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        // One plain press puts the caret in the link (a second would follow).
+        let inside = cell_center(&view, col_of(&view, 0, "note", cx) + 1, 0, cx);
+        window.pointer_down(inside, MouseButton::Left, cx);
+        window.pointer_up(inside, MouseButton::Left, cx);
+        window.render_frame(cx);
+        assert_eq!(
+            painted_row(&view, 0, cx).text().trim_end(),
+            "see [[note]] here",
+            "the brackets show"
+        );
+        let first = col_of(&view, 0, "[[", cx);
+        let last = col_of(&view, 0, "]]", cx) + 1;
+        for col in [first, last] {
+            let at = cell_center(&view, col, 0, cx);
+            right_click(window, at, cx);
+        }
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let menus: Vec<_> = events
+        .borrow()
+        .iter()
+        .map(|e| match e {
+            editor_view::EditorEvent::LinkMenu { target, .. } => Some(target.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(menus, vec![Some(wikilink("note")), Some(wikilink("note"))]);
+}
+
+/// A link that wraps onto a second row: a right press on that second row
+/// still finds it.
+#[gpui_kit::test]
+fn a_right_click_on_a_wrapped_second_row_of_a_link_emits_link_menu(cx: &mut TestAppContext) {
+    let title = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda omega";
+    let line = format!("{}[[{title}]]", "word ".repeat(10));
+    let (handle, view, _rx, events, _sub) = open_editing(cx, &line);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let first = painted_row(&view, 0, cx).text();
+        let second = painted_row(&view, 1, cx).text();
+        assert!(
+            first.contains("alpha"),
+            "the link starts on row 0: {first:?} / {second:?}"
+        );
+        let col = second
+            .find("omega")
+            .unwrap_or_else(|| panic!("the link wraps onto row 1: {second:?}"));
+        let at = cell_center(&view, col as u16, 1, cx);
+        right_click(window, at, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        matches!(
+            events.borrow().as_slice(),
+            [editor_view::EditorEvent::LinkMenu { target, .. }] if *target == wikilink(title)
+        ),
+        "{:?}",
+        events.borrow()
+    );
+}
+
+/// A right press on plain text, or below the text under a link's columns,
+/// asks for the note menu, as before.
+#[gpui_kit::test]
+fn a_right_click_on_plain_text_still_requests_the_note_menu(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see [[note]] here");
+    let (text_at, below_at) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let text_at = cell_center(&view, 1, 0, cx);
+            right_click(window, text_at, cx);
+            let below_at = cell_center(&view, 7, 3, cx);
+            right_click(window, below_at, cx);
+            (text_at, below_at)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![
+            editor_view::EditorEvent::ContextMenu { at: text_at },
+            editor_view::EditorEvent::ContextMenu { at: below_at },
+        ]
+    );
+}
+
+/// With a selection, a right press on a link copies the selection and asks
+/// for no menu, as before.
+#[gpui_kit::test]
+fn a_right_click_on_a_link_with_a_selection_copies_and_emits_no_menu(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_editing(cx, "see [[note]] here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let from = cell_center(&view, 0, 0, cx);
+        let to = cell_center(&view, 3, 0, cx);
+        window.pointer_down(from, MouseButton::Left, cx);
+        window.pointer_move(to, Some(MouseButton::Left), cx);
+        window.pointer_up(to, MouseButton::Left, cx);
+        assert_eq!(
+            view.read(cx).editor.buffer().selection_text().as_deref(),
+            Some("see")
+        );
+        let at = cell_center(&view, 7, 0, cx);
+        right_click(window, at, cx);
+        assert_eq!(
+            view.read(cx).editor.buffer().selection_text().as_deref(),
+            Some("see"),
+            "the selection stays"
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    let mut copied = false;
+    while let Ok(message) = rx.try_recv() {
+        // The copy reports on the channel, whether or not the host has a
+        // clipboard to write to.
+        copied |= matches!(
+            message,
+            kimun_notes::logic::message::AppMessage::FlashMessage(_)
+        );
+    }
+    assert!(copied, "the selection was copied");
+}
+
+/// With the find bar open, a press never acts on a link: a right press on
+/// one asks for the note menu, as before.
+#[gpui_kit::test]
+fn a_right_click_on_a_link_with_the_find_bar_open_still_requests_the_note_menu(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see [[note]] here");
+    let at = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("ctrl-f", cx);
+            window.render_frame(cx);
+            assert!(view.read(cx).editor.find_open(), "the find bar is open");
+            let at = cell_center(&view, col_of(&view, 0, "note", cx) + 1, 0, cx);
+            right_click(window, at, cx);
+            at
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![editor_view::EditorEvent::ContextMenu { at }]
+    );
+}
+
+/// A right press that finds no link moves neither the caret nor the
+/// selection.
+#[gpui_kit::test]
+fn a_right_click_that_finds_no_link_leaves_the_caret_where_it_was(cx: &mut TestAppContext) {
+    let (handle, view, _rx, events, _sub) = open_editing(cx, "see [[note]] here\nplain words");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let caret_at = cell_center(&view, 2, 0, cx);
+        window.pointer_down(caret_at, MouseButton::Left, cx);
+        window.pointer_up(caret_at, MouseButton::Left, cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).editor.cursor(), (0, 2));
+        let at = cell_center(&view, 5, 1, cx);
+        right_click(window, at, cx);
+        assert_eq!(view.read(cx).editor.cursor(), (0, 2), "the caret stays");
+        assert_eq!(view.read(cx).editor.selection(), None, "no selection");
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(
+        matches!(
+            events.borrow().as_slice(),
+            [editor_view::EditorEvent::ContextMenu { .. }]
+        ),
+        "{:?}",
+        events.borrow()
+    );
+}
+
+/// In read-only text, a right press on a follow target asks for the Link
+/// menu. It never follows on the channel.
+#[gpui_kit::test]
+fn a_read_only_right_click_on_a_link_emits_link_menu(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see [[note]] and #idea");
+    let (link_at, tag_at) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let link_at = cell_center(&view, 7, 0, cx);
+            right_click(window, link_at, cx);
+            window.render_frame(cx);
+            let tag_at = cell_center(&view, col_of(&view, 0, "#idea", cx) + 1, 0, cx);
+            right_click(window, tag_at, cx);
+            (link_at, tag_at)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        *events.borrow(),
+        vec![
+            editor_view::EditorEvent::LinkMenu {
+                at: link_at,
+                target: wikilink("note"),
+            },
+            editor_view::EditorEvent::LinkMenu {
+                at: tag_at,
+                target: kimun_notes::logic::editor::claim::FollowTarget::Label("idea".to_string()),
+            },
+        ]
+    );
+    assert_no_follow(&mut rx);
+}
+
+/// In read-only text, a right press off any follow target does nothing.
+#[gpui_kit::test]
+fn a_read_only_right_click_on_plain_text_emits_nothing(cx: &mut TestAppContext) {
+    let (handle, view, mut rx, events, _sub) = open_read_only(cx, "see #idea here");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = cell_center(&view, 1, 0, cx);
+        right_click(window, at, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    assert_no_follow(&mut rx);
 }
 
 #[gpui_kit::test]

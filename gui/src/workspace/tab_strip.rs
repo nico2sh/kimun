@@ -522,6 +522,7 @@ impl Workspace {
     /// [`EditorRegion::close_group`]: kimun_notes::logic::editor_region::EditorRegion::close_group
     fn take_group(&mut self, group: GroupId, cx: &mut Context<Self>) {
         self.forget_note_menu_of(group, cx);
+        self.forget_link_menu_of(group, cx);
         self.group_bounds.borrow_mut().remove(&group);
         match self.layout.region_mut().close_group(group) {
             Some(CloseOutcome::Emptied) => {

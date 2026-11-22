@@ -18,9 +18,11 @@
 //! - a label (`#tag`) opens the search browser on that label
 //!   ([`super::search`], M7b G4).
 //!
-//! A follow that starts in a facet view (ADR-0061) resolves from the
-//! view's source note, and the note or attachment it leads to opens in a
-//! new tab ([`Workspace::follow_link_from`]).
+//! A follow takes an [`OpenAt`]: where the note or attachment it leads to
+//! opens ([`Workspace::follow_link_from`]). The chord and the double-click
+//! open it in place; a follow that starts in a facet view (ADR-0061)
+//! resolves from the view's source note and opens in a new tab; the Link
+//! menu ([`super::link_menu`]) passes the place its item names.
 //!
 //! A newer follow replaces one still looking up.
 
@@ -36,6 +38,7 @@ use kimun_notes::logic::follow::{FollowOutcome, resolve};
 use tokio::task::JoinError;
 
 use super::Workspace;
+use super::note::OpenAt;
 
 /// Hands a URL or a file to the system's default program. The app's is
 /// [`system_opener`]; tests record instead of opening.
@@ -92,18 +95,18 @@ impl Workspace {
         else {
             return;
         };
-        self.follow_link_from(&from, target, kind, false, cx);
+        self.follow_link_from(&from, target, kind, OpenAt::Here, cx);
     }
 
     /// Follow the link `target` of `kind` written in the note `from` (a
-    /// relative path resolves from there). With `new_tab` (a follow from a
-    /// facet view), the note or attachment it leads to opens in a new tab.
+    /// relative path resolves from there). The note or attachment it leads to
+    /// opens where `at` says.
     pub(crate) fn follow_link_from(
         &mut self,
         from: &VaultPath,
         target: String,
         kind: LinkSpanKind,
-        new_tab: bool,
+        at: OpenAt,
         cx: &mut Context<Self>,
     ) {
         let Some(host) = self.active_state().notes.as_ref() else {
@@ -118,7 +121,7 @@ impl Workspace {
         self.following = Some(cx.spawn(async move |this, cx| {
             let outcome = lookup.await;
             this.update(cx, |workspace, cx| {
-                workspace.followed_in(&target, outcome, new_tab, cx)
+                workspace.followed_in(&target, outcome, at, cx)
             })
             .ok();
         }));
@@ -133,16 +136,15 @@ impl Workspace {
         outcome: Result<FollowOutcome, JoinError>,
         cx: &mut Context<Self>,
     ) {
-        self.followed_in(target, outcome, false, cx);
+        self.followed_in(target, outcome, OpenAt::Here, cx);
     }
 
-    /// `Self::followed`, a note or attachment opening in a new tab when
-    /// `new_tab`.
+    /// `Self::followed`, a note or attachment opening where `at` says.
     fn followed_in(
         &mut self,
         target: &str,
         outcome: Result<FollowOutcome, JoinError>,
-        new_tab: bool,
+        at: OpenAt,
         cx: &mut Context<Self>,
     ) {
         self.following = None;
@@ -150,19 +152,22 @@ impl Workspace {
         match outcome {
             FollowOutcome::External(url) => self.open_externally(target, url.as_ref(), cx),
             FollowOutcome::OpenFile(file) => match self.vault_path_of(&file) {
-                Some(path) if new_tab => self.open_attachment_in_new_tab(&path, cx),
-                Some(path) => self.open_attachment(&path, cx),
+                Some(path) => self.open_attachment_at(&path, at, cx),
                 None => self.open_externally(target, file.as_os_str(), cx),
             },
-            FollowOutcome::Note(path) => self.follow_to(path, new_tab, cx),
-            FollowOutcome::Missing(path) => self.offer_create_opening(path, None, new_tab, cx),
+            FollowOutcome::Note(path) => self.follow_to(path, at, cx),
+            // A note never goes to the default app (`for_a_note`).
+            FollowOutcome::Missing(path) => {
+                self.offer_create_opening(path, None, for_a_note(at), cx)
+            }
             FollowOutcome::Ambiguous(hits) => {
+                let at = for_a_note(at);
                 let target = target.to_string();
                 self.with_window(cx, move |workspace, window, cx| {
                     if super::modal::dialog_open(window, cx) {
                         workspace.flash_error(format!("{} notes match {target}", hits.len()), cx);
                     } else {
-                        workspace.open_link_chooser(&target, hits, new_tab, window, cx);
+                        workspace.open_link_chooser(&target, hits, at, window, cx);
                     }
                 });
             }
@@ -173,13 +178,12 @@ impl Workspace {
     }
 
     /// Open the note a link led to; a file that is no note shows in the
-    /// attachment view. In a new tab when `new_tab`.
-    fn follow_to(&mut self, path: VaultPath, new_tab: bool, cx: &mut Context<Self>) {
-        match (path.is_note(), new_tab) {
-            (true, false) => self.open_note(path, cx),
-            (true, true) => self.open_note_in_new_tab(path, cx),
-            (false, false) => self.open_attachment(&path, cx),
-            (false, true) => self.open_attachment_in_new_tab(&path, cx),
+    /// attachment view. Where `at` says.
+    fn follow_to(&mut self, path: VaultPath, at: OpenAt, cx: &mut Context<Self>) {
+        if path.is_note() {
+            self.open_note_at(path, at, cx);
+        } else {
+            self.open_attachment_at(&path, at, cx);
         }
     }
 
@@ -191,10 +195,19 @@ impl Workspace {
     }
 
     /// Hand `what` (a URL, a file) to the system's default program.
-    fn open_externally(&mut self, target: &str, what: &OsStr, cx: &mut Context<Self>) {
+    pub(super) fn open_externally(&mut self, target: &str, what: &OsStr, cx: &mut Context<Self>) {
         match (self.opener)(what) {
             Ok(()) => self.flash(format!("Opening {target}…"), cx),
             Err(e) => self.flash_error(format!("Couldn't open {target}: {e}"), cx),
         }
+    }
+}
+
+/// Where a follow that lands on a note opens it: a note never goes to the
+/// default app, so `Externally` opens it in place.
+pub(super) fn for_a_note(at: OpenAt) -> OpenAt {
+    match at {
+        OpenAt::Externally => OpenAt::Here,
+        at => at,
     }
 }

@@ -60,34 +60,86 @@ pub async fn resolve(
     target: &str,
     kind: LinkSpanKind,
 ) -> FollowOutcome {
-    if is_remote_url(target) {
-        return FollowOutcome::External(target.to_string());
-    }
-
-    let note_target = match kind {
-        LinkSpanKind::WikiLink => {
-            if target_looks_like_image(target) {
-                let parent = from_note.get_parent_path().0;
-                let resolved = parent.append(&VaultPath::new(target.trim()));
-                return FollowOutcome::OpenFile(vault.path_to_pathbuf(&resolved));
-            }
-            NoteTarget::from_wikilink(target, from_note)
+    let note_target = match route(target, kind, from_note) {
+        Route::Url => return FollowOutcome::External(target.to_string()),
+        Route::File(file) => return FollowOutcome::OpenFile(vault.path_to_pathbuf(&file)),
+        Route::Note(note_target) => note_target,
+        Route::NotFollowable => {
+            return FollowOutcome::Error(format!("not a note link: {target}"));
         }
-        LinkSpanKind::Markdown | LinkSpanKind::Image => {
-            if let Some(file) = markdown_attachment(target, from_note) {
-                return FollowOutcome::OpenFile(vault.path_to_pathbuf(&file));
-            }
-            NoteTarget::from_markdown(target, from_note)
-        }
-    };
-    let Some(note_target) = note_target else {
-        return FollowOutcome::Error(format!("not a note link: {target}"));
     };
     match vault.resolve_note_target(&note_target).await {
         Ok(LinkResolution::Note(entry, _)) => FollowOutcome::Note(entry.path),
         Ok(LinkResolution::Missing(path)) => FollowOutcome::Missing(path),
         Ok(LinkResolution::Ambiguous(hits)) => FollowOutcome::Ambiguous(hits),
         Err(e) => FollowOutcome::Error(e.to_string()),
+    }
+}
+
+/// Where a link leads before any vault lookup: the one routing step that
+/// [`resolve`] and [`classify`] share.
+enum Route {
+    /// A remote URL.
+    Url,
+    /// A file for the OS: a wikilink to an image, or a markdown link (or
+    /// image) to a file that is no note. Vault path, resolved against the
+    /// following note's folder.
+    File(VaultPath),
+    /// A note link, still to look up in the vault.
+    Note(NoteTarget),
+    /// The target cannot be followed (`[[doc.pdf]]`, an invalid path, a
+    /// `mailto:` link).
+    NotFollowable,
+}
+
+/// Routes `target`, a link of `kind` written in `from_note`, without a
+/// vault lookup.
+fn route(target: &str, kind: LinkSpanKind, from_note: &VaultPath) -> Route {
+    if is_remote_url(target) {
+        return Route::Url;
+    }
+    let note_target = match kind {
+        LinkSpanKind::WikiLink => {
+            if target_looks_like_image(target) {
+                let parent = from_note.get_parent_path().0;
+                return Route::File(parent.append(&VaultPath::new(target.trim())));
+            }
+            NoteTarget::from_wikilink(target, from_note)
+        }
+        LinkSpanKind::Markdown | LinkSpanKind::Image => {
+            if let Some(file) = markdown_attachment(target, from_note) {
+                return Route::File(file);
+            }
+            NoteTarget::from_markdown(target, from_note)
+        }
+    };
+    note_target.map_or(Route::NotFollowable, Route::Note)
+}
+
+/// What a link target is, decided without a vault lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetClass {
+    /// A note link: [`resolve`] gives `Note`, `Missing` or `Ambiguous`.
+    Note,
+    /// A file for the OS: [`resolve`] gives `OpenFile`.
+    Attachment,
+    /// A remote (http/https) URL: [`resolve`] gives `External`.
+    Web,
+    /// The target cannot be followed: [`resolve`] gives `Error`.
+    Invalid,
+}
+
+/// Sorts `target`, a link of `kind` written in `from_note`, without any
+/// vault lookup. It runs the same routing step as [`resolve`], so the class
+/// always matches the outcome `resolve` gives: a URL is `Web`, a file for
+/// the OS is `Attachment`, a note link is `Note`, and a target `resolve`
+/// cannot follow is `Invalid`.
+pub fn classify(target: &str, kind: LinkSpanKind, from_note: &VaultPath) -> TargetClass {
+    match route(target, kind, from_note) {
+        Route::Url => TargetClass::Web,
+        Route::File(_) => TargetClass::Attachment,
+        Route::Note(_) => TargetClass::Note,
+        Route::NotFollowable => TargetClass::Invalid,
     }
 }
 
@@ -114,6 +166,93 @@ mod tests {
                 .unwrap();
         }
         vault
+    }
+
+    /// `classify` from `journal/today`.
+    fn class(target: &str, kind: LinkSpanKind) -> TargetClass {
+        classify(target, kind, &today())
+    }
+
+    #[test]
+    fn a_wikilink_is_a_note() {
+        assert_eq!(class("anton", WikiLink), TargetClass::Note);
+    }
+
+    #[test]
+    fn a_markdown_link_to_a_note_path_is_a_note() {
+        assert_eq!(class("../work/dup.md#s", Markdown), TargetClass::Note);
+    }
+
+    #[test]
+    fn a_markdown_link_to_a_pdf_is_an_attachment() {
+        assert_eq!(class("../files/doc.pdf", Markdown), TargetClass::Attachment);
+    }
+
+    #[test]
+    fn an_image_is_an_attachment() {
+        assert_eq!(class("img/pic.png", Image), TargetClass::Attachment);
+    }
+
+    #[test]
+    fn a_wikilink_to_an_image_is_an_attachment() {
+        assert_eq!(class("pic.png", WikiLink), TargetClass::Attachment);
+    }
+
+    #[test]
+    fn an_https_target_is_web() {
+        assert_eq!(class("https://example.com/a", Markdown), TargetClass::Web);
+    }
+
+    /// Only http(s) is handed to the OS: a `mailto:` link cannot be followed.
+    #[test]
+    fn a_mailto_target_is_invalid() {
+        assert_eq!(class("mailto:a@b.c", Markdown), TargetClass::Invalid);
+    }
+
+    #[test]
+    fn a_wikilink_to_a_file_that_is_no_note_is_invalid() {
+        assert_eq!(class("doc.pdf", WikiLink), TargetClass::Invalid);
+    }
+
+    #[test]
+    fn an_invalid_markdown_path_is_invalid() {
+        assert_eq!(class("bad|name.md", Markdown), TargetClass::Invalid);
+    }
+
+    /// The guard against drift: for each target `classify` agrees with the
+    /// outcome `resolve` gives.
+    #[tokio::test]
+    async fn classify_agrees_with_resolve() {
+        let v = vault().await;
+        let cases = [
+            ("https://example.com/a", Markdown),
+            ("mailto:a@b.c", Markdown),
+            ("anton", WikiLink),
+            ("nobody", WikiLink),
+            ("dup", WikiLink),
+            ("pic.png", WikiLink),
+            ("doc.pdf", WikiLink),
+            ("../work/dup.md", Markdown),
+            ("../files/doc.pdf", Markdown),
+            ("img/pic.png", Image),
+            ("img/pic.png", Markdown),
+            ("bad|name.md", Markdown),
+        ];
+        for (target, kind) in cases {
+            let expected = match resolve(&v, &today(), target, kind).await {
+                FollowOutcome::External(_) => TargetClass::Web,
+                FollowOutcome::OpenFile(_) => TargetClass::Attachment,
+                FollowOutcome::Note(_)
+                | FollowOutcome::Missing(_)
+                | FollowOutcome::Ambiguous(_) => TargetClass::Note,
+                FollowOutcome::Error(_) => TargetClass::Invalid,
+            };
+            assert_eq!(
+                classify(target, kind, &today()),
+                expected,
+                "{target:?} as {kind:?}"
+            );
+        }
     }
 
     /// The absolute note path for `name` (what the index hands back).
