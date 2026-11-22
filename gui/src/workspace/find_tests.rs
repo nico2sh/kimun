@@ -924,6 +924,40 @@ fn the_collection_chord_works_in_the_browser(cx: &mut TestAppContext) {
     assert_eq!(query.as_deref(), Some("#go"));
 }
 
+/// With the query syntax help over the browser, the collection chord does
+/// nothing (as the sort and save chords): the help stays, the browser stays.
+#[gpui_kit::test]
+fn the_collection_chord_waits_for_the_query_help(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    let overrides = [(
+        "OpenQueryAsCollection".to_string(),
+        vec!["ctrl+alt+o".to_string()],
+    )]
+    .into_iter()
+    .collect();
+    let (keymap, errors) =
+        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
+    assert!(errors.is_empty(), "{errors:?}");
+    cx.update(|cx| crate::keymap::init(cx, keymap));
+    leader(&started, "ft", cx);
+    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
+    click(&started, tag_row_id("go"), cx);
+    started.settle_dialog(cx);
+    press(&started, "f1", cx);
+    started.settle_dialog(cx);
+    let help_open = |cx: &TestAppContext| cx.read(|cx| started.workspace.read(cx).query_help);
+    assert!(help_open(cx), "the help is over the browser");
+    press(&started, "ctrl-alt-o", cx);
+    started.settle_dialog(cx);
+    assert!(help_open(cx), "the chord left the help alone");
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    let group = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    let none = cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx));
+    assert_eq!(none, None);
+}
+
 /// A double-click on a tag opens the browser once and opens no note: its
 /// second press lands on the browser's modal, not under it.
 #[gpui_kit::test]

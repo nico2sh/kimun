@@ -126,12 +126,15 @@ A collection is the facet view of many notes. It shows the notes that a query re
 
 ### Open a collection
 
-Open FIND and type a query. Then use one of these:
+Open FIND, or the search dialog (`Ctrl+K`), and type a query. Then use one of these:
 
-- Click the `Open as collection` button in the tool bar of FIND.
-- Open the command palette and run `Open results as collection`. FIND must have the keyboard, or the palette says `Needs FIND focused`.
+- Click the `Open as collection` button in the tool bar of FIND or of the search dialog.
+- Open the command palette and run `Open results as collection`. FIND must have the keyboard, or the palette says `Needs FIND focused`. The palette cannot open over the search dialog, so use the button or the key there.
+- Press the key for the `OpenQueryAsCollection` action. It works in FIND and in the search dialog. See [change a shortcut](@/using-kimun/desktop-app.md#change-a-shortcut) to set it.
 
-Neither has a key by default. Both use the query that is now in FIND, not the results that you see. If FIND has no query, a message says `No query to open`. If the query uses `{note}` and the pane has no open note, a message says `This query needs an open note.` The query is filled in with the open note when the collection opens, and it stays so.
+No key is set by default. All of them use the query that is now in FIND or in the dialog, not the results that you see. If the query is empty, a message says `No query to open`. If the query uses `{note}` and the pane has no open note, a message says `This query needs an open note.` The query is filled in with the open note when the collection opens, and it stays so.
+
+When you start from the search dialog, the dialog closes. If the collection cannot open, for example because Kimün cannot save the pane's note, the dialog comes back with your query.
 
 The collection opens in the current pane and replaces what the pane shows. Kimün saves the text of the pane's own note first. The pane header, and the tab, show the query as the title. The title row at the top of the view shows a small, dim `Collection` and, under it, the query in bold. A long query is shortened with `…`. Hover it to see the full query.
 

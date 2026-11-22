@@ -155,19 +155,24 @@ impl Workspace {
             Err(e) => {
                 state.collection_pending = None;
                 self.flash_error(format!("Couldn't run {query}: {e}"), cx);
+                self.restore_browser(group, window, cx);
                 return;
             }
         };
         let name: SharedString = query.clone().into();
+        let wanted = query.clone();
         self.leave_note(
             group,
             LeavingFor::Facet,
             name,
-            move |workspace, left, _, cx| match left {
+            move |workspace, left, window, cx| match left {
                 NoteLeft::Now | NoteLeft::Flushed => {
                     workspace.show_collection(group, query, load, picks, cx)
                 }
-                NoteLeft::Stays => workspace.forget_collection_pending(group),
+                NoteLeft::Stays => {
+                    workspace.forget_collection_pending(group);
+                    workspace.restore_browser(group, window, cx);
+                }
             },
             window,
             cx,
@@ -179,6 +184,10 @@ impl Workspace {
             .is_some_and(|state| state.facet_flushing.is_none())
         {
             self.forget_collection_pending(group);
+            // The leave was refused (flashed): the browser comes back.
+            if self.collection_query_in(group, cx).as_deref() != Some(wanted.as_str()) {
+                self.restore_browser(group, window, cx);
+            }
         }
     }
 
@@ -203,6 +212,7 @@ impl Workspace {
         if self.state(group).is_none() {
             return;
         }
+        self.browser_return = None;
         // Any view shown before goes with the note ([`Self::empty_group`]).
         self.release_note_in(group, cx);
         self.drop_attachment_in(group);
