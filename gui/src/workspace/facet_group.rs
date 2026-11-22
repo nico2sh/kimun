@@ -26,7 +26,7 @@ use gpui_kit::{App, AppContext as _, Context, Entity, SharedString, Window};
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::Facet;
 use kimun_notes::logic::editor::claim::FollowTarget;
-use kimun_notes::logic::file_ops::{NoteOutcome, relocated};
+use kimun_notes::logic::file_ops::{NoteOutcome, ShownPathEffect, effect_on};
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, FileOp};
 
@@ -34,7 +34,6 @@ use super::Workspace;
 use super::facet::{FacetEvent, FacetView};
 use super::link_menu::LinkMenuPick;
 use super::note::{Closing, LeavingFor, NoteLeft, OpenAt};
-use crate::startup::EmptyState;
 use crate::tasks;
 
 impl Workspace {
@@ -440,38 +439,19 @@ impl Workspace {
         let Some(shown) = view.read(cx).source().cloned() else {
             return;
         };
-        match op {
-            FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
-                if let Some(new) = relocated(&shown, from, to) {
-                    view.update(cx, |view, _| view.set_source(new.clone()));
-                    // `set_source` keeps the facets: the text again rebuilds
-                    // the note links from the new place.
-                    self.refresh_facet_in(group, new, cx);
-                    cx.notify();
-                }
-            }
-            FileOp::Deleted(gone) if relocated(&shown, gone, gone).is_some() => {
-                self.empty_group(group, cx);
-                if group != self.layout.active_group() {
-                    return;
-                }
-                let name = shown.get_parent_path().1;
-                self.note_gone = Some((
-                    group,
-                    EmptyState {
-                        title: format!("{name} was deleted"),
-                        detail: String::new(),
-                        failed: false,
-                        shortcuts: Vec::new(),
-                    },
-                ));
-                if let Some(files) = self.files.as_ref() {
-                    files.update(cx, |pane, cx| pane.set_open_note(None, cx));
-                }
-                self.focus_shown_content(cx);
+        match effect_on(&shown, op) {
+            ShownPathEffect::Retarget(new) => {
+                view.update(cx, |view, _| view.set_source(new.clone()));
+                // `set_source` keeps the facets: the text again rebuilds
+                // the note links from the new place.
+                self.refresh_facet_in(group, new, cx);
                 cx.notify();
             }
-            _ => {}
+            ShownPathEffect::Close => {
+                self.empty_group(group, cx);
+                self.say_shown_gone(group, &shown, cx);
+            }
+            ShownPathEffect::Unchanged => {}
         }
     }
 

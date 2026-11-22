@@ -37,7 +37,7 @@ use gpui_kit::{
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::Facet;
-use kimun_notes::logic::file_ops::relocated;
+use kimun_notes::logic::file_ops::{path_at_or_below, relocated};
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::FileOp;
 use kimun_notes::logic::query::{CollectionLoad, load_collection};
@@ -45,7 +45,6 @@ use tokio::task::JoinHandle;
 
 use super::Workspace;
 use super::facet::{FacetView, MemberInit};
-use super::file_ops::path_at_or_below;
 use super::group_header::REFRESH_LABEL;
 use super::note::{Closing, LeavingFor, NoteLeft};
 use crate::{tasks, theme};

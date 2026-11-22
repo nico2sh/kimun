@@ -44,6 +44,9 @@ pub struct RenameDialog {
     pub validation_task: Option<JoinHandle<()>>,
     /// Optional error message surfaced from a failed rename attempt.
     pub error: Option<String>,
+    /// Why the typed name cannot name a sibling (empty, or a path); shown in
+    /// the status row, and Enter does nothing while it is set.
+    pub refusal: Option<String>,
     hints: HintRow,
 }
 
@@ -62,6 +65,7 @@ impl RenameDialog {
             validation_state: ValidationState::Idle,
             validation_task: None,
             error: None,
+            refusal: None,
             hints: super::confirm_hints("Rename"),
         }
     }
@@ -70,8 +74,10 @@ impl RenameDialog {
     // Validation helpers
     // -----------------------------------------------------------------------
 
-    /// Abort any in-flight validation task and spawn a new one for the
-    /// current value of `self.input`.  The result is sent as
+    /// Abort any in-flight validation task, then validate the current value
+    /// of `self.input`.  A name that cannot name a sibling is refused (the
+    /// reason is stored, the state goes `Idle`, nothing is checked).
+    /// Otherwise a new availability task runs; its result is sent as
     /// [`OverlayData::RenameValidation`] so that state updates happen in
     /// `handle_app_message` rather than in `render`.
     fn spawn_validation(&mut self, tx: &AppTx) {
@@ -80,13 +86,20 @@ impl RenameDialog {
             handle.abort();
         }
 
+        let candidate = match file_ops::rename_target(&self.path, self.input.value()) {
+            Ok(candidate) => candidate,
+            Err(reason) => {
+                self.refusal = Some(reason);
+                self.validation_state = ValidationState::Idle;
+                return;
+            }
+        };
+        self.refusal = None;
+
         let vault = Arc::clone(&self.vault);
-        let input = self.input.value().to_string();
-        let path = self.path.clone();
         let tx_clone = tx.clone();
 
         let handle = tokio::spawn(async move {
-            let candidate = file_ops::rename_candidate(&path, &input);
             let available = file_ops::availability(&vault, &candidate).await.is_free();
             tx_clone
                 .send(AppMessage::OverlayData(OverlayData::RenameValidation {
@@ -117,9 +130,10 @@ impl RenameDialog {
     pub fn handle_key(&mut self, key: KeyEvent, tx: &AppTx) -> EventState {
         match self.input.handle_key(&key) {
             InputOutcome::Submit => {
-                if self.validation_state == ValidationState::Available {
+                let target = file_ops::rename_target(&self.path, self.input.value());
+                if let (ValidationState::Available, Ok(new_path)) = (self.validation_state, target)
+                {
                     let from = self.path.clone();
-                    let new_path = file_ops::rename_candidate(&from, self.input.value());
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
@@ -218,7 +232,15 @@ impl Component for RenameDialog {
         super::render_name_field(f, rows[4], &mut self.input, self.validation_state, theme);
 
         // Row 5: validation status text.
-        super::render_validation_status(f, rows[5], self.validation_state, theme);
+        match &self.refusal {
+            // Why the name is refused, where the status would be.
+            Some(reason) => f.render_widget(
+                Paragraph::new(format!("  {reason}"))
+                    .style(Style::default().fg(theme.red.to_ratatui()).bg(bg)),
+                rows[5],
+            ),
+            None => super::render_validation_status(f, rows[5], self.validation_state, theme),
+        }
 
         // Row 7: hint.  Dim the Enter part unless rename is available.
         super::render_confirm_hints(
@@ -336,5 +358,113 @@ mod tests {
             let event = rx.try_recv().expect("expected AppMessage::CloseOverlay");
             assert!(matches!(event, AppMessage::CloseOverlay));
         });
+    }
+
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    async fn dialog_for(name: &str) -> (RenameDialog, AppTx, mpsc::UnboundedReceiver<AppMessage>) {
+        let vault = crate::test_support::temp_vault("rename-dialog").await;
+        vault
+            .create_note(&VaultPath::new("a.md"), "x")
+            .await
+            .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let d = RenameDialog::new(VaultPath::new(name), vault);
+        (d, tx, rx)
+    }
+
+    fn press(d: &mut RenameDialog, code: KeyCode, tx: &AppTx) {
+        d.handle_key(KeyEvent::new(code, KeyModifiers::NONE), tx);
+    }
+
+    fn clear(d: &mut RenameDialog, tx: &AppTx) {
+        for _ in 0..32 {
+            press(d, KeyCode::Backspace, tx);
+        }
+    }
+
+    fn type_text(d: &mut RenameDialog, text: &str, tx: &AppTx) {
+        for c in text.chars() {
+            press(d, KeyCode::Char(c), tx);
+        }
+    }
+
+    async fn next(rx: &mut mpsc::UnboundedReceiver<AppMessage>) -> AppMessage {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for a message")
+            .expect("channel closed")
+    }
+
+    /// Apply the availability result the dialog is waiting for, as the
+    /// overlay layer does.
+    async fn settle(d: &mut RenameDialog, rx: &mut mpsc::UnboundedReceiver<AppMessage>) {
+        loop {
+            if let AppMessage::OverlayData(OverlayData::RenameValidation { available }) =
+                next(rx).await
+            {
+                d.validation_state = if available {
+                    ValidationState::Available
+                } else {
+                    ValidationState::Taken
+                };
+                d.validation_task = None;
+                return;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_path_as_a_name_shows_why_and_blocks_enter() {
+        let (mut d, tx, mut rx) = dialog_for("/a.md").await;
+        type_text(&mut d, "a/b", &tx);
+        assert!(matches!(&d.refusal, Some(r) if r.contains("name, not a path")));
+        assert_eq!(d.validation_state, ValidationState::Idle);
+        press(&mut d, KeyCode::Enter, &tx);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(rx.try_recv().is_err(), "no check and no rename may run");
+    }
+
+    #[tokio::test]
+    async fn an_empty_name_shows_why_and_blocks_enter() {
+        let (mut d, tx, mut rx) = dialog_for("/a.md").await;
+        clear(&mut d, &tx);
+        assert!(matches!(&d.refusal, Some(r) if r == "Name cannot be empty"));
+        assert_eq!(d.validation_state, ValidationState::Idle);
+        press(&mut d, KeyCode::Enter, &tx);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_valid_name_is_checked_and_enter_renames() {
+        let (mut d, tx, mut rx) = dialog_for("/a.md").await;
+        clear(&mut d, &tx);
+        type_text(&mut d, "b", &tx);
+        assert!(d.refusal.is_none());
+        assert_eq!(d.validation_state, ValidationState::Pending);
+        settle(&mut d, &mut rx).await;
+        assert_eq!(d.validation_state, ValidationState::Available);
+        press(&mut d, KeyCode::Enter, &tx);
+        loop {
+            match next(&mut rx).await {
+                AppMessage::FileOp(_) => break,
+                AppMessage::OverlayData(OverlayData::Error(e)) => panic!("rename failed: {e}"),
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fixing_a_refused_name_clears_the_refusal() {
+        let (mut d, tx, mut rx) = dialog_for("/a.md").await;
+        type_text(&mut d, "/b", &tx);
+        assert!(d.refusal.is_some());
+        press(&mut d, KeyCode::Backspace, &tx);
+        press(&mut d, KeyCode::Backspace, &tx);
+        assert!(d.refusal.is_none());
+        settle(&mut d, &mut rx).await;
+        assert_eq!(d.validation_state, ValidationState::Taken);
     }
 }
