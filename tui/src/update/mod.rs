@@ -18,12 +18,14 @@ mod manifest;
 mod platform;
 mod provider;
 mod state;
+mod terminal_app;
 
 pub use channel::InstallChannel;
 pub(crate) use platform::platform as release_platform;
 pub use platform::{Product, bundle_asset_name};
 pub use provider::{LatestRelease, ReleaseProvider};
 pub use state::UpdateState;
+pub use terminal_app::{TerminalApp, detect_terminal_app};
 
 /// The active release backend. **Single switch point** for *where* releases are
 /// fetched from: implement [`ReleaseProvider`] elsewhere and return it here.

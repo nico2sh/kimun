@@ -121,6 +121,30 @@ pub fn versions_text(status: &UpdateStatus) -> String {
     format!("{PRODUCT} {} → {}", status.current, status.latest)
 }
 
+// ---- The terminal app row ---------------------------------------------------
+
+pub use crate::update::TerminalApp;
+
+/// What the row says while the lookup runs.
+pub const TERMINAL_APP_CHECKING_TEXT: &str = "Terminal app: checking…";
+
+/// The row's text. The `kimun update` hint appears only when the terminal app
+/// is older than the desktop app (`desktop`): for a newer one the command
+/// would do nothing for the desktop app. Versions that cannot be compared
+/// (a pre-release, garbage) give no hint, like the update check.
+pub fn terminal_app_text(app: &TerminalApp, desktop: &str) -> String {
+    match app {
+        TerminalApp::NotInstalled => "Terminal app: not installed".to_string(),
+        TerminalApp::Installed { version } if update::is_newer(desktop, version) => format!(
+            "Terminal app: {version} (this app is {desktop}). Run `kimun update` to update it."
+        ),
+        TerminalApp::Installed { version } => format!("Terminal app: {version}"),
+        TerminalApp::VersionUnknown { path } => {
+            format!("Terminal app: found at {path}, version unknown")
+        }
+    }
+}
+
 /// What a manual check says while it runs.
 pub const CHECKING_TEXT: &str = "Checking for updates…";
 /// What the install says while it runs.
@@ -1178,5 +1202,76 @@ mod tests {
     fn each_frontend_updates_to_its_own_product() {
         assert_eq!(Frontend::Terminal.product(), update::Product::Terminal);
         assert_eq!(Frontend::Desktop.product(), update::Product::Desktop);
+    }
+
+    // ---- The terminal app row ----------------------------------------------
+
+    fn installed(version: &str) -> TerminalApp {
+        TerminalApp::Installed {
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn a_terminal_app_that_is_not_installed_says_so() {
+        assert_eq!(
+            terminal_app_text(&TerminalApp::NotInstalled, "0.25.3"),
+            "Terminal app: not installed"
+        );
+    }
+
+    #[test]
+    fn a_terminal_app_at_the_same_version_has_no_hint() {
+        assert_eq!(
+            terminal_app_text(&installed("0.25.3"), "0.25.3"),
+            "Terminal app: 0.25.3"
+        );
+    }
+
+    #[test]
+    fn an_older_terminal_app_gets_the_update_hint() {
+        assert_eq!(
+            terminal_app_text(&installed("0.24.0"), "0.25.3"),
+            "Terminal app: 0.24.0 (this app is 0.25.3). Run `kimun update` to update it."
+        );
+    }
+
+    #[test]
+    fn the_order_is_numeric_not_textual() {
+        // 0.9.0 is older than 0.25.3 numerically, but newer as text.
+        assert!(terminal_app_text(&installed("0.9.0"), "0.25.3").contains("kimun update"));
+    }
+
+    #[test]
+    fn a_newer_terminal_app_has_no_hint() {
+        // `kimun update` would do nothing for the desktop app.
+        assert_eq!(
+            terminal_app_text(&installed("0.26.0"), "0.25.3"),
+            "Terminal app: 0.26.0"
+        );
+    }
+
+    #[test]
+    fn versions_that_cannot_be_compared_give_no_hint() {
+        // A pre-release or garbage never nudges (the same rule as the update check).
+        assert_eq!(
+            terminal_app_text(&installed("0.24.0-beta.1"), "0.25.3"),
+            "Terminal app: 0.24.0-beta.1"
+        );
+        assert_eq!(
+            terminal_app_text(&installed("0.24.0"), "0.25.3-beta.1"),
+            "Terminal app: 0.24.0"
+        );
+    }
+
+    #[test]
+    fn a_terminal_app_with_an_unknown_version_names_its_path() {
+        let app = TerminalApp::VersionUnknown {
+            path: "/usr/local/bin/kimun".into(),
+        };
+        assert_eq!(
+            terminal_app_text(&app, "0.25.3"),
+            "Terminal app: found at /usr/local/bin/kimun, version unknown"
+        );
     }
 }

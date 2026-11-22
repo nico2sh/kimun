@@ -142,6 +142,18 @@ fn channel_from_marker(config_dir: &Path, exe_dir: Option<&Path>) -> Option<Inst
     }
 }
 
+/// The directory the install marker says `install.sh` put the terminal app in,
+/// when a marker exists and names one. The marker outlives the install, so the
+/// caller must still look for the file there.
+pub(super) fn marker_install_dir(config_dir: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(config_dir.join(MARKER_FILE)).ok()?;
+    let marker: InstallMarker = toml::from_str(&raw).ok()?;
+    marker
+        .install_dir
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+}
+
 fn channel_from_exe_path() -> InstallChannel {
     // No idea where we live — do not risk touching a managed binary.
     let Some(exe) = exe_paths().and_then(|e| e.canonical.clone()) else {

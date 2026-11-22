@@ -35,6 +35,14 @@ Kimün uses the mouse. To use the mouse of your terminal for one action, hold `S
 
 Run `kimun workspace reindex <name>`. This rebuilds the search index.
 
+## Kimün says the index was made by a newer version
+
+The message reads "This vault's index was made by a newer version of Kimün". The index is the search data that Kimün keeps for a vault. You use two versions of Kimün on this vault, and the newer one made the index.
+
+Update the older app. In the terminal app, run `kimun update`. In the desktop app, open Preferences, go to Display, and select Check now. The desktop app also shows the version of the terminal app in the same place.
+
+A reindex does not fix this message. The older app will not open the vault until you update it.
+
 ## Report a problem
 
 Kimün writes a log file. Here is where you find it:

@@ -155,6 +155,19 @@ use super::{
 //       `[[doc.pdf]]`) are no longer note links. Bump forces a clean reindex.
 const VERSION: &str = "0.19";
 
+/// Whether `stored` is a newer schema version than `current`. Versions are
+/// dot-separated numbers compared part by part, so `0.100` is newer than
+/// `0.19`. A string that is not a version is never newer: it heals.
+fn is_newer_version(stored: &str, current: &str) -> bool {
+    fn parts(v: &str) -> Option<Vec<u32>> {
+        v.split('.').map(|p| p.parse().ok()).collect()
+    }
+    match (parts(stored), parts(current)) {
+        (Some(s), Some(c)) => s > c,
+        _ => false,
+    }
+}
+
 /// Tables whose rows belong to one note through a `path` column. Every save,
 /// rename and delete keeps all of them in step with the note, so a new
 /// per-note table only has to be listed here.
@@ -206,6 +219,10 @@ impl NoteIndex {
     /// recreated, leaving a valid but empty index that the next sync pass
     /// fills. [`ready`](Self::ready) reports whether a heal
     /// happened.
+    ///
+    /// An index stamped by a **newer** schema version is the exception: the
+    /// open fails with [`DBError::IndexNewer`] and the file is left as it is
+    /// (see that variant for why a reindex does not override it).
     pub(crate) async fn open(index_file: &file::IndexFile) -> Result<Self, DBError> {
         let db_path = index_file.path().as_path().to_owned();
         if let Some(parent) = index_file.path().parent() {
@@ -333,7 +350,9 @@ impl NoteIndex {
         self.healed.store(false, Ordering::Relaxed);
     }
 
-    /// `true` when the stored schema version matches [`VERSION`].
+    /// `true` when the stored schema version matches [`VERSION`]. A stored
+    /// version that is newer than [`VERSION`] is an error, not a mismatch to
+    /// heal: the index belongs to a newer app and must be left alone.
     async fn schema_is_current(pool: &SqlitePool) -> Result<bool, DBError> {
         let version: Option<String> =
             sqlx::query_scalar("SELECT value FROM appData WHERE name = 'version'")
@@ -349,6 +368,12 @@ impl NoteIndex {
         match version {
             Some(v) => {
                 debug!("DB Version: {}, current DB Version: {}", v, VERSION);
+                if v != VERSION && is_newer_version(&v, VERSION) {
+                    return Err(DBError::IndexNewer {
+                        found: v,
+                        supported: VERSION.to_string(),
+                    });
+                }
                 Ok(v == VERSION)
             }
             None => Ok(false),
