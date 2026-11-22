@@ -606,7 +606,7 @@ impl Workspace {
                         workspace.open_attachment_in(group, &next, cx);
                     }
                 }
-                NoteLeft::Stays | NoteLeft::Redirected => {
+                NoteLeft::Stays => {
                     if let Some(state) = workspace.state_mut(group) {
                         state.attachment_wanted = None;
                     }

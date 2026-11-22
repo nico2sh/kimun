@@ -53,7 +53,7 @@ use kimun_notes::logic::session::{NoteSession, SaveOutcome};
 use super::Workspace;
 use crate::editor_view::EditorView;
 
-pub(super) use self::leave::{LeaveStart, LeavingFor, NoteLeft};
+pub(super) use self::leave::{LeavingFor, NoteLeft};
 
 mod close;
 mod footer;

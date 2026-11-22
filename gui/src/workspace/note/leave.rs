@@ -25,21 +25,9 @@ pub(in crate::workspace) enum NoteLeft {
     Now,
     /// The flush wrote everything: the panel may show.
     Flushed,
-    /// The note stays because the flush failed (flashed); its tick is back.
+    /// The note stays (the flush failed, or a note was asked for
+    /// meanwhile); its tick is back.
     Stays,
-    /// The note stays because a note was asked for meanwhile, which opens
-    /// instead; its tick is back. Nothing failed.
-    Redirected,
-}
-
-/// Whether [`Workspace::leave_note`] started the leave.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::workspace) enum LeaveStart {
-    /// `then` ran, or runs when the flush ends.
-    Started,
-    /// The note cannot be let go now (flashed when it has a reason): `then`
-    /// never runs.
-    Refused,
 }
 
 impl Workspace {
@@ -53,8 +41,7 @@ impl Workspace {
     /// keyboard. `then` runs at once ([`NoteLeft::Now`]) when there is
     /// nothing to write, else when the flush ends, followed by any open
     /// that waited for it. `panel` says which task slot holds the flush.
-    /// `then` lets the note go itself ([`Self::release_note_in`]). Says
-    /// whether the leave started, so a caller can undo what it did for it.
+    /// `then` lets the note go itself ([`Self::release_note_in`]).
     pub(in crate::workspace) fn leave_note(
         &mut self,
         group: GroupId,
@@ -63,24 +50,24 @@ impl Workspace {
         then: impl FnOnce(&mut Self, NoteLeft, &mut Window, &mut Context<Self>) + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> LeaveStart {
+    ) {
         let can_save = self.can_save_in(group);
         if let Some(block) = self.flush_block_in(group, cx) {
             self.flash_error(format!("Couldn't open {name}: {}.", block.reason()), cx);
-            return LeaveStart::Refused;
+            return;
         }
         if self.host_in(group).is_none() {
-            return LeaveStart::Refused;
+            return;
         }
         if !can_save {
             then(self, NoteLeft::Now, window, cx);
-            return LeaveStart::Started;
+            return;
         }
         // No tick from here: the flush is the last write of the note.
         let Some(flush) = self.begin_note_flush_in(group, cx) else {
             let text = format!("Couldn't open {name}: another save is still running.");
             self.flash_error(text, cx);
-            return LeaveStart::Refused;
+            return;
         };
         let task = cx.spawn_in(window, async move |this, cx| {
             let flushed = tokio::spawn(flush.run()).await;
@@ -93,14 +80,12 @@ impl Workspace {
             *slot = Some(task);
         }
         cx.notify();
-        LeaveStart::Started
     }
 
     /// The flush [`Self::leave_note`] started ended: `then` hears whether
     /// everything is written ([`NoteLeft::Flushed`]) or the note stays (the
-    /// flush failed, flashed: [`NoteLeft::Stays`]; or a note was asked for
-    /// meanwhile, which opens instead: [`NoteLeft::Redirected`]), its tick
-    /// back.
+    /// flush failed, flashed; or a note was asked for meanwhile, which
+    /// opens instead), its tick back.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn note_left(
         &mut self,
@@ -131,7 +116,7 @@ impl Workspace {
         } else if note_wanted {
             // A note was asked for meanwhile: it opens instead.
             self.restart_tick_unless_read_only_in(group);
-            then(self, NoteLeft::Redirected, window, cx);
+            then(self, NoteLeft::Stays, window, cx);
         } else {
             then(self, NoteLeft::Flushed, window, cx);
         }

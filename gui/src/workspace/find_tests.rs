@@ -8,7 +8,6 @@
 //! the test clock.
 #![cfg(test)]
 
-use super::note::NoteLeft;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext as _, Entity, Focusable as _, SharedString, TestAppContext};
 use kimun_core::nfs::VaultPath;
@@ -960,87 +959,6 @@ fn the_browser_chords_wait_for_the_query_help(cx: &mut TestAppContext) {
     }
     let group = active_group(&started, cx);
     assert_eq!(collection_of(&started, group, cx), None);
-}
-
-/// A collection that cannot open from the browser brings the browser back
-/// on its query: the load failed, or the open note could not be saved. Not
-/// when it opened, nor when the user opened a note meanwhile.
-#[gpui_kit::test]
-fn the_browser_comes_back_only_when_its_collection_does_not_open(cx: &mut TestAppContext) {
-    let rt = runtime();
-    let _guard = rt.enter();
-    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
-    let group = active_group(&started, cx);
-    let load = || kimun_notes::logic::query::CollectionLoad {
-        notes: Vec::new(),
-        total: 0,
-        unreadable: 0,
-    };
-    let left = |left: NoteLeft, cx: &mut TestAppContext| {
-        cx.update_window(started.handle, |_, window, cx| {
-            started.workspace.update(cx, |w, cx| {
-                w.collection_left(
-                    group,
-                    "#go".into(),
-                    load(),
-                    Vec::new(),
-                    Some("#go".into()),
-                    left,
-                    window,
-                    cx,
-                )
-            })
-        })
-        .unwrap();
-        started.settle_dialog(cx);
-    };
-    let failed = |cx: &mut TestAppContext| {
-        cx.update_window(started.handle, |_, window, cx| {
-            started.workspace.update(cx, |w, cx| {
-                w.collection_loaded(
-                    group,
-                    "#go".into(),
-                    Vec::new(),
-                    Some("#go".into()),
-                    Err("boom".into()),
-                    window,
-                    cx,
-                )
-            })
-        })
-        .unwrap();
-        started.settle_dialog(cx);
-    };
-    // The load failed: the browser is back, on its query, and says why.
-    failed(cx);
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
-    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
-    assert!(
-        started
-            .flash(cx)
-            .is_some_and(|f| f.starts_with("Couldn't run")),
-        "{:?}",
-        started.flash(cx)
-    );
-    // With a dialog open, nothing opens over it, and nothing breaks.
-    failed(cx);
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
-    press(&started, "escape", cx);
-    started.settle_dialog(cx);
-    assert_eq!(started.shown_modal(cx), None);
-    // The note could not be saved: back.
-    left(NoteLeft::Stays, cx);
-    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
-    press(&started, "escape", cx);
-    started.settle_dialog(cx);
-    // The user opened a note meanwhile: no browser over it, no collection.
-    left(NoteLeft::Redirected, cx);
-    assert_eq!(started.shown_modal(cx), None);
-    assert_eq!(collection_of(&started, group, cx), None);
-    // The collection showed: no browser.
-    left(NoteLeft::Flushed, cx);
-    assert_eq!(started.shown_modal(cx), None);
-    assert_eq!(collection_of(&started, group, cx).as_deref(), Some("#go"));
 }
 
 /// A double-click on a tag opens the browser once and opens no note: its
