@@ -248,8 +248,16 @@ pub enum DBError {
     NonCritical(String),
     /// The index was written by a newer Kimün than this one. It is left
     /// untouched: wiping it would make the two apps rebuild it at each other.
+    ///
+    /// Every way into the vault opens the index first, so an explicit reindex
+    /// (`kimun workspace reindex`, Preferences' reindex buttons) refuses too:
+    /// the way out is to update the older app. This is deliberate. A reindex
+    /// that replaced a newer index would bring the rebuild loop back. If a
+    /// user is ever stuck with an app that cannot be updated, the escape is an
+    /// opt-in "replace a newer index" flag on the reindex callers, not a
+    /// change to this default.
     #[error(
-        "This vault's index was made by a newer version of Kimün (index format {found}, this version reads {supported}). Update this app, for example with `kimun update`."
+        "This vault's index was made by a newer version of Kimün (index format {found}, this version reads {supported}). Update this app to open it."
     )]
     IndexNewer { found: String, supported: String },
     /// An index-related failure that does not fit the other variants (e.g.
@@ -265,6 +273,21 @@ pub enum DBError {
 mod tests {
     use super::*;
     use crate::nfs::VaultPath;
+
+    #[test]
+    fn a_newer_index_is_a_user_error_that_names_no_frontend_command() {
+        let e = VaultError::DBError(DBError::IndexNewer {
+            found: "0.20".into(),
+            supported: "0.19".into(),
+        });
+        assert!(e.is_user_error());
+        assert_eq!(
+            e.user_message().as_deref(),
+            Some(
+                "This vault's index was made by a newer version of Kimün (index format 0.20, this version reads 0.19). Update this app to open it."
+            )
+        );
+    }
 
     #[test]
     fn property_errors_have_user_messages() {

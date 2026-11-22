@@ -2,9 +2,11 @@
 //! version. Read-only: nothing here installs, updates or changes it.
 //!
 //! Where it looks, in order: the directory the install marker names (where
-//! `install.sh` puts `kimun` next to `kimun-gui`, and a place a desktop launcher's
-//! `PATH` may not include), then each directory of `PATH` (brew and cargo
-//! installs). The first `kimun` file found decides: if it does not run in
+//! `install.sh` puts `kimun` next to `kimun-gui`), then each directory of
+//! `PATH`, then the places brew and cargo install to ([`fallback_dirs`]). A
+//! desktop app started from a launcher has a minimal `PATH` that leaves those
+//! out, so without the last step a brew or cargo install would show as "not
+//! installed". The first `kimun` file found decides: if it does not run in
 //! time or prints no version, the result is [`TerminalApp::VersionUnknown`],
 //! never "not installed".
 //!
@@ -97,29 +99,59 @@ impl VersionProbe for ProcessProbe {
 /// Look for the terminal app and read its version, with the real process
 /// probe and the real `PATH`. `config_dir` holds the install marker.
 pub fn detect_terminal_app(config_dir: &Path) -> TerminalApp {
+    let home = kimun_core::system::home().ok();
     detect(
         config_dir,
         std::env::var_os("PATH").as_deref(),
+        &fallback_dirs(home.as_ref().map(|h| h.as_path())),
         &ProcessProbe,
     )
 }
 
-/// The directories to look in, in order: the install marker's, then `PATH`'s.
-fn candidate_dirs(config_dir: &Path, path_var: Option<&OsStr>) -> Vec<PathBuf> {
+/// The places a terminal app is installed to that a launcher's `PATH` may
+/// leave out: Homebrew's and the system's `bin` (Unix), and the `bin`
+/// directories of `cargo install` and of the usual per-user installs under
+/// `home`.
+fn fallback_dirs(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(unix)]
+    {
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
+    }
+    if let Some(home) = home {
+        dirs.push(home.join(".cargo").join("bin"));
+        dirs.push(home.join(".local").join("bin"));
+    }
+    dirs
+}
+
+/// The directories to look in, in order: the install marker's, then `PATH`'s,
+/// then `fallback`.
+fn candidate_dirs(
+    config_dir: &Path,
+    path_var: Option<&OsStr>,
+    fallback: &[PathBuf],
+) -> Vec<PathBuf> {
     let marked = super::channel::marker_install_dir(config_dir);
     let on_path = path_var
         .into_iter()
         .flat_map(std::env::split_paths)
         .filter(|dir| !dir.as_os_str().is_empty());
-    marked.into_iter().chain(on_path).collect()
+    marked
+        .into_iter()
+        .chain(on_path)
+        .chain(fallback.iter().cloned())
+        .collect()
 }
 
 pub(crate) fn detect(
     config_dir: &Path,
     path_var: Option<&OsStr>,
+    fallback: &[PathBuf],
     probe: &dyn VersionProbe,
 ) -> TerminalApp {
-    for dir in candidate_dirs(config_dir, path_var) {
+    for dir in candidate_dirs(config_dir, path_var, fallback) {
         let file = dir.join(EXE_NAME);
         if !file.is_file() {
             continue;
@@ -222,7 +254,7 @@ mod tests {
         let cfg = tempfile::tempdir().unwrap();
         let empty = tempfile::tempdir().unwrap();
         let probe = FakeProbe::printing("kimun 1.0.0");
-        let got = detect(cfg.path(), Some(&path_of(&[empty.path()])), &probe);
+        let got = detect(cfg.path(), Some(&path_of(&[empty.path()])), &[], &probe);
         assert_eq!(got, TerminalApp::NotInstalled);
         assert!(probe.asked.borrow().is_empty(), "no file, no process");
     }
@@ -230,7 +262,7 @@ mod tests {
     #[test]
     fn no_path_variable_and_no_marker_is_not_installed() {
         let cfg = tempfile::tempdir().unwrap();
-        let got = detect(cfg.path(), None, &FakeProbe::printing("kimun 1.0.0"));
+        let got = detect(cfg.path(), None, &[], &FakeProbe::printing("kimun 1.0.0"));
         assert_eq!(got, TerminalApp::NotInstalled);
     }
 
@@ -240,7 +272,7 @@ mod tests {
         let on_path = dir_with_kimun();
         let cfg = config_with_marker(marked.path());
         let probe = FakeProbe::printing("kimun 0.25.3\n");
-        let got = detect(cfg.path(), Some(&path_of(&[on_path.path()])), &probe);
+        let got = detect(cfg.path(), Some(&path_of(&[on_path.path()])), &[], &probe);
         assert_eq!(
             got,
             TerminalApp::Installed {
@@ -260,7 +292,7 @@ mod tests {
         let on_path = dir_with_kimun();
         let cfg = config_with_marker(marked_empty.path());
         let probe = FakeProbe::printing("kimun 0.24.0");
-        let got = detect(cfg.path(), Some(&path_of(&[on_path.path()])), &probe);
+        let got = detect(cfg.path(), Some(&path_of(&[on_path.path()])), &[], &probe);
         assert_eq!(
             got,
             TerminalApp::Installed {
@@ -278,6 +310,7 @@ mod tests {
         let got = detect(
             cfg.path(),
             Some(&path_of(&[on_path.path()])),
+            &[],
             &FakeProbe::printing("kimun 0.1.0"),
         );
         assert_eq!(
@@ -297,6 +330,7 @@ mod tests {
         detect(
             cfg.path(),
             Some(&path_of(&[first.path(), second.path()])),
+            &[],
             &probe,
         );
         assert_eq!(*probe.asked.borrow(), [first.path().join(exe_name())]);
@@ -309,6 +343,7 @@ mod tests {
         let got = detect(
             cfg.path(),
             Some(&path_of(&[on_path.path()])),
+            &[],
             &FakeProbe::failing(),
         );
         assert_eq!(
@@ -337,6 +372,7 @@ mod tests {
             let got = detect(
                 cfg.path(),
                 Some(&path_of(&[on_path.path()])),
+                &[],
                 &FakeProbe::printing(out),
             );
             assert!(
@@ -353,6 +389,7 @@ mod tests {
         let got = detect(
             cfg.path(),
             Some(&path_of(&[on_path.path()])),
+            &[],
             &FakeProbe::printing("kimun 0.26.0-beta.1\n"),
         );
         assert_eq!(
@@ -360,6 +397,64 @@ mod tests {
             TerminalApp::Installed {
                 version: "0.26.0-beta.1".into()
             }
+        );
+    }
+
+    #[test]
+    fn the_fallback_directories_are_looked_in_after_path() {
+        // A desktop app started from a launcher has a minimal PATH: the places
+        // brew and cargo install to are still searched.
+        let cfg = tempfile::tempdir().unwrap();
+        let empty_on_path = tempfile::tempdir().unwrap();
+        let fallback = dir_with_kimun();
+        let probe = FakeProbe::printing("kimun 0.25.3");
+        let got = detect(
+            cfg.path(),
+            Some(&path_of(&[empty_on_path.path()])),
+            &[fallback.path().to_path_buf()],
+            &probe,
+        );
+        assert_eq!(
+            got,
+            TerminalApp::Installed {
+                version: "0.25.3".into()
+            }
+        );
+        assert_eq!(*probe.asked.borrow(), [fallback.path().join(exe_name())]);
+    }
+
+    #[test]
+    fn path_comes_before_the_fallback_directories() {
+        let cfg = tempfile::tempdir().unwrap();
+        let on_path = dir_with_kimun();
+        let fallback = dir_with_kimun();
+        let probe = FakeProbe::printing("kimun 0.25.3");
+        detect(
+            cfg.path(),
+            Some(&path_of(&[on_path.path()])),
+            &[fallback.path().to_path_buf()],
+            &probe,
+        );
+        assert_eq!(*probe.asked.borrow(), [on_path.path().join(exe_name())]);
+    }
+
+    #[test]
+    fn the_fallback_list_names_the_usual_install_places() {
+        let home = Path::new("/home/someone");
+        let dirs = fallback_dirs(Some(home));
+        assert!(dirs.contains(&home.join(".cargo").join("bin")));
+        assert!(dirs.contains(&home.join(".local").join("bin")));
+        #[cfg(unix)]
+        {
+            assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+            assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+        }
+        // Without a home directory, only the places that need none remain.
+        assert!(fallback_dirs(None).iter().all(|d| d.is_absolute()));
+        assert!(
+            !fallback_dirs(None)
+                .iter()
+                .any(|d| d.ends_with(".cargo/bin"))
         );
     }
 

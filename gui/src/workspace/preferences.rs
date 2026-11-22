@@ -1833,8 +1833,6 @@ impl PreferencesView {
         .into_any_element()
     }
 
-    /// The update check on startup, and `Check now`. The checkbox's own
-    /// label names the setting, so it has no heading above it.
     /// The terminal app row's words: none while the window has no lookup.
     fn terminal_app_text(&self) -> Option<String> {
         use super::terminal_app::TerminalAppRow;
@@ -1848,6 +1846,8 @@ impl PreferencesView {
         }
     }
 
+    /// The update check on startup, and `Check now`. The checkbox's own
+    /// label names the setting, so it has no heading above it.
     fn render_update_check(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
