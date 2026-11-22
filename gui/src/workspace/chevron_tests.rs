@@ -97,7 +97,7 @@ fn three_rows(
             log.borrow_mut().push(match event {
                 DrawerListEvent::Activate(row) => format!("activate:{}", row.0),
                 DrawerListEvent::Verb(row, verb) => format!("verb:{}:{verb}", row.0),
-                DrawerListEvent::FileOp(..) => "file-op".into(),
+                DrawerListEvent::Pick(..) => "pick".into(),
                 DrawerListEvent::Dismiss => "dismiss".into(),
             });
         })

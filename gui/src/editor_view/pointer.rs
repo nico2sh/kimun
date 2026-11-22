@@ -104,6 +104,23 @@ impl EditorView {
             self.read_only_press(pointer, left, window, cx);
             return;
         }
+        // A right press with no selection on a follow target asks for the
+        // Link menu instead of the note menu. The caret stays: the target is
+        // read from the cell, not from the caret. With a selection, or off
+        // any target, the editor handles it below (copy, or the note menu).
+        if let Some(target) = self.link_menu_target(&pointer) {
+            self.clicks.end();
+            // A right press is an action, as in `handle_pointer`: it ends
+            // the typing run.
+            self.editor.interrupt_typing();
+            self.dragging = false;
+            cx.emit(EditorEvent::LinkMenu {
+                at: event.position,
+                target,
+            });
+            self.settle(window, cx);
+            return;
+        }
         // A press on a link (the hand cursor) only places the caret, as the
         // TUI's first press does. The primary modifier (Cmd on macOS, Ctrl
         // elsewhere, as the keymap's `primary`; Ctrl+click is a right-click on
@@ -147,6 +164,33 @@ impl EditorView {
     pub(super) fn feed_pointer(&mut self, pointer: &PointerInput, settle: bool) {
         self.editor.handle_pointer(pointer, &self.tx);
         self.editor.settle_pointer(settle);
+    }
+
+    /// The follow target (a link, a label) drawn in `pointer`'s cell, or
+    /// `None`. It reads the editor's last layout: the caret and the
+    /// selection stay where they are, target or not.
+    pub(crate) fn target_under(&mut self, pointer: &PointerInput) -> Option<FollowTarget> {
+        self.editor
+            .follow_target_at_screen(pointer.row, pointer.col)
+    }
+
+    /// The target a right press asks the Link menu for: the one under the
+    /// pointer, when the press is a right press and nothing is selected (an
+    /// empty selection counts as none, as in `Editor::handle_pointer`). The
+    /// find bar owns the pointer while open, so there a press never acts on
+    /// a link: no target, and the right press asks for the note menu.
+    pub(super) fn link_menu_target(&mut self, pointer: &PointerInput) -> Option<FollowTarget> {
+        let unselected = self
+            .editor
+            .selection()
+            .is_none_or(|(start, end)| start == end);
+        if pointer.kind != PointerKind::Down(Button::Right)
+            || !unselected
+            || self.editor.find_bar().is_some()
+        {
+            return None;
+        }
+        self.target_under(pointer)
     }
 
     /// Ask the window's owner to follow the follow target under the caret

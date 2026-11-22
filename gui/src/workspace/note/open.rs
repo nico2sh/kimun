@@ -10,7 +10,49 @@ use kimun_notes::logic::layout_tree::{Axis, GroupId};
 use crate::workspace::Workspace;
 use crate::workspace::session::QueuedOpen;
 
+/// Where an open lands: the active group, a new tab, a split beside the
+/// active group, or the system's default program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenAt {
+    Here,
+    NewTab,
+    Split(Axis),
+    Externally,
+}
+
 impl Workspace {
+    /// Open the note at `path` where `at` says ([`OpenAt`]). A note has no
+    /// other program here, so `Externally` opens it in place.
+    pub(crate) fn open_note_at(&mut self, path: VaultPath, at: OpenAt, cx: &mut Context<Self>) {
+        match at {
+            OpenAt::Here | OpenAt::Externally => self.open_note(path, cx),
+            OpenAt::NewTab => self.open_note_in_new_tab(path, cx),
+            OpenAt::Split(axis) => self.open_note_in_split(path, axis, cx),
+        }
+    }
+
+    /// Open the attachment at `path` where `at` says. An attachment has no
+    /// split: `Split` opens a new tab. `Externally` hands the file to the
+    /// system's default program.
+    pub(crate) fn open_attachment_at(
+        &mut self,
+        path: &VaultPath,
+        at: OpenAt,
+        cx: &mut Context<Self>,
+    ) {
+        match at {
+            OpenAt::Here => self.open_attachment(path, cx),
+            OpenAt::NewTab | OpenAt::Split(_) => self.open_attachment_in_new_tab(path, cx),
+            OpenAt::Externally => {
+                let Some(vault) = self.vault() else {
+                    return;
+                };
+                let file = path.to_pathbuf(vault.workspace_path());
+                self.open_externally(&path.to_string(), file.as_os_str(), cx);
+            }
+        }
+    }
+
     /// The group holding `path` ([`super::NoteHost::holds`]), in any tab. A note
     /// is open in at most one group (ADR-0058). A facet group holds no note
     /// (its session let it go, [`crate::workspace::facet_group`]), so it never
@@ -64,7 +106,12 @@ impl Workspace {
     /// once, or once it has loaded when it is still on its way. Otherwise it
     /// opens in a new tab ([`Self::open_note_in_new_tab`]) and jumps once
     /// it has loaded. An open held for a session restore opens at the top.
-    pub(crate) fn open_note_at(&mut self, path: VaultPath, line: usize, cx: &mut Context<Self>) {
+    pub(crate) fn open_note_at_line(
+        &mut self,
+        path: VaultPath,
+        line: usize,
+        cx: &mut Context<Self>,
+    ) {
         let holder = self.locate_note(&path);
         self.open_note_in_new_tab(path.clone(), cx);
         let group = holder.or_else(|| {

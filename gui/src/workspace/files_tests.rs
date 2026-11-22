@@ -464,7 +464,7 @@ fn a_double_click_opens_a_folder_once(cx: &mut TestAppContext) {
     assert!(started.open_in_editor(cx).unwrap().is_like(&path("top.md")));
 }
 
-/// A right click is the entry menu's: it never opens the row.
+/// A right click is the row menu's: it never opens the row.
 #[gpui_kit::test]
 fn a_right_click_never_opens_a_row(cx: &mut TestAppContext) {
     let rt = runtime();

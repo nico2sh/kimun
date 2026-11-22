@@ -26,6 +26,7 @@ use super::links::{LINKS_ID, LinksView, NO_NOTE_TEXT, link_row_id};
 use super::modal::ModalKind;
 use super::outline::{OUTLINE_ID, OutlineView, heading_row_id};
 use super::rail_cell_id;
+use super::row_menu_tests::in_workspace::pick;
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
 use super::start_tests::{copy_key, select_all_key};
 use crate::startup::FirstNote;
@@ -396,7 +397,7 @@ fn links_rows_draw_no_chevron(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| on(&started, "epsilon.md", cx));
 }
 
-/// A right click is the entry menu's: it opens nothing.
+/// A right click is the row menu's: it opens nothing.
 #[gpui_kit::test]
 fn a_right_click_opens_no_row(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -463,7 +464,7 @@ fn links_follows_a_switch_a_rename_and_a_delete(cx: &mut TestAppContext) {
     assert_eq!(link_empty_text(&started, cx), NO_NOTE_TEXT);
 }
 
-/// A LINKS row has the FILES entry menu: Rename… opens the rename dialog
+/// A LINKS row has the row menu: Rename… opens the rename dialog
 /// for the row's note (not the open one).
 #[gpui_kit::test]
 fn a_links_row_has_the_entry_menu(cx: &mut TestAppContext) {
@@ -487,8 +488,7 @@ fn a_links_row_has_the_entry_menu(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    press(&started, "down", cx);
-    press(&started, "enter", cx);
+    pick(&started, "Rename…", cx);
     settle(&started, cx);
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Rename));
     let target = cx.read(|cx| match started.workspace.read(cx).file_dialog.clone() {

@@ -735,7 +735,7 @@ fn enter_opens_the_selected_note(cx: &mut TestAppContext) {
     );
 }
 
-/// A click opens (C1); a right-click shows the FILES entry menu for the
+/// A click opens (C1); a right-click shows the row menu for the
 /// row's note, and opens nothing.
 #[gpui_kit::test]
 fn a_result_clicks_open_and_has_the_entry_menu(cx: &mut TestAppContext) {
@@ -753,8 +753,7 @@ fn a_result_clicks_open_and_has_the_entry_menu(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.run_until_parked();
-    press(&started, "down", cx);
-    press(&started, "enter", cx);
+    super::row_menu_tests::in_workspace::pick(&started, "Rename…", cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Rename));
     let target = cx.read(|cx| match started.workspace.read(cx).file_dialog.clone() {

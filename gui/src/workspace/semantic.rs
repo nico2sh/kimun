@@ -7,7 +7,7 @@
 //! one [`SemanticHit`] per note, keeping its best chunk). A row is drawn as
 //! FIND draws one ([`result_row`]): the title (the matched section's), the
 //! similarity, the filename and the chunk as one line of context; a
-//! right-click shows the FILES entry menu. The server already ranks by
+//! right-click shows the row menu ([`super::row_menu`]). The server already ranks by
 //! meaning, so nothing re-filters them here by the query's words (the
 //! TUI's `LOCAL_FILTER = false`). The source waits out typing itself
 //! (250 ms) and the list drops a superseded search, so only the latest
@@ -585,9 +585,7 @@ impl Workspace {
                     self.open_note(path.clone(), cx);
                 }
             }
-            DrawerListEvent::FileOp(kind, path) => {
-                self.open_file_dialog(*kind, path.clone(), window, cx)
-            }
+            DrawerListEvent::Pick(pick, path) => self.run_row_pick(*pick, path.clone(), window, cx),
             DrawerListEvent::Verb(_, EXPAND) => {
                 if let Some(view) = self.semantic.clone() {
                     view.update(cx, |view, cx| view.chevron_step(window, cx));
