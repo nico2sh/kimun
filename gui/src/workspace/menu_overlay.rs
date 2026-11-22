@@ -21,20 +21,34 @@ use gpui_kit::base::TestSupportExt as _;
 /// How far the menu keeps from the window's edges, in rems.
 const EDGE_MARGIN_REMS: f32 = 0.5;
 
-/// `view` as a menu `width_rems` wide, at `at` by the corner `anchor`,
-/// over a window-wide layer (`layer_id`) that runs `dismiss` on any press
-/// and keeps the wheel from scrolling what is under it. It is kept inside
-/// the window.
+/// Where and how [`overlay`] draws a menu.
+pub(super) struct Placement {
+    /// The element id of the window-wide layer under the menu.
+    pub(super) layer_id: &'static str,
+    /// The menu's width, in rems.
+    pub(super) width_rems: f32,
+    /// The point the menu hangs from, in window coordinates.
+    pub(super) at: Point<Pixels>,
+    /// The corner of the menu that sits at `at`.
+    pub(super) anchor: Anchor,
+}
+
+/// `view` as a menu at `place`, over a window-wide layer that runs
+/// `dismiss` on any press and keeps the wheel from scrolling what is under
+/// it. It is kept inside the window.
 pub(super) fn overlay(
-    layer_id: &'static str,
-    width_rems: f32,
+    place: Placement,
     view: impl IntoElement,
-    at: Point<Pixels>,
-    anchor: Anchor,
     window: &Window,
     cx: &App,
     dismiss: impl Fn(&MouseDownEvent, &mut Window, &mut App) + Clone + 'static,
 ) -> AnyElement {
+    let Placement {
+        layer_id,
+        width_rems,
+        at,
+        anchor,
+    } = place;
     let size = window.viewport_size();
     let menu = div()
         .occlude()

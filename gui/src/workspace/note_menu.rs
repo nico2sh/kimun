@@ -761,11 +761,13 @@ impl Workspace {
             }
         };
         Some(super::menu_overlay::overlay(
-            NOTE_MENU_LAYER_ID,
-            MENU_REMS,
+            super::menu_overlay::Placement {
+                layer_id: NOTE_MENU_LAYER_ID,
+                width_rems: MENU_REMS,
+                at: open.at,
+                anchor: open.anchor,
+            },
             open.view.clone(),
-            open.at,
-            open.anchor,
             window,
             cx,
             dismiss(),

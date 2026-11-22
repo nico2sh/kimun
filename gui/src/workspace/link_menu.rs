@@ -586,11 +586,13 @@ impl Workspace {
             }
         };
         Some(super::menu_overlay::overlay(
-            LINK_MENU_LAYER_ID,
-            MENU_REMS,
+            super::menu_overlay::Placement {
+                layer_id: LINK_MENU_LAYER_ID,
+                width_rems: MENU_REMS,
+                at: open.at,
+                anchor: gpui_kit::Anchor::TopLeft,
+            },
             open.view.clone(),
-            open.at,
-            gpui_kit::Anchor::TopLeft,
             window,
             cx,
             dismiss(),
