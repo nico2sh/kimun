@@ -1235,7 +1235,7 @@ impl Workspace {
             return;
         }
         self.cancel_leader(cx);
-        let read_only = self.status.read_only;
+        let read_only = self.status.read_only();
         let locked = read_only.then(|| {
             "Read-only: this vault has names that differ only by case, so nothing is written."
                 .to_string()
@@ -1364,7 +1364,7 @@ impl Workspace {
         job: PropertyJob,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if self.status.read_only {
+        if self.status.read_only() {
             return Err("Read-only: nothing is written in this vault.".into());
         }
         if self.note_held() {

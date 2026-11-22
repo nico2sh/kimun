@@ -627,7 +627,6 @@ impl Workspace {
             .size(rems(PILL_HEIGHT_REMS))
             .rounded_full()
             .text_color(theme::muted(&theme))
-            .cursor_pointer()
             .hover(move |style| style.bg(hover))
             .child(Icon::new(NEW_ICON).size_4())
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
@@ -867,7 +866,6 @@ impl Workspace {
             .rounded_full()
             .text_sm()
             .whitespace_nowrap()
-            .cursor_pointer()
             .when(shown, |pill| {
                 pill.bg(theme::selected_background(&theme))
                     .text_color(theme::foreground(&theme))

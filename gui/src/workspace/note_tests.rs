@@ -10,6 +10,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext, VisualTestContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::message::AppMessage;
+use kimun_notes::logic::startup::IndexOutcome;
 use tokio::runtime::Runtime;
 
 use super::Closing;
@@ -234,7 +235,7 @@ fn a_read_only_vault_writes_nothing(cx: &mut TestAppContext) {
     let (v, started) = started_on(cx, &rt, &[("a.md", "alpha")], "a.md");
     send(
         &started,
-        AppMessage::VaultConflict("conflicts:\na.md / A.md".into()),
+        AppMessage::VaultIndexed(IndexOutcome::Conflict("conflicts:\na.md / A.md".into())),
         cx,
     );
     // Preferences > Workspaces show the conflict over the window: close

@@ -199,7 +199,6 @@ impl Workspace {
             .items_center()
             .justify_center()
             .rounded_md()
-            .cursor_pointer()
             .text_color(if facet {
                 theme::foreground(&theme)
             } else {

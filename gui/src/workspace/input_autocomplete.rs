@@ -411,7 +411,7 @@ pub(super) fn show<V: QueryFieldOwner>(
             .test_support()
             .role(Role::ListBox)
             .aria_label("Suggestions"),
-        popup_layer::width_of(field),
+        popup_layer::width_of(field, window),
         t,
     )
     .on_scroll(popup_layer::on_wheel(

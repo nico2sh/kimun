@@ -821,7 +821,6 @@ impl AskView {
             .gap_1()
             .text_xs()
             .whitespace_nowrap()
-            .cursor_pointer()
             .text_color(theme::secondary(t))
             .hover(move |style| style.text_color(hover))
             .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {

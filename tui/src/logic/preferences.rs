@@ -14,13 +14,13 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use kimun_core::error::VaultError;
 use kimun_core::nfs::filename::validate_filename;
 use kimun_core::system::SystemPath;
 use kimun_core::{IndexFile, NoteVault, NotesValidation, VaultConfig};
 
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::logic::layout_tree::RailPosition;
+use crate::logic::startup::IndexOutcome;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
 use crate::settings::gui::ReduceMotion;
 use crate::settings::history::HistoryFile;
@@ -1062,18 +1062,6 @@ pub fn reindex_target(s: &AppSettings) -> Option<(SystemPath, Option<IndexFile>)
     Some((workspace, cache))
 }
 
-/// How a reindex ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReindexOutcome {
-    /// Finished in this long.
-    Done(Duration),
-    /// The vault is structurally unusable (a case conflict): the message
-    /// to show.
-    Conflict(String),
-    /// Anything else went wrong: the message to show.
-    Failed(String),
-}
-
 fn vault_config(workspace: SystemPath, cache: Option<IndexFile>) -> VaultConfig {
     let config = VaultConfig::new(workspace);
     match cache {
@@ -1086,18 +1074,14 @@ fn vault_config(workspace: SystemPath, cache: Option<IndexFile>) -> VaultConfig 
 /// the vault moved, and Full Reindex) on a throwaway vault with its own
 /// pool. Closing it does not touch the app's vault, and leaving it to drop
 /// would keep a second handle on the index file open.
-pub async fn reindex_new_vault(workspace: SystemPath, cache: Option<IndexFile>) -> ReindexOutcome {
+pub async fn reindex_new_vault(workspace: SystemPath, cache: Option<IndexFile>) -> IndexOutcome {
     let vault = match NoteVault::new(vault_config(workspace, cache)).await {
         Ok(vault) => vault,
-        Err(e) => return ReindexOutcome::Failed(e.to_string()),
+        Err(e) => return IndexOutcome::Failed(e.to_string()),
     };
     let result = vault.recreate_index().await;
     vault.close().await;
-    match result {
-        Ok(report) => ReindexOutcome::Done(report.duration),
-        Err(e @ VaultError::CaseConflict { .. }) => ReindexOutcome::Conflict(e.to_string()),
-        Err(e) => ReindexOutcome::Failed(e.to_string()),
-    }
+    result.into()
 }
 
 /// Fast (incremental) reindex of the vault at `workspace` on a throwaway

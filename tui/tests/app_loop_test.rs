@@ -25,6 +25,7 @@ use kimun_notes::app_screen::preferences::PreferencesScreen;
 use kimun_notes::keys::action_shortcuts::ActionShortcuts;
 use kimun_notes::keys::key_event_to_combo;
 use kimun_notes::logic::message::AppMessage;
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 
 mod common;
@@ -173,13 +174,16 @@ async fn the_preferences_shortcut_switches_screens_before_the_editor_sees_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_vault_conflict_clears_the_workspace_and_opens_preferences_with_the_error() {
+async fn a_vault_conflict_keeps_the_workspace_and_opens_preferences_with_the_error() {
     let mut fx = fixture("conflict").await;
     fx.app.current_screen = Box::new(PreferencesScreen::new(fx.settings.clone()));
+    let config_before = std::fs::read(&fx.config_path).unwrap();
     let mut events = EventHandler::from_input(stream::empty());
     events
         .app_sender()
-        .send(AppMessage::VaultConflict("case clash: a vs A".into()))
+        .send(AppMessage::VaultIndexed(IndexOutcome::Conflict(
+            "case clash: a vs A".into(),
+        )))
         .unwrap();
     let mut term = terminal();
     let gen_before = fx.app.screen_generation;
@@ -189,22 +193,23 @@ async fn a_vault_conflict_clears_the_workspace_and_opens_preferences_with_the_er
     assert_eq!(
         fx.app.screen_generation,
         gen_before + 1,
-        "VaultConflict swapped the screen exactly once"
+        "the conflict swapped the screen exactly once"
     );
     assert!(fx.app.vault.is_none(), "the unusable vault is dropped");
+    assert!(fx.app.vault_status.is_conflicted());
     assert_eq!(kind(&fx.app), ScreenKind::Preferences);
     assert!(
         fx.settings
             .read()
             .unwrap()
             .current_workspace_name()
-            .is_none(),
-        "the workspace entry is cleared in memory"
+            .is_some(),
+        "the workspace entry stays in memory"
     );
-    let reloaded = AppSettings::load_from_file(fx.config_path.clone()).unwrap();
-    assert!(
-        reloaded.current_workspace_name().is_none(),
-        "…and the cleared config was saved to disk"
+    assert_eq!(
+        std::fs::read(&fx.config_path).unwrap(),
+        config_before,
+        "…and the config file is not rewritten"
     );
     assert!(
         buffer_text(&term).contains("case clash: a vs A"),
@@ -219,7 +224,7 @@ async fn an_unhandled_note_path_switches_to_the_editor() {
     let note = VaultPath::note_path_from("routed");
     vault.create_note(&note, "routed").await.unwrap();
     // The Start screen does send `AppMessage::open(..)` itself, on
-    // `IndexingDone` — but it never overrides `try_open_path`, so it cannot
+    // `VaultIndexed` — but it never overrides `try_open_path`, so it cannot
     // *handle* an `OpenPath` it is asked to open; the loop is what routes
     // this one to the editor. (Left to itself, the Start screen's own open
     // targets the last path or the vault root, neither of which is a note,

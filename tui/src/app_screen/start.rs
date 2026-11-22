@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use kimun_core::NoteVault;
-use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use throbber_widgets_tui::ThrobberState;
 
@@ -11,6 +10,7 @@ use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::indexing::{IndexingProgressState, render_indexing_overlay, spawn_running};
 use crate::logic::message::{AppMessage, AppTx};
+use crate::logic::startup::{IndexOutcome, index_vault};
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
 
@@ -56,22 +56,9 @@ impl AppScreen for StartScreen {
     async fn on_enter(&mut self, tx: &AppTx) {
         if let Some(vault) = self.vault.clone() {
             let tx2 = tx.clone();
-            let handle = tokio::spawn(async move {
-                match vault.validate_and_init().await {
-                    Ok(report) => {
-                        tx2.send(AppMessage::IndexingDone(Ok(report.duration))).ok();
-                    }
-                    Err(e @ VaultError::CaseConflict { .. }) => {
-                        // Route structural vault conflicts to VaultConflict so the main
-                        // loop can clear the vault path and redirect to settings.
-                        // To support a future VaultError conflict type: add one arm here.
-                        tx2.send(AppMessage::VaultConflict(e.to_string())).ok();
-                    }
-                    Err(e) => {
-                        tx2.send(AppMessage::IndexingDone(Err(e.to_string()))).ok();
-                    }
-                }
-            });
+            // A conflict goes to the app (it drops the vault and opens
+            // Preferences); Done and Failed come back here.
+            let handle = tokio::spawn(async move { index_vault(&vault).await.send(&tx2) });
             self.overlay = Some(spawn_running(handle, tx));
         } else {
             let path = self.restore_target(false, tx).await;
@@ -91,9 +78,10 @@ impl AppScreen for StartScreen {
     }
 
     async fn handle_app_message(&mut self, msg: AppMessage, tx: &AppTx) {
-        if let AppMessage::IndexingDone(result) = &msg {
+        if let AppMessage::VaultIndexed(outcome) = &msg {
             self.overlay = None;
-            let path = self.restore_target(result.is_ok(), tx).await;
+            let vault_reachable = matches!(outcome, IndexOutcome::Done(_));
+            let path = self.restore_target(vault_reachable, tx).await;
             tx.send(AppMessage::open(path)).ok();
         }
     }
@@ -175,7 +163,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_app_message_indexing_done_ok_clears_overlay_and_sends_open_path() {
+    async fn handle_app_message_vault_indexed_done_clears_overlay_and_sends_open_path() {
         let (tx, mut rx) = unbounded_channel::<AppMessage>();
         let mut screen = StartScreen::new(shared_defaults(), None);
         screen.overlay = Some(IndexingProgressState::Running {
@@ -183,18 +171,21 @@ mod tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(1))), &tx)
+            .handle_app_message(
+                AppMessage::VaultIndexed(IndexOutcome::Done(Duration::from_secs(1))),
+                &tx,
+            )
             .await;
         assert!(screen.overlay.is_none(), "overlay should be cleared");
         let msg = rx.try_recv().expect("expected OpenPath message");
         assert!(
             matches!(msg, AppMessage::OpenPath { .. }),
-            "expected OpenPath after indexing done"
+            "expected OpenPath after the vault was indexed"
         );
     }
 
     #[tokio::test]
-    async fn handle_app_message_indexing_done_err_clears_overlay_and_sends_open_path() {
+    async fn handle_app_message_vault_indexed_failed_clears_overlay_and_sends_open_path() {
         let (tx, mut rx) = unbounded_channel::<AppMessage>();
         let mut screen = StartScreen::new(shared_defaults(), None);
         screen.overlay = Some(IndexingProgressState::Running {
@@ -202,7 +193,10 @@ mod tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Err("fail".to_string())), &tx)
+            .handle_app_message(
+                AppMessage::VaultIndexed(IndexOutcome::Failed("fail".to_string())),
+                &tx,
+            )
             .await;
         assert!(
             screen.overlay.is_none(),
@@ -242,16 +236,13 @@ mod tests {
 
     /// Runs the post-indexing restore and returns every event it sent.
     async fn restore(screen: &mut StartScreen) -> Vec<AppMessage> {
-        restore_after(screen, Ok(Duration::from_secs(0))).await
+        restore_after(screen, IndexOutcome::Done(Duration::from_secs(0))).await
     }
 
-    async fn restore_after(
-        screen: &mut StartScreen,
-        indexing: Result<Duration, String>,
-    ) -> Vec<AppMessage> {
+    async fn restore_after(screen: &mut StartScreen, indexing: IndexOutcome) -> Vec<AppMessage> {
         let (tx, mut rx) = unbounded_channel::<AppMessage>();
         screen
-            .handle_app_message(AppMessage::IndexingDone(indexing), &tx)
+            .handle_app_message(AppMessage::VaultIndexed(indexing), &tx)
             .await;
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
     }
@@ -340,7 +331,7 @@ mod tests {
     // so creating note.md + Note.md would silently overwrite on those platforms.
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn on_enter_case_conflict_sends_vault_conflict_not_indexing_done() {
+    async fn on_enter_case_conflict_sends_vault_indexed_conflict() {
         use kimun_core::VaultConfig;
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -356,17 +347,17 @@ mod tests {
         let mut screen = StartScreen::new(shared_defaults(), Some(vault));
         screen.on_enter(&tx).await;
 
-        // Drain events until VaultConflict arrives; skip Redraw ticks from the spinner.
+        // Drain events until the indexing outcome arrives; skip Redraw ticks from the spinner.
         let conflict_msg = loop {
             let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
                 .await
-                .expect("timed out waiting for VaultConflict")
+                .expect("timed out waiting for VaultIndexed")
                 .expect("channel closed");
 
             match msg {
-                AppMessage::VaultConflict(details) => break details,
+                AppMessage::VaultIndexed(IndexOutcome::Conflict(details)) => break details,
+                AppMessage::VaultIndexed(other) => panic!("expected Conflict, got {other:?}"),
                 AppMessage::Redraw => continue,
-                AppMessage::IndexingDone(_) => panic!("expected VaultConflict, got IndexingDone"),
                 _ => continue,
             }
         };

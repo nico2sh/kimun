@@ -51,9 +51,10 @@ use gpui_kit::{
 use kimun_core::IndexFile;
 use kimun_core::system::{self, SystemPath};
 use kimun_notes::logic::preferences::{
-    self as prefs, EditOutcome, FIRST_WORKSPACE_NAME, PreferencesModel, ReindexOutcome,
-    WorkspaceEdit, WorkspaceError,
+    self as prefs, EditOutcome, FIRST_WORKSPACE_NAME, PreferencesModel, WorkspaceEdit,
+    WorkspaceError,
 };
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::logic::workspaces::{WorkspaceRow, workspace_rows};
 use kimun_notes::settings::AppSettings;
 use kimun_notes::settings::themes::Theme;
@@ -274,7 +275,7 @@ pub(crate) struct Indexing {
     pub(crate) confirm_full: bool,
     pub(crate) message: Option<Notice>,
     /// A case conflict: a reindex found one, or the window opened a vault
-    /// that has one (`VaultConflict`). Dismissable.
+    /// that has one (`IndexOutcome::Conflict`). Dismissable.
     pub(crate) conflict: Option<SharedString>,
 }
 
@@ -1161,14 +1162,14 @@ impl PreferencesView {
         let task = cx.spawn_in(window, async move |this, cx| {
             let outcome = if fast {
                 match tokio::spawn(prefs::fast_reindex(workspace, cache)).await {
-                    Ok(Ok(d)) => ReindexOutcome::Done(d),
-                    Ok(Err(e)) => ReindexOutcome::Failed(e),
-                    Err(e) => ReindexOutcome::Failed(e.to_string()),
+                    Ok(Ok(d)) => IndexOutcome::Done(d),
+                    Ok(Err(e)) => IndexOutcome::Failed(e),
+                    Err(e) => IndexOutcome::Failed(e.to_string()),
                 }
             } else {
                 match tokio::spawn(prefs::reindex_new_vault(workspace, cache)).await {
                     Ok(outcome) => outcome,
-                    Err(e) => ReindexOutcome::Failed(e.to_string()),
+                    Err(e) => IndexOutcome::Failed(e.to_string()),
                 }
             };
             this.update_in(cx, |view, window, cx| {
@@ -1184,14 +1185,14 @@ impl PreferencesView {
     fn reindexed(
         &mut self,
         job: Job,
-        outcome: ReindexOutcome,
+        outcome: IndexOutcome,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.index.running = None;
         let duration = match outcome {
-            ReindexOutcome::Done(duration) => duration,
-            ReindexOutcome::Conflict(text) => {
+            IndexOutcome::Done(duration) => duration,
+            IndexOutcome::Conflict(text) => {
                 tracing::warn!("{text}");
                 self.index.conflict = Some(text.into());
                 self.ws.form = None;
@@ -1199,7 +1200,7 @@ impl PreferencesView {
                 cx.notify();
                 return;
             }
-            ReindexOutcome::Failed(text) => {
+            IndexOutcome::Failed(text) => {
                 tracing::warn!("reindex failed: {text}");
                 let problem = Notice::error(format!("Couldn't index the workspace: {text}"));
                 match job {

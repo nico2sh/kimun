@@ -327,6 +327,7 @@ impl Workspace {
         let (Some(tx), Some(vault)) = (self.tx.clone(), self.vault()) else {
             return;
         };
+        let announce = job.announce();
         match job {
             LeaderJob::TogglePin(path) => {
                 let job = tokio::spawn(jobs::toggle_pin(vault, path, tx));
@@ -342,7 +343,9 @@ impl Workspace {
                 tokio::spawn(jobs::jump_to_pinned(vault, n, tx));
             }
             LeaderJob::Reindex => {
-                self.flash("Reindexing…", cx);
+                if let Some(text) = announce {
+                    self.flash(text, cx);
+                }
                 tokio::spawn(jobs::reindex(vault, tx));
             }
             // Needs the window (`perform_route` runs it).
