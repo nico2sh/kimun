@@ -219,6 +219,10 @@ impl NoteIndex {
     /// recreated, leaving a valid but empty index that the next sync pass
     /// fills. [`ready`](Self::ready) reports whether a heal
     /// happened.
+    ///
+    /// An index stamped by a **newer** schema version is the exception: the
+    /// open fails with [`DBError::IndexNewer`] and the file is left as it is
+    /// (see that variant for why a reindex does not override it).
     pub(crate) async fn open(index_file: &file::IndexFile) -> Result<Self, DBError> {
         let db_path = index_file.path().as_path().to_owned();
         if let Some(parent) = index_file.path().parent() {
