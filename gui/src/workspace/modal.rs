@@ -377,6 +377,13 @@ impl Workspace {
             self.save_browser_query(window, cx);
             return true;
         }
+        // Likewise the browser's query opens as a collection from any panel.
+        if open == ModalKind::Search
+            && keymap.is_bound(key, &ActionShortcuts::OpenQueryAsCollection)
+        {
+            self.promote_browser_query_to_collection(window, cx);
+            return true;
+        }
         // Under a modal only the modal says whether a query is typed: the
         // search browser does (FIND behind it no longer has the keyboard).
         let ctx = keymap::KeyCtx {

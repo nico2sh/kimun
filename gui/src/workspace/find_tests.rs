@@ -885,6 +885,45 @@ fn the_browser_opens_its_query_as_a_collection(cx: &mut TestAppContext) {
     assert_eq!(query.as_deref(), Some("#go"));
 }
 
+/// The `OpenQueryAsCollection` chord, once bound, does what the browser's
+/// button does, from whatever panel opened the browser.
+#[gpui_kit::test]
+fn the_collection_chord_works_in_the_browser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    let overrides = [(
+        "OpenQueryAsCollection".to_string(),
+        vec!["ctrl+alt+o".to_string()],
+    )]
+    .into_iter()
+    .collect();
+    let (keymap, errors) =
+        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
+    assert!(errors.is_empty(), "{errors:?}");
+    cx.update(|cx| crate::keymap::init(cx, keymap));
+    leader(&started, "ft", cx);
+    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
+    click(&started, tag_row_id("go"), cx);
+    started.settle_dialog(cx);
+    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
+    press(&started, "ctrl-alt-o", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    let group = cx.read(|cx| started.workspace.read(cx).layout.active_group());
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            started
+                .workspace
+                .read(cx)
+                .collection_query_in(group, cx)
+                .is_some()
+        })
+    });
+    let query = cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx));
+    assert_eq!(query.as_deref(), Some("#go"));
+}
+
 /// A double-click on a tag opens the browser once and opens no note: its
 /// second press lands on the browser's modal, not under it.
 #[gpui_kit::test]

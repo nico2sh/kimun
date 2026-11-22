@@ -825,7 +825,11 @@ impl<R: PickerRow> Render for NotePicker<R> {
                     .xsmall()
                     .icon(super::find::COLLECTION_ICON)
                     .accessibility_label(super::find::COLLECTION_LABEL)
-                    .tooltip(super::find::COLLECTION_LABEL)
+                    .tooltip(super::chrome::tooltip_with_chord(
+                        super::find::COLLECTION_LABEL,
+                        &kimun_notes::logic::actions::ActionShortcuts::OpenQueryAsCollection,
+                        cx,
+                    ))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         let query = this.input.read(cx).value().to_string();
                         this.workspace
