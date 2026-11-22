@@ -740,7 +740,15 @@ impl ServerHandler for KimunHandler {
              these tools keep in sync automatically. If vault files are modified \
              outside Kimün (e.g. edited directly with sed, another editor, or a sync \
              tool), the index goes stale and results may be wrong until the workspace \
-             is reindexed — run `kimun workspace reindex` and reconnect to this server.",
+             is reindexed — run `kimun workspace reindex` and reconnect to this server. \
+             If a tool fails with \"This vault's index was made by a newer version of \
+             Kimün\", this server is older than the app that last opened the vault. A \
+             reindex does not fix it and retrying does not help. Tell the user to update \
+             the terminal app (`kimun update --check` shows whether a release is \
+             available, `kimun update` installs it; a Homebrew or cargo install uses its \
+             own upgrade command, which `kimun update` prints), then reconnect to this \
+             server. An index from an older version needs no action: Kimün rebuilds it \
+             on its own.",
         )
     }
 

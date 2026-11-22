@@ -29,6 +29,8 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 | List notes | `kimun notes` |
 | List all labels | `kimun labels` |
 | Reindex after external edits | `kimun workspace reindex` |
+| Check for a newer release | `kimun update --check` |
+| Update the terminal app | `kimun update` |
 
 ## Writing Notes
 
@@ -137,6 +139,27 @@ Failed operations print a one-line message to **stderr** and exit non-zero:
 
 The MCP server returns the same wording as a tool error, so both surfaces report
 note problems identically.
+
+### Index made by a newer version
+
+If a command fails with `Error: This vault's index was made by a newer version of
+Kimün (index format X, this version reads Y). Update this app to open it.`, the
+terminal app is older than the app (usually the desktop app) that last opened the
+vault. It exits 2. Do not retry. Do not run `kimun workspace reindex`, because a
+reindex opens the index first and refuses too. Update instead:
+
+```sh
+kimun update --check   # prints current and latest version; changes nothing
+kimun update           # installs the latest release
+```
+
+`kimun update` only installs by itself for a direct download. For a Homebrew,
+cargo, or other managed install it prints the upgrade command to run instead —
+run that one. After the update, run the failed command again. An MCP server must
+be reconnected to pick up the new binary.
+
+The reverse case needs no action. An index from an older version is dropped and
+rebuilt automatically on the next open.
 
 ## Journal
 
@@ -390,4 +413,5 @@ echo "Quick thought about caching. #idea #perf" | kimun note append "inbox/cache
 - **`replace` with a non-unique `old` string** — it errors rather than guess. Make the match unique, or pass `--all` to replace every occurrence on purpose.
 - **No stdin from a live terminal** — piping works (`echo "x" | kimun journal`); passing no content from an interactive terminal produces an empty write.
 - **Relative vs absolute paths** — if a `quick_note_path` is set in `kimun_config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
+- **Reindexing to fix a "newer version" index error**: it cannot work. Run `kimun update` (see Errors).
 - **`kimun journal show` — `--format paths` is not supported**; use `text` or `json`.
