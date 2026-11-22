@@ -47,7 +47,7 @@ use gpui_kit::{
 use kimun_core::nfs::VaultPath;
 use kimun_core::{AttachmentContent, NoteVault};
 use kimun_notes::logic::attachment::{format_mtime, human_size, type_label};
-use kimun_notes::logic::file_ops::relocated;
+use kimun_notes::logic::file_ops::{ShownPathEffect, effect_on};
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::layout_tree::GroupId;
@@ -57,7 +57,6 @@ use super::Workspace;
 use super::files::ellipsis;
 use super::note::{Closing, LeavingFor, NoteLeft};
 use crate::input;
-use crate::startup::EmptyState;
 use crate::tasks;
 use crate::theme;
 
@@ -726,34 +725,13 @@ impl Workspace {
         else {
             return;
         };
-        match op {
-            FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
-                if let Some(new) = relocated(&shown, from, to) {
-                    self.open_attachment_in(group, &new, cx);
-                }
-            }
-            FileOp::Deleted(gone) if relocated(&shown, gone, gone).is_some() => {
+        match effect_on(&shown, op) {
+            ShownPathEffect::Retarget(new) => self.open_attachment_in(group, &new, cx),
+            ShownPathEffect::Close => {
                 self.drop_attachment_in(group);
-                if group != self.layout.active_group() {
-                    return;
-                }
-                let name = shown.get_parent_path().1;
-                self.note_gone = Some((
-                    group,
-                    EmptyState {
-                        title: format!("{name} was deleted"),
-                        detail: String::new(),
-                        failed: false,
-                        shortcuts: Vec::new(),
-                    },
-                ));
-                if let Some(files) = self.files.as_ref() {
-                    files.update(cx, |pane, cx| pane.set_open_note(None, cx));
-                }
-                self.focus_shown_content(cx);
-                cx.notify();
+                self.say_shown_gone(group, &shown, cx);
             }
-            _ => {}
+            ShownPathEffect::Unchanged => {}
         }
     }
 }

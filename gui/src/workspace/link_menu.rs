@@ -40,13 +40,13 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout_tree::{Axis as TreeAxis, GroupId};
 
 use super::Workspace;
-use super::file_ops::path_at_or_below;
 use super::modal;
 use super::note::OpenAt;
 use super::note_menu::MENU_NOTE_CHANGED;
 use super::tab_strip::TAB_CLOSING;
 use crate::input;
 use crate::theme;
+use kimun_notes::logic::file_ops::path_at_or_below;
 
 /// The menu's element id, for tests.
 pub(crate) const LINK_MENU_ID: &str = "link-menu";

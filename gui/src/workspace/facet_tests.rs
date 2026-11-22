@@ -2327,6 +2327,23 @@ pub(super) mod in_a_group {
         assert!(!drawn(&s, FACET_VIEW_ID, cx));
     }
 
+    /// Deleting the source of a facet view in a group that is not the active
+    /// one empties that group but says nothing: "X was deleted" is for the
+    /// active group only.
+    #[gpui_kit::test]
+    fn deleting_the_source_in_an_inactive_group_says_nothing(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt, &[("a.md", A), ("b.md", "beta")], "b.md");
+        let first = active(&s, cx);
+        open_facet(&s, &rt, first, "a.md", vec![], cx);
+        let second = new_tab(&s, cx);
+        assert_ne!(second, first);
+        run(&s, FileOpRequest::Delete(path("a.md")), cx);
+        drive(&rt, cx, |cx| facet(&s, first, cx).is_none());
+        assert!(cx.read(|cx| s.workspace.read(cx).note_gone.is_none()));
+    }
+
     #[gpui_kit::test]
     fn a_follow_from_a_facet_view_opens_a_new_tab_and_resolves_relative_to_the_source(
         cx: &mut TestAppContext,

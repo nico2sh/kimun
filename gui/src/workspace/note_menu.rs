@@ -51,11 +51,11 @@ use kimun_notes::logic::leader_route::LeaderJob;
 
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
-use super::file_ops::path_at_or_below;
 use super::modal;
 use crate::input;
 use crate::keymap;
 use crate::theme;
+use kimun_notes::logic::file_ops::path_at_or_below;
 
 /// The menu's element id, for tests.
 pub(crate) const NOTE_MENU_ID: &str = "note-menu";

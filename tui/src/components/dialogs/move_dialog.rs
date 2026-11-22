@@ -44,6 +44,10 @@ pub struct MoveDialog {
     pub validation_task: Option<JoinHandle<()>>,
     /// Optional error message surfaced from a failed move attempt.
     pub error: Option<String>,
+    /// Why the highlighted destination is refused (the entry itself or
+    /// inside it); shown in the status row, and Enter does nothing while it
+    /// is set.
+    pub refusal: Option<String>,
     hints: HintRow,
 }
 
@@ -61,6 +65,7 @@ impl MoveDialog {
             dest_validation: ValidationState::Idle,
             validation_task: None,
             error: None,
+            refusal: None,
             hints: super::confirm_hints("Move here"),
         };
         dialog.schedule_load(tx);
@@ -101,17 +106,25 @@ impl MoveDialog {
             handle.abort();
         }
 
+        self.refusal = None;
         let Some(dest_dir) = self.picker.highlighted().cloned() else {
             self.dest_validation = ValidationState::Idle;
             return;
         };
 
-        let from = self.path.clone();
+        let candidate = match file_ops::move_target(&self.path, &dest_dir) {
+            Ok(candidate) => candidate,
+            Err(reason) => {
+                self.refusal = Some(reason);
+                self.dest_validation = ValidationState::Idle;
+                return;
+            }
+        };
+
         let vault = Arc::clone(&self.vault);
         let tx_clone = tx.clone();
 
         let handle = tokio::spawn(async move {
-            let candidate = file_ops::move_candidate(&from, &dest_dir);
             let available = file_ops::availability(&vault, &candidate).await.is_free();
             tx_clone
                 .send(AppMessage::OverlayData(OverlayData::MoveDestValidation {
@@ -156,9 +169,11 @@ impl MoveDialog {
         let before = self.picker.highlighted().cloned();
         match self.picker.handle_key(key) {
             PickerEvent::Chosen(dest) => {
-                if self.dest_validation != ValidationState::Taken {
+                let target = file_ops::move_target(&self.path, &dest);
+                if let (true, Ok(new_path)) =
+                    (self.dest_validation != ValidationState::Taken, target)
+                {
                     let from = self.path.clone();
-                    let new_path = file_ops::move_candidate(&from, &dest);
                     let vault = Arc::clone(&self.vault);
                     let tx2 = tx.clone();
                     tokio::spawn(async move {
@@ -251,13 +266,22 @@ impl Component for MoveDialog {
         self.picker.render(f, rows[4], theme);
 
         // Row 5: validation status.
-        super::render_validation_status(f, rows[5], self.dest_validation, theme);
+        match &self.refusal {
+            // Why the destination is refused, where the status would be.
+            Some(reason) => f.render_widget(
+                Paragraph::new(format!("  {reason}"))
+                    .style(Style::default().fg(theme.red.to_ratatui()).bg(bg)),
+                rows[5],
+            ),
+            None => super::render_validation_status(f, rows[5], self.dest_validation, theme),
+        }
 
         // Row 6: hint line.  Dim Enter when there's no valid selection.
-        // Enter moves unless the destination is Taken — also while the check
-        // is still Idle/Pending — so the chip must too.
-        let enter_acts =
-            self.dest_validation != ValidationState::Taken && self.picker.highlighted().is_some();
+        // Enter moves unless the destination is Taken or refused — also while
+        // the check is still Idle/Pending — so the chip must too.
+        let enter_acts = self.dest_validation != ValidationState::Taken
+            && self.refusal.is_none()
+            && self.picker.highlighted().is_some();
         super::render_confirm_hints(
             f,
             rows[6],
@@ -371,5 +395,96 @@ mod tests {
         assert!(dialog.error.is_none());
         // Directory load is async: nothing is highlighted until it lands.
         assert!(dialog.picker.highlighted().is_none());
+    }
+
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    async fn dialog_with_dirs() -> (MoveDialog, AppTx, mpsc::UnboundedReceiver<AppMessage>) {
+        let vault = crate::test_support::temp_vault("move-dialog").await;
+        for d in ["/a", "/a/sub", "/b"] {
+            vault.create_directory(&VaultPath::new(d)).await.unwrap();
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut d = MoveDialog::new(VaultPath::new("/a"), vault, &tx);
+        let dirs = loop {
+            if let AppMessage::OverlayData(OverlayData::MoveDirectoriesLoaded(r)) =
+                next(&mut rx).await
+            {
+                break r;
+            }
+        };
+        d.on_directories(dirs, &tx);
+        (d, tx, rx)
+    }
+
+    async fn next(rx: &mut mpsc::UnboundedReceiver<AppMessage>) -> AppMessage {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for a message")
+            .expect("channel closed")
+    }
+
+    async fn pick(d: &mut MoveDialog, dir: &str, tx: &AppTx) {
+        d.picker.select(&VaultPath::new(dir));
+        assert_eq!(d.picker.highlighted(), Some(&VaultPath::new(dir)));
+        d.spawn_validation(tx);
+    }
+
+    async fn settle(d: &mut MoveDialog, rx: &mut mpsc::UnboundedReceiver<AppMessage>) {
+        loop {
+            if let AppMessage::OverlayData(OverlayData::MoveDestValidation { available }) =
+                next(rx).await
+            {
+                d.dest_validation = if available {
+                    ValidationState::Available
+                } else {
+                    ValidationState::Taken
+                };
+                d.validation_task = None;
+                return;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn moving_a_directory_into_itself_or_below_shows_why_and_blocks_enter() {
+        for dest in ["/a", "/a/sub"] {
+            let (mut d, tx, mut rx) = dialog_with_dirs().await;
+            pick(&mut d, dest, &tx).await;
+            assert!(
+                matches!(&d.refusal, Some(r) if r == "Cannot move a directory into itself"),
+                "{dest}"
+            );
+            assert_eq!(d.dest_validation, ValidationState::Idle);
+            d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            while let Ok(m) = rx.try_recv() {
+                assert!(
+                    !matches!(
+                        m,
+                        AppMessage::FileOp(_) | AppMessage::OverlayData(OverlayData::Error(_))
+                    ),
+                    "{dest}: a move ran"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_valid_destination_is_checked_and_enter_moves() {
+        let (mut d, tx, mut rx) = dialog_with_dirs().await;
+        pick(&mut d, "/b", &tx).await;
+        assert!(d.refusal.is_none());
+        assert_eq!(d.dest_validation, ValidationState::Pending);
+        settle(&mut d, &mut rx).await;
+        assert_eq!(d.dest_validation, ValidationState::Available);
+        d.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &tx);
+        loop {
+            match next(&mut rx).await {
+                AppMessage::FileOp(_) => break,
+                AppMessage::OverlayData(OverlayData::Error(e)) => panic!("move failed: {e}"),
+                _ => {}
+            }
+        }
     }
 }

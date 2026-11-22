@@ -9,13 +9,11 @@
 //! filesystem. Paths are built with core's `VaultPath` helpers, never by
 //! joining strings.
 //!
-//! Two flavours of target builder:
-//! - `*_candidate` is the raw construction the TUI has always used (no
-//!   validation; an odd input sanitizes to some path and the availability
-//!   check or core decides). The TUI keeps it so its behaviour is unchanged.
-//! - `*_target` validates first and returns a user-facing reason when the
-//!   input cannot name a sibling (rename) or the destination is the entry
-//!   itself or inside it (move). New frontends use these.
+//! The target builders are `rename_target` and `move_target`: they validate
+//! first and return a user-facing reason when the input cannot name a sibling
+//! (rename) or the destination is the entry itself or inside it (move). Both
+//! frontends use them. The unvalidated `*_candidate` builders under them are
+//! private.
 
 use kimun_core::NoteVault;
 use kimun_core::error::{FSError, VaultError};
@@ -79,13 +77,13 @@ fn entry_name_like(from: &VaultPath, name: &str) -> VaultPath {
 }
 
 /// The path `from` would have after renaming it to `input` in its own
-/// directory. No validation (see the module docs); the TUI's rename dialog.
-pub fn rename_candidate(from: &VaultPath, input: &str) -> VaultPath {
+/// directory. No validation; [`rename_target`] adds it.
+fn rename_candidate(from: &VaultPath, input: &str) -> VaultPath {
     let parent = from.get_parent_path().0;
     parent.append(&entry_name_like(from, input))
 }
 
-/// [`rename_candidate`], refused when `input` does not name exactly one entry
+/// The path `from` would have after renaming it to `input`, refused when `input` does not name exactly one entry
 /// in `from`'s directory (empty, `.`/`..`, or a path with several components).
 pub fn rename_target(from: &VaultPath, input: &str) -> Result<VaultPath, String> {
     if input.trim().is_empty() {
@@ -105,13 +103,13 @@ pub fn rename_target(from: &VaultPath, input: &str) -> Result<VaultPath, String>
 }
 
 /// The path `from` would have after moving it into `dest_dir` (same name).
-/// No validation; the TUI's move dialog.
-pub fn move_candidate(from: &VaultPath, dest_dir: &VaultPath) -> VaultPath {
+/// No validation; [`move_target`] adds it.
+fn move_candidate(from: &VaultPath, dest_dir: &VaultPath) -> VaultPath {
     let filename = from.get_parent_path().1;
     dest_dir.append(&entry_name_like(from, &filename))
 }
 
-/// [`move_candidate`], refused when `dest_dir` is `from` itself or lies inside
+/// The path `from` would have after moving it into `dest_dir`, refused when `dest_dir` is `from` itself or lies inside
 /// it (a directory cannot move into itself).
 pub fn move_target(from: &VaultPath, dest_dir: &VaultPath) -> Result<VaultPath, String> {
     if dest_dir.is_like(from) || from.is_ancestor_of(dest_dir) {
@@ -135,6 +133,38 @@ pub fn relocated(path: &VaultPath, from: &VaultPath, to: &VaultPath) -> Option<V
     // `from` is a proper prefix of `path`: what is left is plain components.
     let rest = path.get_relative_to(from);
     Some(to.append(&rest))
+}
+
+/// Whether `path` is `base` itself or lies below it (`base` a folder
+/// holding it): what a rename, move or delete of `base` touches. Compared
+/// by components (core's `is_like` / `is_ancestor_of`), so case and
+/// absolute / relative spellings do not matter.
+pub fn path_at_or_below(path: &VaultPath, base: &VaultPath) -> bool {
+    path.is_like(base) || base.is_ancestor_of(path)
+}
+
+/// What a file operation does to the path a view is showing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShownPathEffect {
+    /// The operation did not touch the shown path.
+    Unchanged,
+    /// The shown path moved: show it at this new place.
+    Retarget(VaultPath),
+    /// The shown path is gone: close the view.
+    Close,
+}
+
+/// What `op` does to the path `shown`: a rename or move of it (or of a
+/// folder holding it) retargets it, a delete of it (or of a folder holding
+/// it) closes it, anything else leaves it alone.
+pub fn effect_on(shown: &VaultPath, op: &FileOp) -> ShownPathEffect {
+    match op {
+        FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
+            relocated(shown, from, to).map_or(ShownPathEffect::Unchanged, ShownPathEffect::Retarget)
+        }
+        FileOp::Deleted(gone) if path_at_or_below(shown, gone) => ShownPathEffect::Close,
+        _ => ShownPathEffect::Unchanged,
+    }
 }
 
 /// Whether an entry could be created at `candidate` — the check the rename
