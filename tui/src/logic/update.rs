@@ -123,18 +123,7 @@ pub fn versions_text(status: &UpdateStatus) -> String {
 
 // ---- The terminal app row ---------------------------------------------------
 
-/// What the desktop app found when it looked for the terminal app (`kimun`).
-/// Read-only: the desktop app reports it and never installs or updates it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalApp {
-    /// No `kimun` in the install directory or on `PATH`.
-    NotInstalled,
-    /// `kimun` ran and reported `version`.
-    Installed { version: String },
-    /// A `kimun` file exists at `path`, but it did not run in time or did not
-    /// print a version. Never reported as not installed.
-    VersionUnknown { path: String },
-}
+pub use crate::update::TerminalApp;
 
 /// What the row says while the lookup runs.
 pub const TERMINAL_APP_CHECKING_TEXT: &str = "Terminal app: checking…";
