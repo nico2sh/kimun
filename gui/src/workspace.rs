@@ -3246,7 +3246,6 @@ impl Workspace {
             .when(self.rail.horizontal(), |button| button.w_8().mx_0p5())
             .when(!self.rail.horizontal(), |button| button.mx_1())
             .rounded_md()
-            .cursor_pointer()
             .hover(move |style| style.bg(hover))
             .child(Icon::new(icon).size_4().text_color(glyph))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))

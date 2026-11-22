@@ -189,7 +189,6 @@ pub(crate) fn chevron(id: SharedString, reach: Reach, on: ZoneOn, t: &Theme) -> 
         .when_some(look.fill, |zone, fill| zone.bg(fill))
         .text_sm()
         .whitespace_nowrap()
-        .cursor_pointer()
         .text_color(look.glyph)
         .hover(move |style| chevron_hover(look, style))
         .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
@@ -249,8 +248,7 @@ pub(crate) fn preview_header(
             .items_center()
             .pl_2()
             .py_0p5()
-            .text_xs()
-            .cursor_pointer(),
+            .text_xs(),
     )
     .child(ellipsis(title).flex_1().text_color(theme::muted(t)))
     .child(
