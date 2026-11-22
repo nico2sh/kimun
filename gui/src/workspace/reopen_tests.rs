@@ -17,6 +17,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::layout::Side;
 use kimun_notes::logic::message::{AppMessage, AppTx};
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::logic::startup::{VaultOpen, try_open_vault};
 use kimun_notes::rag::RagStatus;
 use kimun_notes::settings::gui::GuiSettings;
@@ -568,7 +569,7 @@ fn a_late_message_from_the_old_vault_is_ignored(cx: &mut TestAppContext) {
     started.sw_reopen_to(&rt, Some(BETA), cx);
 
     let late = [
-        AppMessage::IndexingDone(Err("late".into())),
+        AppMessage::VaultIndexed(IndexOutcome::Failed("late".into())),
         AppMessage::FlashMessage("from A".into()),
         AppMessage::open(path("afriend.md")),
         AppMessage::RagStatus(RagStatus::Offline),

@@ -143,7 +143,7 @@ impl Workspace {
         let Some(tx) = self.tx.clone() else {
             return;
         };
-        let read_only = self.status.read_only;
+        let read_only = self.status.read_only();
         let Some((_, host)) = self.editor_and_host_in(group) else {
             return;
         };

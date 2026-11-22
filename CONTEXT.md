@@ -14,6 +14,14 @@ _Avoid_: vault (that is core's view of the opened directory), profile.
 Core's view of a **Workspace**'s directory once opened — the notes, their index, and the file operations over them (`NoteVault`). The TUI selects a workspace; core opens its directory as a vault. One workspace ↔ one vault at a time.
 _Avoid_: workspace (the config entry that points here), folder/directory (the OS path, not the opened thing).
 
+**Vault conflict**:
+A structural fault that stops core from indexing a **Vault**, today a case clash between two paths (`VaultError::CaseConflict`). It is a fault in the notes on disk, not in the **Workspace** entry that points at them. Because of that, a vault conflict never edits or saves the configuration: the workspace stays, so the user can fix the folder or pick another workspace from Preferences. Other indexing errors are plain failures and do not set it.
+_Avoid_: corrupt vault, bad workspace (the entry is fine), clearing the workspace (the superseded TUI reaction).
+
+**Vault status**:
+Whether the opened **Vault** is usable in this run: *ready*, or *conflicted* with the **Vault conflict**'s own message. Held for the life of the process and never written to disk. A conflicted vault is not indexed again until the user changes the workspace path or switches workspace. This stops Start → conflict → Preferences from looping. The GUI shows it as read-only editing with Preferences open on Workspaces. In the TUI a conflicted vault opens Preferences with the error. Closing Preferences returns to Preferences with the error until the user saves, switches workspace or finishes Onboarding. Both read the one status.
+_Avoid_: read-only flag (the GUI's old name for it), conflict flag.
+
 **History file**:
 A **Workspace**'s list of recently opened notes, newest first, one **Vault path** per line (`HistoryFile`). The other per-workspace artifact beside the **Index file**, and deliberately shaped the same way — the type owns its own naming, and renaming or removing a workspace goes through it, so the two cannot drift apart. Unlike the index it lives in the TUI: core has no notion of what you looked at last. Non-critical by design — a missing or truncated file costs an ordering, never a note — so reads never fail and writes are atomic.
 _Avoid_: recent files, MRU, last_paths (the superseded v2 config field it was migrated out of).

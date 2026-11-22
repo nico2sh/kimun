@@ -4,7 +4,7 @@
 //! Two kinds of event reach the loop. Terminal-originated ones — key, mouse,
 //! paste, resize — come from the input source: crossterm's `EventStream` in
 //! the app, any `Stream<Item = AppEvent>` in tests. App-originated ones —
-//! autosave done, indexing done, a server answer — come from spawned tasks
+//! autosave done, index result, a server answer — come from spawned tasks
 //! through the app channel. The loop needs to tell them apart: app messages
 //! are peeked without blocking and coalesced into one frame; a real input
 //! event always forces a fresh await and its own draw. That is why the seam

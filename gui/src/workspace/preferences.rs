@@ -2542,7 +2542,7 @@ impl Workspace {
 
     /// The open workspace's index was rebuilt on a throwaway vault (the same
     /// index file): the views over it load again, as after the startup's
-    /// indexing (`IndexingDone`), and FILES lists its folder again.
+    /// indexing (`VaultIndexed`), and FILES lists its folder again.
     fn index_rebuilt(&mut self, cx: &mut Context<Self>) {
         self.refresh_note_counts();
         self.invalidate_views(cx);
@@ -2571,7 +2571,7 @@ impl Workspace {
     }
 
     /// Opening the vault found files whose names differ only by case
-    /// (`VaultConflict`): Preferences open on Workspaces with the vault's
+    /// (`IndexOutcome::Conflict`): Preferences open on Workspaces with the vault's
     /// message in a panel, so another workspace or folder can be picked.
     /// The workspace config stays as it is. Not over the setup assistant;
     /// a modal open closes first. Needs the tokio runtime entered.

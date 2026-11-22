@@ -163,6 +163,10 @@ pub struct App {
     /// Rebuilt only when the workspace path changes in settings.
     pub vault: Option<Arc<NoteVault>>,
 
+    /// Whether `vault` is usable: set from every indexing outcome, reset to
+    /// Ready whenever `vault` is rebuilt.
+    pub vault_status: crate::logic::startup::VaultStatus,
+
     /// Monotonic counter bumped by every screen swap (see `switch_screen`
     /// below). The main event loop breaks its inner drain when this changes,
     /// so the new screen is drawn before any event still queued is delivered
@@ -220,6 +224,7 @@ impl App {
             current_screen: Box::new(StartScreen::new(settings.clone(), vault.clone())),
             settings,
             vault,
+            vault_status: Default::default(),
             screen_generation: 0,
             update: None,
             parked_flashes: Vec::new(),
@@ -614,7 +619,7 @@ where
                 AppEvent::Message(msg) => {
                     // Capture screen identity around handle_app_message so we
                     // can detect a synchronous screen swap (OpenScreen,
-                    // VaultConflict). Use `screen_generation` rather than
+                    // VaultIndexed(Conflict)). Use `screen_generation` rather than
                     // `ScreenKind`, because a swap between two screens of the
                     // same kind (e.g. EditorScreen(A) → follow-link →
                     // EditorScreen(B)) still leaks A's queued events into B
@@ -639,6 +644,7 @@ where
 }
 
 async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::Result<()> {
+    use crate::logic::startup::{IndexOutcome, VaultStatus};
     match msg {
         AppMessage::Redraw => {}
         AppMessage::OpenScreen(screen) => {
@@ -658,11 +664,19 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
                             .ok();
                     }
                 } else {
-                    // No vault → the app is unconfigured. Route to the guided
-                    // setup, not Preferences (onboarding replaces the
-                    // preferences fallthrough as the no-workspace path).
-                    tx.send(AppMessage::OpenScreen(ScreenEvent::OpenOnboarding))
-                        .ok();
+                    // No vault: the app is unconfigured, or its vault has a
+                    // conflict (dropped by the `VaultIndexed` arm, workspace
+                    // entry kept). A conflicted vault goes back to Preferences
+                    // with the error, because the workspace is still set and
+                    // rerun Onboarding cannot change it: that route is a dead
+                    // end. Unconfigured goes to the guided setup. Saving,
+                    // finishing Onboarding or switching workspace resets the
+                    // status to Ready.
+                    let screen = match app.vault_status.conflict() {
+                        Some(msg) => ScreenEvent::OpenPreferencesWithError(msg.to_string()),
+                        None => ScreenEvent::OpenOnboarding,
+                    };
+                    tx.send(AppMessage::OpenScreen(screen)).ok();
                 }
             }
         }
@@ -692,24 +706,42 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
         AppMessage::PreferencesSaved | AppMessage::OnboardingFinished => {
             // Rebuild the vault so workspace path and inbox_path changes take effect.
             app.vault = crate::logic::startup::open_vault(&app.settings).await;
+            app.vault_status = VaultStatus::default();
             respawn_rag(app, tx);
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
         AppMessage::ClosePreferences => {
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
-        AppMessage::VaultConflict(msg) => {
-            // The vault has structural conflicts (e.g. case-insensitive path clashes).
-            // Clear the workspace so the user is not stuck in a loop, then show
-            // the settings screen with the error overlay pre-populated.
-            {
-                let mut s = app.settings.write().unwrap();
-                s.clear_workspace();
-                s.save_to_disk().ok();
+        AppMessage::VaultIndexed(outcome) => {
+            let was_conflicted = app.vault_status.is_conflicted();
+            app.vault_status.apply(&outcome);
+            if let IndexOutcome::Conflict(msg) = outcome {
+                // The vault has structural conflicts (e.g. case-insensitive
+                // path clashes). Drop the unusable vault and show Preferences
+                // with the error overlay. The workspace entry stays, in memory
+                // and on disk: the vault opens again once the clash is fixed.
+                // Not forwarded to the current screen: the swap replaces it.
+                app.vault = None;
+                respawn_rag(app, tx);
+                switch_screen(app, tx, ScreenEvent::OpenPreferencesWithError(msg)).await;
+            } else {
+                // A clean pass after a conflict (the user fixed the folder and
+                // reindexed from Preferences) ran on a throwaway vault: the
+                // app's own vault was dropped, so rebuild it. Otherwise Start
+                // finds no vault and sends the user to Onboarding. If the
+                // clash is still there, the next Start pass reports it again.
+                if was_conflicted && matches!(outcome, IndexOutcome::Done(_)) && app.vault.is_none()
+                {
+                    app.vault = crate::logic::startup::open_vault(&app.settings).await;
+                    respawn_rag(app, tx);
+                }
+                // Done and Failed belong to the screen that started the pass
+                // (Start restores the session, Preferences finishes a Save).
+                app.current_screen
+                    .handle_app_message(AppMessage::VaultIndexed(outcome), tx)
+                    .await;
             }
-            app.vault = None;
-            respawn_rag(app, tx);
-            switch_screen(app, tx, ScreenEvent::OpenPreferencesWithError(msg)).await;
         }
         AppMessage::WorkspaceSwitched(name) => {
             {
@@ -720,6 +752,7 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
                 s.save_to_disk().ok();
             }
             app.vault = crate::logic::startup::open_vault(&app.settings).await;
+            app.vault_status = VaultStatus::default();
             respawn_rag(app, tx);
             tx.send(AppMessage::OpenScreen(ScreenEvent::Start)).ok();
         }
@@ -983,6 +1016,436 @@ mod tests {
             .collect();
         assert!(flat.contains("first notice"), "first notice lost");
         assert!(flat.contains("second notice"), "second notice lost");
+    }
+
+    /// Feed `msg` to the app handler.
+    async fn handle(app: &mut App, msg: crate::logic::message::AppMessage) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(msg, app, &tx).await.unwrap();
+    }
+
+    fn conflict(msg: &str) -> crate::logic::message::AppMessage {
+        crate::logic::message::AppMessage::VaultIndexed(
+            crate::logic::startup::IndexOutcome::Conflict(msg.to_string()),
+        )
+    }
+
+    fn workspace_path_of(app: &App) -> Option<kimun_core::system::SystemPath> {
+        app.settings.read().unwrap().resolve_workspace_path()
+    }
+
+    /// The config file of an app built by `app_with_history`, written once
+    /// so there are bytes to compare, plus a hand-written comment: any
+    /// rewrite drops it, even one of unchanged settings.
+    fn saved_config(app: &App, scratch: &tempfile::TempDir) -> (std::path::PathBuf, Vec<u8>) {
+        app.settings.read().unwrap().save_to_disk().unwrap();
+        let path = scratch.path().join("config.toml");
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"\n# hand edit\n");
+        std::fs::write(&path, &bytes).unwrap();
+        (path, bytes)
+    }
+
+    /// A conflict says the vault is unusable, not that the user's workspace
+    /// entry is wrong: the entry stays so the vault opens again once fixed.
+    #[tokio::test]
+    async fn a_vault_conflict_keeps_the_workspace_and_opens_preferences_with_the_error() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        let before = workspace_path_of(&app);
+        assert!(before.is_some());
+
+        handle(&mut app, conflict("boom")).await;
+
+        assert_eq!(workspace_path_of(&app), before, "the workspace stays");
+        assert_eq!(
+            app.settings.read().unwrap().current_workspace_name(),
+            Some("ws".to_string())
+        );
+        assert!(app.vault.is_none(), "the unusable vault is dropped");
+        assert_eq!(app.vault_status.conflict(), Some("boom"));
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Preferences);
+    }
+
+    #[tokio::test]
+    async fn a_vault_conflict_does_not_write_the_settings_file() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        let (path, before) = saved_config(&app, &scratch);
+
+        handle(&mut app, conflict("boom")).await;
+
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Feed every queued message back to the app handler, the way the loop
+    /// does, until the screen is `target` (or the queue runs dry).
+    async fn pump_until(
+        app: &mut App,
+        tx: &crate::logic::message::AppTx,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::logic::message::AppMessage>,
+        target: ScreenKind,
+    ) {
+        for _ in 0..100 {
+            if app.current_screen.get_kind() == target {
+                return;
+            }
+            let Ok(msg) = rx.try_recv() else { return };
+            super::handle_app_message(msg, app, tx).await.unwrap();
+        }
+    }
+
+    /// Closing Preferences after a conflict goes through Start, which has no
+    /// vault. The status is conflicted, so it returns to Preferences with the
+    /// error: rerun Onboarding cannot change the workspace.
+    #[tokio::test]
+    async fn closing_preferences_after_a_conflict_returns_to_preferences_with_the_error() {
+        use crate::logic::message::AppMessage;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(conflict("boom"), &mut app, &tx)
+            .await
+            .unwrap();
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Preferences);
+
+        super::handle_app_message(AppMessage::ClosePreferences, &mut app, &tx)
+            .await
+            .unwrap();
+        // Start is the intermediate screen: wait for it, then let its
+        // OpenPath reach the app handler.
+        pump_until(&mut app, &tx, &mut rx, ScreenKind::Start).await;
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Start);
+        for _ in 0..100 {
+            let Ok(msg) = rx.try_recv() else { break };
+            super::handle_app_message(msg, &mut app, &tx).await.unwrap();
+            if app.current_screen.get_kind() != ScreenKind::Start {
+                break;
+            }
+        }
+
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Preferences);
+        assert!(workspace_path_of(&app).is_some(), "the workspace stays");
+        assert!(app.vault.is_none());
+        assert_eq!(app.vault_status.conflict(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn no_vault_with_a_ready_status_still_reaches_onboarding() {
+        use crate::logic::message::AppMessage;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        app.vault = None;
+        assert!(!app.vault_status.is_conflicted());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(
+            AppMessage::open(kimun_core::nfs::VaultPath::root()),
+            &mut app,
+            &tx,
+        )
+        .await
+        .unwrap();
+        pump_until(&mut app, &tx, &mut rx, ScreenKind::Onboarding).await;
+
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Onboarding);
+    }
+
+    #[tokio::test]
+    async fn after_a_conflict_saving_preferences_clears_the_conflicted_route() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        handle(&mut app, conflict("boom")).await;
+        assert!(app.vault_status.is_conflicted());
+
+        handle(
+            &mut app,
+            crate::logic::message::AppMessage::PreferencesSaved,
+        )
+        .await;
+
+        assert_eq!(app.vault_status, crate::logic::startup::VaultStatus::Ready);
+    }
+
+    fn indexed(outcome: crate::logic::startup::IndexOutcome) -> crate::logic::message::AppMessage {
+        crate::logic::message::AppMessage::VaultIndexed(outcome)
+    }
+
+    /// Fix the folder, reindex from Preferences: the clean pass must bring
+    /// the vault back, or Esc lands on Onboarding.
+    #[tokio::test]
+    async fn a_clean_reindex_after_a_conflict_reopens_the_vault() {
+        use crate::logic::message::AppMessage;
+        use crate::logic::startup::{IndexOutcome, VaultStatus};
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(conflict("boom"), &mut app, &tx)
+            .await
+            .unwrap();
+        assert!(app.vault.is_none());
+        super::handle_app_message(
+            indexed(IndexOutcome::Done(std::time::Duration::ZERO)),
+            &mut app,
+            &tx,
+        )
+        .await
+        .unwrap();
+        assert!(app.vault.is_some(), "the vault is rebuilt");
+        assert_eq!(app.vault_status, VaultStatus::Ready);
+
+        super::handle_app_message(AppMessage::ClosePreferences, &mut app, &tx)
+            .await
+            .unwrap();
+        pump_until(&mut app, &tx, &mut rx, ScreenKind::Onboarding).await;
+        for _ in 0..100 {
+            let Ok(msg) = rx.try_recv() else { break };
+            super::handle_app_message(msg, &mut app, &tx).await.unwrap();
+        }
+        assert_ne!(app.current_screen.get_kind(), ScreenKind::Onboarding);
+    }
+
+    #[tokio::test]
+    async fn a_done_with_a_ready_status_does_not_replace_the_vault() {
+        use crate::logic::startup::IndexOutcome;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        let before = app.vault.clone().expect("an open vault");
+
+        handle(
+            &mut app,
+            indexed(IndexOutcome::Done(std::time::Duration::ZERO)),
+        )
+        .await;
+
+        assert!(Arc::ptr_eq(&before, app.vault.as_ref().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn a_failed_pass_after_a_conflict_leaves_the_vault_dropped() {
+        use crate::logic::startup::IndexOutcome;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        handle(&mut app, conflict("boom")).await;
+
+        handle(&mut app, indexed(IndexOutcome::Failed("x".into()))).await;
+
+        assert!(app.vault.is_none());
+        assert!(app.vault_status.is_conflicted());
+    }
+
+    async fn conflicted_app(scratch: &tempfile::TempDir) -> App {
+        let mut app = app_with_history(&[], scratch).await;
+        app.vault_status = crate::logic::startup::VaultStatus::Conflicted("old".into());
+        app
+    }
+
+    #[tokio::test]
+    async fn saving_preferences_resets_the_status_to_ready() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = conflicted_app(&scratch).await;
+        handle(
+            &mut app,
+            crate::logic::message::AppMessage::PreferencesSaved,
+        )
+        .await;
+        assert_eq!(app.vault_status, crate::logic::startup::VaultStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn finishing_onboarding_resets_the_status_to_ready() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = conflicted_app(&scratch).await;
+        handle(
+            &mut app,
+            crate::logic::message::AppMessage::OnboardingFinished,
+        )
+        .await;
+        assert_eq!(app.vault_status, crate::logic::startup::VaultStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn switching_workspace_resets_the_status_to_ready() {
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = conflicted_app(&scratch).await;
+        handle(
+            &mut app,
+            crate::logic::message::AppMessage::WorkspaceSwitched("ws".into()),
+        )
+        .await;
+        assert_eq!(app.vault_status, crate::logic::startup::VaultStatus::Ready);
+    }
+
+    /// A Save that moves the workspace onto a case-clashing folder reindexes
+    /// it, hits the conflict, and must keep what the user entered: the
+    /// workspace still points at the new folder in memory, and the settings
+    /// file is not rewritten (the save waits for a clean index).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_save_that_hits_a_conflict_keeps_the_entered_workspace() {
+        use crate::logic::message::{AppMessage, ScreenEvent};
+        use crate::logic::startup::IndexOutcome;
+        use crate::test_support::key_event;
+        use ratatui::crossterm::event::KeyCode;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let clash = tempfile::TempDir::new().unwrap();
+        std::fs::write(clash.path().join("note.md"), "a").unwrap();
+        std::fs::write(clash.path().join("Note.md"), "b").unwrap();
+
+        let mut app = app_with_history(&[], &scratch).await;
+        let (path, before) = saved_config(&app, &scratch);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::switch_screen(&mut app, &tx, ScreenEvent::OpenPreferences).await;
+
+        app.settings
+            .write()
+            .unwrap()
+            .set_workspace_path("ws", clash.path().to_path_buf());
+        let moved = workspace_path_of(&app);
+        app.current_screen
+            .handle_input(&key_event(KeyCode::Esc), &tx);
+        app.current_screen
+            .handle_input(&key_event(KeyCode::Enter), &tx);
+
+        // Run the loop's half until the reindex outcome has been handled.
+        loop {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+                .await
+                .expect("timed out waiting for the reindex outcome")
+                .expect("channel closed");
+            let done = matches!(msg, AppMessage::VaultIndexed(_));
+            if let AppMessage::VaultIndexed(ref outcome) = msg {
+                assert!(
+                    matches!(outcome, IndexOutcome::Conflict(_)),
+                    "expected a conflict, got {outcome:?}"
+                );
+            }
+            super::handle_app_message(msg, &mut app, &tx).await.unwrap();
+            if done {
+                break;
+            }
+        }
+
+        assert_eq!(workspace_path_of(&app), moved, "the entered path stays");
+        assert_eq!(
+            app.settings.read().unwrap().current_workspace_name(),
+            Some("ws".to_string()),
+            "the workspace is not cleared"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was saved");
+        assert!(app.vault.is_none());
+        assert!(app.vault_status.is_conflicted());
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Preferences);
+    }
+
+    /// Drive a Start screen that holds a real vault, waiting for its pass.
+    /// The pass runs on a throwaway channel so only the injected `outcome`
+    /// reaches the app. Returns once the screen has asked to open a path, the
+    /// way the loop would see it, and the app has moved off Start.
+    async fn start_receives_through_the_app(outcome: crate::logic::startup::IndexOutcome) {
+        use crate::logic::message::{AppMessage, ScreenEvent};
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let mut app = app_with_history(&[], &scratch).await;
+        assert!(app.vault.is_some());
+        let (throwaway_tx, _throwaway_rx) = tokio::sync::mpsc::unbounded_channel();
+        super::switch_screen(&mut app, &throwaway_tx, ScreenEvent::Start).await;
+        assert_eq!(app.current_screen.get_kind(), ScreenKind::Start);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::handle_app_message(indexed(outcome), &mut app, &tx)
+            .await
+            .unwrap();
+
+        // Start answers with OpenPath only if the app forwarded the outcome.
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("Start never received the outcome: it would hang on the spinner")
+            .expect("channel closed");
+        assert!(matches!(msg, AppMessage::OpenPath { .. }), "got {msg:?}");
+        super::handle_app_message(msg, &mut app, &tx).await.unwrap();
+        for _ in 0..100 {
+            if app.current_screen.get_kind() != ScreenKind::Start {
+                break;
+            }
+            let Ok(Some(msg)) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await
+            else {
+                break;
+            };
+            super::handle_app_message(msg, &mut app, &tx).await.unwrap();
+        }
+        assert_ne!(app.current_screen.get_kind(), ScreenKind::Start);
+    }
+
+    /// The app must hand a clean pass to the screen that started it, or the
+    /// Start spinner never ends and eats all input.
+    #[tokio::test]
+    async fn a_done_pass_is_forwarded_to_the_start_screen() {
+        start_receives_through_the_app(crate::logic::startup::IndexOutcome::Done(
+            std::time::Duration::ZERO,
+        ))
+        .await;
+    }
+
+    /// Start restores the session on a failed pass too.
+    #[tokio::test]
+    async fn a_failed_pass_is_forwarded_to_the_start_screen() {
+        start_receives_through_the_app(crate::logic::startup::IndexOutcome::Failed("x".into()))
+            .await;
+    }
+
+    /// A Save that moves the workspace reindexes it; the clean pass must
+    /// reach Preferences through the app, or the Save never finishes.
+    #[tokio::test]
+    async fn a_done_pass_is_forwarded_to_preferences_during_a_save() {
+        use crate::logic::message::{AppMessage, ScreenEvent};
+        use crate::test_support::key_event;
+        use ratatui::crossterm::event::KeyCode;
+
+        let scratch = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        std::fs::write(other.path().join("note.md"), "a").unwrap();
+
+        let mut app = app_with_history(&[], &scratch).await;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        super::switch_screen(&mut app, &tx, ScreenEvent::OpenPreferences).await;
+        app.settings
+            .write()
+            .unwrap()
+            .set_workspace_path("ws", other.path().to_path_buf());
+        app.current_screen
+            .handle_input(&key_event(KeyCode::Esc), &tx);
+        app.current_screen
+            .handle_input(&key_event(KeyCode::Enter), &tx);
+
+        // The loop's half: feed messages to the app until the screen reports
+        // the Save finished.
+        // One deadline for the whole wait: progress ticks keep arriving, so a
+        // per-message timeout would never fire if the outcome were dropped.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let msg = tokio::time::timeout_at(deadline, rx.recv())
+                .await
+                .expect("timed out: Preferences never finished the Save")
+                .expect("channel closed");
+            let saved = matches!(msg, AppMessage::PreferencesSaved);
+            if let AppMessage::VaultIndexed(ref o) = msg {
+                assert!(
+                    matches!(o, crate::logic::startup::IndexOutcome::Done(_)),
+                    "{o:?}"
+                );
+            }
+            if saved {
+                break;
+            }
+            super::handle_app_message(msg, &mut app, &tx).await.unwrap();
+        }
     }
 
     /// When `auto` chose Backspace the stranded action is kimün's own

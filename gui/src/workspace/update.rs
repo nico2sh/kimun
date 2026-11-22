@@ -802,7 +802,7 @@ impl Workspace {
             .notes
             .as_ref()
             .is_some_and(|h| h.note.is_some());
-        if !has_note || self.status.read_only {
+        if !has_note || self.status.read_only() {
             self.start_install(cx);
             return;
         }

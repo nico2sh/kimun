@@ -14,6 +14,7 @@ use kimun_notes::logic::files::FileListEntry;
 use kimun_notes::logic::layout::{Panel, Region, Side};
 use kimun_notes::logic::message::{AppMessage, FileOp};
 use kimun_notes::logic::nav::DrawerView;
+use kimun_notes::logic::startup::IndexOutcome;
 use tokio::runtime::Runtime;
 
 use super::files::{FILES_ID, row_id};
@@ -1088,7 +1089,7 @@ fn counts_reload_when_indexing_finishes(cx: &mut TestAppContext) {
         .unwrap();
     send(
         &started,
-        AppMessage::IndexingDone(Ok(Default::default())),
+        AppMessage::VaultIndexed(IndexOutcome::Done(Default::default())),
         cx,
     );
     drive(&rt, cx, |cx| {

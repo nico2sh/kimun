@@ -41,6 +41,7 @@ use gpui_kit::{
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::find_bar::MatchPosition;
 use kimun_notes::logic::layout_tree::RailPosition;
+use kimun_notes::logic::startup::VaultStatus;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::util::git_status::GitSummary;
 
@@ -84,10 +85,10 @@ pub(crate) struct Status {
     pub(crate) dirty: bool,
     /// The vault's index is being brought up to date.
     pub(crate) indexing: bool,
-    /// Notes must not be written (the vault has names that differ only by
-    /// case; Preferences > Workspaces says so and offers a way out). Saves
-    /// honour it.
-    pub(crate) read_only: bool,
+    /// What the last index pass said of the vault. A conflicted vault (names
+    /// that differ only by case; Preferences > Workspaces says so and offers
+    /// a way out) is read-only: see [`Status::read_only`].
+    pub(crate) vault: VaultStatus,
     /// The workspace's git summary (the footer words it `git ✓`, `git ●3`);
     /// `None` when the workspace is not a repository (or `git` is missing).
     pub(crate) git: Option<GitSummary>,
@@ -95,6 +96,13 @@ pub(crate) struct Status {
     /// (`RagStatus::label`: "rag: online", …); `None` with no server
     /// configured.
     pub(crate) rag: Option<&'static str>,
+}
+
+impl Status {
+    /// Notes must not be written: the vault is conflicted. Saves honour it.
+    pub(crate) fn read_only(&self) -> bool {
+        self.vault.is_conflicted()
+    }
 }
 
 /// What the footer reads off the editor and the open note each frame: each
@@ -258,7 +266,7 @@ pub(crate) fn render(
             )
         })
         .when(note_open, |bar| bar.right(save_state(status.dirty, theme)))
-        .when(status.read_only, |bar| {
+        .when(status.read_only(), |bar| {
             bar.right(
                 label(READ_ONLY_ID, "Read-only".into(), "Read-only".into())
                     .flex_none()
