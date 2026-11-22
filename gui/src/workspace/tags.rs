@@ -271,7 +271,7 @@ impl Workspace {
             DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.dismiss_to_editor(window, cx),
             // Tags are not vault entries: no menu.
-            DrawerListEvent::FileOp(..) => {}
+            DrawerListEvent::Pick(..) => {}
         }
     }
 

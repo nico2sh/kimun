@@ -758,8 +758,8 @@ impl Workspace {
             }
             DrawerListEvent::Verb(..) => {}
             DrawerListEvent::Dismiss => self.focus_ask_composer(window, cx),
-            // A source is not offered for rename / move / delete here.
-            DrawerListEvent::FileOp(..) => {}
+            // A source has its own menu, not the row menu.
+            DrawerListEvent::Pick(..) => {}
         }
     }
 

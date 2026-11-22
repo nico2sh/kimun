@@ -557,8 +557,10 @@ impl Workspace {
         to: &VaultPath,
         cx: &mut Context<Self>,
     ) -> Vec<(GroupId, ReadRequest)> {
-        // A note menu on the old path would act on a stale one.
+        // A note menu or a Link menu on the old path would act on a stale
+        // one.
         self.forget_note_menu_under(from, cx);
+        self.forget_link_menu_under(from, cx);
         let mut reads = Vec::new();
         for group in self.group_ids() {
             let Some(host) = self.host_in_mut(group) else {
@@ -589,6 +591,7 @@ impl Workspace {
     /// says so in the editor Panel.
     pub(crate) fn note_deleted(&mut self, path: &VaultPath, cx: &mut Context<Self>) -> bool {
         self.forget_note_menu_under(path, cx);
+        self.forget_link_menu_under(path, cx);
         self.empty_groups_where(|note| path_at_or_below(note, path), cx)
     }
 

@@ -2007,14 +2007,44 @@ impl EditorDisplay {
         self.click_to_logical_u16(vrow, screen_col)
     }
 
+    /// The logical (row, col) of the text drawn in screen cell
+    /// (`screen_row`, `screen_col`), or `None` when the cell draws no text:
+    /// below the last row, in a gutter, or right of the text on its visual
+    /// row. Unlike [`Self::click_at_screen`] it never clamps to the nearest
+    /// text, so a host can ask what lies under the pointer without placing
+    /// the caret.
+    pub fn text_at_screen(&self, screen_row: usize, screen_col: usize) -> Option<(usize, usize)> {
+        let vrow = screen_row + self.viewport.top();
+        if vrow >= self.layout.visual_lines().len() {
+            return None;
+        }
+        let (row, col, end, gutter) = self.cell_to_logical(vrow, screen_col);
+        (screen_col >= gutter && col < end).then_some((row, col))
+    }
+
     fn click_to_logical_u16(&self, vrow: usize, vcol: usize) -> (u16, u16) {
-        let vlines = self.layout.visual_lines();
-        if vlines.is_empty() {
+        if self.layout.visual_lines().is_empty() {
             return (0, 0);
         }
-        let vrow = vrow.min(vlines.len() - 1);
-        let vl = &vlines[vrow];
-        let row_u16 = vl.logical_row.min(u16::MAX as usize) as u16;
+        let vrow = vrow.min(self.layout.visual_lines().len() - 1);
+        let (row, logical_col, end, _) = self.cell_to_logical(vrow, vcol);
+        let row_u16 = row.min(u16::MAX as usize) as u16;
+        // Clamp to the visual line clicked. `rendered_col_to_logical_with` maps a
+        // cell to a column in the whole logical row, so a click in the blank
+        // space right of a soft-wrapped line walks straight into the span of the
+        // line below and the cursor lands a row further on than the one under the
+        // pointer. `crate::ropetext::Layout::position_at_cell` clamps for this reason;
+        // this is the TUI's own mapper and had drifted from it.
+        let logical_col = logical_col.min(end);
+        let col = logical_col.min(u16::MAX as usize) as u16;
+        (row_u16, col)
+    }
+
+    /// Map cell `vcol` of visual line `vrow` (which must exist) to its
+    /// logical row and its unclamped logical column, with the visual line's
+    /// end column and the row's gutter width.
+    fn cell_to_logical(&self, vrow: usize, vcol: usize) -> (usize, usize, usize, usize) {
+        let vl = &self.layout.visual_lines()[vrow];
         let row_text = self.text_snapshot.line(vl.logical_row).unwrap_or_default();
         let logical_line = row_text.as_ref();
         let parsed = &self.parse_state.buf().lines[vl.logical_row];
@@ -2048,15 +2078,7 @@ impl EditorDisplay {
             vl.first,
             force_raw,
         );
-        // Clamp to the visual line clicked. `rendered_col_to_logical_with` maps a
-        // cell to a column in the whole logical row, so a click in the blank
-        // space right of a soft-wrapped line walks straight into the span of the
-        // line below and the cursor lands a row further on than the one under the
-        // pointer. `crate::ropetext::Layout::position_at_cell` clamps for this reason;
-        // this is the TUI's own mapper and had drifted from it.
-        let logical_col = logical_col.min(vl.chars.end);
-        let col = logical_col.min(u16::MAX as usize) as u16;
-        (row_u16, col)
+        (vl.logical_row, logical_col, vl.chars.end, gutter)
     }
 
     #[cfg(test)]
