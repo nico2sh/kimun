@@ -2014,6 +2014,64 @@ async fn stale_schema_version_rebuilds_with_properties_table() {
     db.close().await;
 }
 
+/// An index stamped by a newer Kimün than this one must not be wiped: the
+/// open fails with `IndexNewer`, and the rows stay for the newer app. Two apps
+/// of different versions on one vault would otherwise rebuild the index at
+/// each other on every launch.
+#[tokio::test]
+async fn open_refuses_an_index_from_a_newer_version() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = file::IndexFile::at(crate::system::sys(tmp.path().join("kimun.sqlite")));
+    let db = NoteIndex::open(&file).await.unwrap();
+    sqlx::query("INSERT INTO appData (name, value) VALUES ('marker', 'kept')")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    // 0.100 is newer than 0.19 numerically, but older as text.
+    sqlx::query("UPDATE appData SET value = '0.100' WHERE name = 'version'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    db.close().await;
+
+    let err = NoteIndex::open(&file).await.expect_err("open must fail");
+    assert!(
+        matches!(&err, DBError::IndexNewer { found, .. } if found == "0.100"),
+        "got {err:?}"
+    );
+
+    // Nothing was dropped: the marker row is still there.
+    let pool = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new().filename(file.path().as_path()),
+    )
+    .await
+    .unwrap();
+    let marker: Option<String> =
+        sqlx::query_scalar("SELECT value FROM appData WHERE name = 'marker'")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert_eq!(marker.as_deref(), Some("kept"));
+}
+
+/// A stored version that is not a version at all (a foreign or damaged file)
+/// still heals, as before.
+#[tokio::test]
+async fn open_heals_an_unparsable_version() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let file = file::IndexFile::at(crate::system::sys(tmp.path().join("kimun.sqlite")));
+    let db = NoteIndex::open(&file).await.unwrap();
+    sqlx::query("UPDATE appData SET value = 'banana' WHERE name = 'version'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    db.close().await;
+
+    let db = NoteIndex::open(&file).await.unwrap();
+    assert!(!db.ready(), "an unreadable version must self-heal");
+    db.close().await;
+}
+
 async fn prop_fixture() -> (tempfile::TempDir, NoteIndex) {
     let (tmp, db) = open_temp().await;
     db.apply(added(vec![

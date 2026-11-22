@@ -145,6 +145,8 @@ impl VaultError {
             | VaultError::ReplaceTextNotUnique { .. }
             | VaultError::InvalidRegex { .. }
             | VaultError::InvalidProperty { .. } => Some(self.to_string()),
+            // The user can act on this one: update the app.
+            VaultError::DBError(e @ DBError::IndexNewer { .. }) => Some(e.to_string()),
             // Internal failures — no actionable user message.
             VaultError::DBError(_)
             | VaultError::CaseConflict { .. }
@@ -244,6 +246,12 @@ pub enum DBError {
     /// index and can be tolerated by the caller.
     #[error("Error reading cached notes in the DB: {0}")]
     NonCritical(String),
+    /// The index was written by a newer Kimün than this one. It is left
+    /// untouched: wiping it would make the two apps rebuild it at each other.
+    #[error(
+        "This vault's index was made by a newer version of Kimün (index format {found}, this version reads {supported}). Update this app, for example with `kimun update`."
+    )]
+    IndexNewer { found: String, supported: String },
     /// An index-related failure that does not fit the other variants (e.g.
     /// preparing the database directory).
     #[error("DB related error: {0}")]
