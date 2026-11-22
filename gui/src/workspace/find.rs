@@ -712,7 +712,11 @@ impl FindView {
                     .small()
                     .icon(COLLECTION_ICON)
                     .accessibility_label(COLLECTION_LABEL)
-                    .tooltip(COLLECTION_LABEL)
+                    .tooltip(super::chrome::tooltip_with_chord(
+                        COLLECTION_LABEL,
+                        &ActionShortcuts::OpenQueryAsCollection,
+                        cx,
+                    ))
                     .on_click(
                         cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Collection)),
                     )
