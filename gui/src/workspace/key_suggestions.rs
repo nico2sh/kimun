@@ -230,7 +230,7 @@ impl KeySuggestions {
             .flex()
             .flex_col()
             .children(rows);
-        let list = popup_layer::frame(div(), popup_layer::width_of(field), t)
+        let list = popup_layer::frame(div(), popup_layer::width_of(field, window), t)
             .on_scroll(popup_layer::on_wheel(
                 cx,
                 move |this, command, _, cx| match command {

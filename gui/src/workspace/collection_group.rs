@@ -438,7 +438,6 @@ impl Workspace {
             .items_center()
             .justify_center()
             .rounded_md()
-            .cursor_pointer()
             .text_color(theme::muted(&theme))
             .hover(move |style| style.bg(hover))
             .tooltip(move |window, cx| Tooltip::new(REFRESH_LABEL).build(window, cx))

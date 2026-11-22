@@ -242,7 +242,6 @@ pub(crate) fn render(
             bar.right(
                 count(BACKLINKS_ID, counted(n, "backlink", "backlinks"))
                     .role(Role::Button)
-                    .cursor_pointer()
                     .hover(move |style| style.text_color(hover))
                     .tooltip(|window, cx| Tooltip::new("Show backlinks").build(window, cx))
                     .on_click(on_backlinks),
@@ -253,7 +252,6 @@ pub(crate) fn render(
             bar.right(
                 count(PROPERTIES_ID, counted(n, "property", "properties"))
                     .role(Role::Button)
-                    .cursor_pointer()
                     .hover(move |style| style.text_color(hover))
                     .tooltip(|window, cx| Tooltip::new("Edit properties").build(window, cx))
                     .on_click(on_properties),
@@ -337,7 +335,6 @@ pub(crate) fn rail_toggle(
         // either (24px makes the footer 33px).
         .size_5()
         .rounded_md()
-        .cursor_pointer()
         .hover(move |style| style.bg(hover))
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(rail.on_toggle)
@@ -382,7 +379,6 @@ fn zoom_segment(
                 .aria_label(RESTORE)
                 .whitespace_nowrap()
                 .text_color(theme::accent(theme))
-                .cursor_pointer()
                 .hover(move |style| style.text_color(hover))
                 .tooltip(|window, cx| Tooltip::new("Leave zoom").build(window, cx))
                 .on_click(zoom.on_restore)
