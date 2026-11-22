@@ -23,6 +23,7 @@ use kimun_core::system::SystemPath;
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::leader_route::LeaderRoute;
 use kimun_notes::logic::message::AppMessage;
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::settings::gui::GuiSettings;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
@@ -1040,7 +1041,7 @@ fn indexing_is_inert_without_a_workspace(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
-// ── VaultConflict ───────────────────────────────────────────────────────────
+// ── Conflict ───────────────────────────────────────────────────────────
 
 /// A vault that opens with a case conflict: Preferences > Workspaces with
 /// the vault's message, the workspace config kept, and another workspace
@@ -1052,7 +1053,11 @@ fn a_vault_conflict_lands_in_workspaces(cx: &mut TestAppContext) {
     let p = rt.block_on(pair());
     let s = open_on_a(cx, &rt, &p, LayoutStore::File(p.config.clone()));
     let text = "Case-sensitivity conflicts detected in vault:\nx.md / X.md";
-    send(&s, AppMessage::VaultConflict(text.into()), cx);
+    send(
+        &s,
+        AppMessage::VaultIndexed(IndexOutcome::Conflict(text.into())),
+        cx,
+    );
     assert!(s.pw_is_open(cx));
     assert!(s.shows(PREFERENCES_ID, cx));
     drive(&rt, cx, |cx| s.pw_read(cx, |v| v.model().is_some()));

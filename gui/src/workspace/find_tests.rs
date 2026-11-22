@@ -16,6 +16,7 @@ use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::query::QueryHit;
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::logic::views::TagEntry;
 use tokio::runtime::Runtime;
 
@@ -1126,7 +1127,7 @@ fn hidden_find_and_tags_do_no_work(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| on(&started, "beta.md", cx));
     send(
         &started,
-        AppMessage::IndexingDone(Ok(Default::default())),
+        AppMessage::VaultIndexed(IndexOutcome::Done(Default::default())),
         cx,
     );
     assert_eq!(runs(&started, cx), 0);

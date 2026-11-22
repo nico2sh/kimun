@@ -641,7 +641,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let read_only = self.status.read_only;
+        let read_only = self.status.read_only();
         let active = group == self.layout.active_group();
         let Some(state) = self.groups.get_mut(&group) else {
             return;

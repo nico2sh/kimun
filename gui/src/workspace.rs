@@ -129,7 +129,7 @@
 //! the same takeover as the setup assistant. A saved draft applies at once;
 //! only a new server address or editor engine enters the vault again.
 //! Workspaces (M9b-2) are managed there, each change written as it is made;
-//! a vault that opens with names differing only by case (`VaultConflict`)
+//! a vault that opens with names differing only by case (`IndexOutcome::Conflict`)
 //! stays read-only and brings Preferences up on Workspaces with the vault's
 //! message, so another workspace or folder can be picked.
 //!
@@ -208,6 +208,7 @@ use kimun_notes::logic::message::{AppMessage, AppTx, FileOp};
 use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::{NoteSession, SaveCompleted};
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::logic::view_registry;
 use kimun_notes::rag::RagStatus;
 use kimun_notes::settings::themes::Theme;
@@ -1197,35 +1198,37 @@ impl Workspace {
             // Clipboard notices, the restore's "is gone", ... There is no
             // screen here that drops a flash, so a parked one shows now.
             AppMessage::FlashMessage(text) | AppMessage::ParkFlash(text) => self.flash(text, cx),
-            AppMessage::IndexingDone(result) => {
+            AppMessage::VaultIndexed(outcome) => {
                 self.status.indexing = false;
-                match result {
+                self.status.vault.apply(&outcome);
+                match outcome {
                     // A note opened while the index caught up counted its
                     // backlinks against the old one; so did LINKS, and
                     // FILES its folders' note counts.
-                    Ok(_) => {
+                    IndexOutcome::Done(_) => {
                         self.refresh_note_counts();
                         self.invalidate_views(cx);
                         self.files_reload_counts(cx);
                     }
-                    Err(e) => self.flash_error(format!("Indexing failed: {e}"), cx),
-                }
-            }
-            AppMessage::VaultConflict(details) => {
-                self.status.indexing = false;
-                self.status.read_only = true;
-                // Nothing is written from here on: no tick to run.
-                for state in self.groups.values_mut() {
-                    if let Some(host) = state.notes.as_mut() {
-                        host.session.stop_autosave();
+                    IndexOutcome::Failed(e) => {
+                        self.flash_error(format!("Indexing failed: {e}"), cx)
+                    }
+                    IndexOutcome::Conflict(details) => {
+                        // Nothing is written from here on: no tick to run.
+                        for state in self.groups.values_mut() {
+                            if let Some(host) = state.notes.as_mut() {
+                                host.session.stop_autosave();
+                            }
+                        }
+                        self.flash_error(conflict_flash(&details), cx);
+                        // Preferences > Workspaces, with the vault's own
+                        // words, so another workspace or folder can be
+                        // picked from there.
+                        self.with_window(cx, move |workspace, window, cx| {
+                            workspace.show_vault_conflict(details, window, cx)
+                        });
                     }
                 }
-                self.flash_error(conflict_flash(&details), cx);
-                // Preferences > Workspaces, with the vault's own words, so
-                // another workspace or folder can be picked from there.
-                self.with_window(cx, move |workspace, window, cx| {
-                    workspace.show_vault_conflict(details, window, cx)
-                });
             }
             AppMessage::OpenPath { path, emphasis } => {
                 // The restore's landing (or anything after it): no longer

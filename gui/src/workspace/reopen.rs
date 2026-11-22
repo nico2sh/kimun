@@ -49,7 +49,7 @@ use kimun_notes::logic::editor_region::EditorRegion;
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::rag_caps::Caps;
 use kimun_notes::logic::session::FlushResult;
-use kimun_notes::logic::startup::{VaultOpen, try_open_vault};
+use kimun_notes::logic::startup::{VaultOpen, VaultStatus, try_open_vault};
 use kimun_notes::rag::RagStatus;
 use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::task::JoinError;
@@ -358,6 +358,8 @@ impl Workspace {
         self.file_status = None;
         // The old workspace's git state is not the next one's.
         self.status.git = None;
+        // A conflict belongs to the old vault; the next one starts clean.
+        self.status.vault = VaultStatus::default();
         self.cancel_leader(cx);
         // Every group's note (already flushed): no tick, no path, an empty
         // clean buffer, no search emphasis or find bar from the old text.

@@ -72,7 +72,7 @@ impl Workspace {
         let Some(note) = self.host_in(group).and_then(|h| h.note.clone()) else {
             return;
         };
-        if self.status.read_only {
+        if self.status.read_only() {
             let text = format!(
                 "Read-only: {note} can't be saved until the names that differ only by case are fixed."
             );

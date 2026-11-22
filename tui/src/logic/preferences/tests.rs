@@ -678,7 +678,7 @@ async fn reindex_runners_finish_on_an_empty_vault() {
     let index = IndexFile::in_dir(&SystemPath::try_absolute(cache.path()).unwrap(), "t");
     assert!(matches!(
         reindex_new_vault(workspace.clone(), Some(index.clone())).await,
-        ReindexOutcome::Done(_)
+        IndexOutcome::Done(_)
     ));
     assert!(fast_reindex(workspace, Some(index)).await.is_ok());
 }
