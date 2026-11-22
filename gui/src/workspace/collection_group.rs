@@ -47,7 +47,7 @@ use super::Workspace;
 use super::facet::{FacetView, MemberInit};
 use super::file_ops::path_at_or_below;
 use super::group_header::REFRESH_LABEL;
-use super::note::{Closing, LeaveStart, LeavingFor, NoteLeft};
+use super::note::{Closing, LeavingFor, NoteLeft};
 use crate::{tasks, theme};
 
 /// Run `resolved` against the vault on tokio.
@@ -103,29 +103,11 @@ impl Workspace {
         picks: Vec<Facet>,
         cx: &mut Context<Self>,
     ) {
-        self.open_collection_from(group, resolved, picks, None, cx);
-    }
-
-    /// [`Self::open_collection`] for a collection opened from the search
-    /// browser, which is closed already: `back` is the query it held. If
-    /// this load does not end in a collection because it failed or the
-    /// group's note could not be saved, the browser comes back on `back`
-    /// ([`Self::restore_browser`]). A newer request, or a note opened in the
-    /// group, drops this load and `back` with it. Returns whether the load
-    /// started.
-    pub(super) fn open_collection_from(
-        &mut self,
-        group: GroupId,
-        resolved: String,
-        picks: Vec<Facet>,
-        back: Option<String>,
-        cx: &mut Context<Self>,
-    ) -> bool {
         if self.closing != Closing::Open || self.state(group).is_none() {
-            return false;
+            return;
         }
         let Some(vault) = self.vault() else {
-            return false;
+            return;
         };
         // The newest request wins.
         self.forget_attachment_request(group);
@@ -141,8 +123,7 @@ impl Workspace {
             window
                 .update(cx, |_, window, cx| {
                     this.update(cx, |workspace, cx| {
-                        workspace
-                            .collection_loaded(group, resolved, picks, back, loaded, window, cx)
+                        workspace.collection_loaded(group, resolved, picks, loaded, window, cx)
                     })
                 })
                 .ok();
@@ -152,18 +133,15 @@ impl Workspace {
             // What the session records until the view shows.
             state.collection_pending = Some((resolved_kept, picks_kept));
         }
-        true
     }
 
     /// The query's notes were read: leave `group`'s note for the view, then
-    /// show it; or say why not (and bring the browser back, see `back`).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn collection_loaded(
+    /// show it; or say why not.
+    fn collection_loaded(
         &mut self,
         group: GroupId,
         query: String,
         picks: Vec<Facet>,
-        back: Option<String>,
         loaded: Result<CollectionLoad, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -177,59 +155,30 @@ impl Workspace {
             Err(e) => {
                 state.collection_pending = None;
                 self.flash_error(format!("Couldn't run {query}: {e}"), cx);
-                self.restore_browser(back, window, cx);
                 return;
             }
         };
         let name: SharedString = query.clone().into();
-        let back_if_refused = back.clone();
-        let started = self.leave_note(
+        self.leave_note(
             group,
             LeavingFor::Facet,
             name,
-            move |workspace, left, window, cx| {
-                workspace.collection_left(group, query, load, picks, back, left, window, cx)
+            move |workspace, left, _, cx| match left {
+                NoteLeft::Now | NoteLeft::Flushed => {
+                    workspace.show_collection(group, query, load, picks, cx)
+                }
+                NoteLeft::Stays => workspace.forget_collection_pending(group),
             },
             window,
             cx,
         );
-        if started == LeaveStart::Refused {
-            // Flashed by the leave: the group keeps its note.
-            self.forget_collection_pending(group);
-            self.restore_browser(back_if_refused, window, cx);
-        } else if self
+        // No flush under way: the view showed, or the leave was refused
+        // (flashed) and the group keeps its note.
+        if self
             .state(group)
             .is_some_and(|state| state.facet_flushing.is_none())
         {
-            // No flush under way: the view showed.
             self.forget_collection_pending(group);
-        }
-    }
-
-    /// The group's note was left (or not) for the collection `query`.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn collection_left(
-        &mut self,
-        group: GroupId,
-        query: String,
-        load: CollectionLoad,
-        picks: Vec<Facet>,
-        back: Option<String>,
-        left: NoteLeft,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match left {
-            NoteLeft::Now | NoteLeft::Flushed => {
-                self.show_collection(group, query, load, picks, cx)
-            }
-            // The flush failed (flashed): the browser comes back.
-            NoteLeft::Stays => {
-                self.forget_collection_pending(group);
-                self.restore_browser(back, window, cx);
-            }
-            // The user opened a note meanwhile: that is what they want now.
-            NoteLeft::Redirected => self.forget_collection_pending(group),
         }
     }
 
