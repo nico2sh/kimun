@@ -366,6 +366,7 @@ _Avoid_: dialog event (the RAG answer overlay is not a dialog), validation resul
 **GUI**:
 The native desktop frontend built on GPUI (the `gpui-kit` crate), a sibling of the TUI over the same core and the same shared editor and app logic. It has the TUI's layout and functionality (rail, drawers or slots, editor, footer, command palette, leader, overlays); the one deliberate difference is **Preferences**, regrouped for a graphical layout. Reads and writes the same `config.toml` as the TUI.
 In text for end users, the GUI is the **desktop app** and the TUI is the **terminal app**. Installer output and the docs use these names for readers who do not know the acronyms. Code, ADRs and this glossary say GUI and TUI.
+The desktop app reports the installed terminal app and never changes it. Preferences shows whether the terminal app is installed and which version it is. If the terminal app is older than the desktop app, Preferences also says to run `kimun update`. The desktop app never installs or updates the terminal app.
 _Avoid_: egui app, GPUI app, GUI TUI (it is not a terminal emulator hosting the TUI).
 
 **Logic layer**:
