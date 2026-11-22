@@ -268,3 +268,17 @@ async fn reindex_reports_its_duration() {
     assert_eq!(f.len(), 1);
     assert!(f[0].starts_with("reindexed in "), "{f:?}");
 }
+
+#[test]
+fn announce_is_the_shared_text_for_reindex_only() {
+    let note = VaultPath::new("a.md");
+    let table = [
+        (LeaderJob::Reindex, Some("reindexing…")),
+        (LeaderJob::TogglePin(note), None),
+        (LeaderJob::JumpToPinned(3), None),
+        (LeaderJob::CheckUpdates, None),
+    ];
+    for (job, want) in table {
+        assert_eq!(job.announce(), want, "{job:?}");
+    }
+}

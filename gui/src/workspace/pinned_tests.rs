@@ -791,3 +791,16 @@ mod in_files {
         assert_eq!(started.shown_modal(cx), Some(ModalKind::PinnedNotes));
     }
 }
+
+/// The reindex leader leaf announces itself with the text shared with the
+/// TUI (`LeaderJob::announce`), before its result flash.
+#[gpui_kit::test]
+fn the_reindex_leaf_flashes_the_shared_announce(cx: &mut TestAppContext) {
+    use kimun_notes::logic::leader_route::LeaderJob;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started_with(cx, &rt, &[]);
+    s.workspace
+        .update(cx, |w, cx| w.run_leader_job(LeaderJob::Reindex, cx));
+    assert_eq!(s.flash(cx).as_deref(), Some("reindexing…"));
+}
