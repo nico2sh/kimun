@@ -1013,31 +1013,61 @@ impl Workspace {
         self.open_query_as_collection(&template, cx);
     }
 
+    /// The query typed in the open search browser (none: no browser).
+    pub(crate) fn browser_query(&self, cx: &App) -> Option<String> {
+        let picker = self.picker.as_ref()?.upgrade()?;
+        let query = picker.read(cx).input.read(cx).value().to_string();
+        Some(query)
+    }
+
     /// The `OpenQueryAsCollection` chord in the browser: its typed query goes
-    /// to [`Self::open_browser_as_collection`].
+    /// to [`Self::open_browser_as_collection`], unless the browser is busy
+    /// (as the save chord's rule).
     pub(crate) fn promote_browser_query_to_collection(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
+        if self.picker_busy(cx) {
             return;
-        };
-        let query = picker.read(cx).input.read(cx).value().to_string();
-        self.open_browser_as_collection(query, window, cx);
+        }
+        if let Some(query) = self.browser_query(cx) {
+            self.open_browser_as_collection(query, window, cx);
+        }
     }
 
     /// The search browser's `Open as collection` button: the same as FIND's,
     /// for the query typed in the browser. The browser closes when the
-    /// collection opens; a blank or unresolvable query keeps it.
+    /// collection starts to load; a blank or unresolvable query keeps it. If
+    /// the load then fails, or the open note cannot be left, the browser
+    /// comes back with the query ([`Self::restore_browser`]).
     pub(crate) fn open_browser_as_collection(
         &mut self,
         query: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.find.is_none() || self.vault().is_none() {
+            self.flash(super::route::NO_WORKSPACE, cx);
+            return;
+        }
         if self.open_query_as_collection(&query, cx) {
             self.close_modal(window, cx);
+            self.browser_return = Some((self.layout.active_group(), query));
+        }
+    }
+
+    /// The collection `group` was to show did not open: bring back the
+    /// search browser on the query it was opened from, if it was.
+    pub(super) fn restore_browser(
+        &mut self,
+        group: GroupId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((g, query)) = self.browser_return.take_if(|(g, _)| *g == group) {
+            let _ = g;
+            self.open_search(Some(query), window, cx);
         }
     }
 
@@ -1146,11 +1176,9 @@ impl Workspace {
     /// The `OpenQueryInSidebar` chord in the browser: its typed query goes
     /// to [`Self::open_browser_query_in_find`].
     pub(crate) fn promote_browser_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
-            return;
-        };
-        let query = picker.read(cx).input.read(cx).value().to_string();
-        self.open_browser_query_in_find(query, window, cx);
+        if let Some(query) = self.browser_query(cx) {
+            self.open_browser_query_in_find(query, window, cx);
+        }
     }
 
     /// The browser's `Open in FIND` button, with the query typed in it:
