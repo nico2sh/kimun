@@ -314,7 +314,11 @@ mod tests {
         assert_eq!(
             got,
             TerminalApp::VersionUnknown {
-                path: on_path.path().join(exe_name()).to_string_lossy().into_owned()
+                path: on_path
+                    .path()
+                    .join(exe_name())
+                    .to_string_lossy()
+                    .into_owned()
             }
         );
     }
@@ -323,7 +327,13 @@ mod tests {
     fn output_that_is_not_a_kimun_version_is_an_unknown_version() {
         let on_path = dir_with_kimun();
         let cfg = tempfile::tempdir().unwrap();
-        for out in ["hello\n", "", "kimun-other 1.0.0\n", "kimun\n", "kimun abc\n"] {
+        for out in [
+            "hello\n",
+            "",
+            "kimun-other 1.0.0\n",
+            "kimun\n",
+            "kimun abc\n",
+        ] {
             let got = detect(
                 cfg.path(),
                 Some(&path_of(&[on_path.path()])),

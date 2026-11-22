@@ -556,6 +556,9 @@ pub(crate) struct Workspace {
     /// The server's update: how it is managed here, and the work under way
     /// ([`server`]).
     pub(crate) server_host: server::ServerHost,
+    /// What Preferences shows about the installed terminal app, and the
+    /// lookup under way ([`terminal_app`]).
+    terminal_app: terminal_app::TerminalAppHost,
     /// The vault the running server sync belongs to; `server_update` is
     /// forgotten only when this changes.
     rag_sync_root: Option<std::path::PathBuf>,
@@ -875,6 +878,7 @@ impl Workspace {
             rag_status: RagStatus::Disabled,
             server_update: None,
             server_host: server::ServerHost::new(server::default_backend()),
+            terminal_app: terminal_app::TerminalAppHost::new(terminal_app::default_lookup()),
             rag_sync_root: None,
             rag_caps: Caps::default(),
             rag_sync: TaskSlot::default(),
@@ -3990,6 +3994,7 @@ mod sort;
 mod switcher;
 mod tab_strip;
 mod tags;
+mod terminal_app;
 mod theme_picker;
 pub(crate) mod titlebar;
 mod tree_view;
