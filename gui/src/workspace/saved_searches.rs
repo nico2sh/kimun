@@ -555,13 +555,12 @@ impl Workspace {
     /// `SaveCurrentQuery` in the search browser: the browser gives way to
     /// the save dialog (one modal at a time) and comes back on its query.
     pub(crate) fn save_browser_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
-            return;
-        };
-        if picker.read(cx).is_busy() {
+        if self.picker_busy(cx) {
             return;
         }
-        let query = picker.read(cx).input.read(cx).value().to_string();
+        let Some(query) = self.browser_query(cx) else {
+            return;
+        };
         if query.trim().is_empty() {
             self.flash("No query to save", cx);
             return;

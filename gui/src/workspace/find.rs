@@ -712,7 +712,11 @@ impl FindView {
                     .small()
                     .icon(COLLECTION_ICON)
                     .accessibility_label(COLLECTION_LABEL)
-                    .tooltip(COLLECTION_LABEL)
+                    .tooltip(super::chrome::tooltip_with_chord(
+                        COLLECTION_LABEL,
+                        &ActionShortcuts::OpenQueryAsCollection,
+                        cx,
+                    ))
                     .on_click(
                         cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindEvent::Collection)),
                     )
@@ -1008,22 +1012,72 @@ impl Workspace {
             return;
         };
         let template = find.read(cx).query(cx);
+        self.open_query_as_collection(&template, cx);
+    }
+
+    /// The query typed in the open search browser (none: no browser).
+    pub(crate) fn browser_query(&self, cx: &App) -> Option<String> {
+        let picker = self.picker.as_ref()?.upgrade()?;
+        let query = picker.read(cx).input.read(cx).value().to_string();
+        Some(query)
+    }
+
+    /// The `OpenQueryAsCollection` chord in the browser: its typed query goes
+    /// to [`Self::open_browser_as_collection`].
+    pub(crate) fn promote_browser_query_to_collection(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(query) = self.browser_query(cx) {
+            self.open_browser_as_collection(query, window, cx);
+        }
+    }
+
+    /// The search browser's `Open as collection` button and chord: the same
+    /// as FIND's, for the query typed in the browser. Does nothing while the
+    /// browser is busy (a `Create:` runs), as the save chord. The browser
+    /// closes when the collection starts to load; a blank or unresolvable
+    /// query keeps it. A load that then fails says so, as FIND's does.
+    pub(crate) fn open_browser_as_collection(
+        &mut self,
+        query: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.picker_busy(cx) {
+            return;
+        }
+        if self.vault().is_none() {
+            self.flash(super::route::NO_WORKSPACE, cx);
+            return;
+        }
+        if self.open_query_as_collection(&query, cx) {
+            self.close_modal(window, cx);
+        }
+    }
+
+    /// Resolve `template` against the active group's note, once, and show
+    /// its notes as a collection in the active group. Says why and returns
+    /// false when it cannot start.
+    fn open_query_as_collection(&mut self, template: &str, cx: &mut Context<Self>) -> bool {
         if template.trim().is_empty() {
             self.flash("No query to open", cx);
-            return;
+            return false;
         }
         let note = self
             .active_state()
             .notes
             .as_ref()
             .and_then(|h| h.note.clone());
-        let Some(resolved) = resolve_collection_query(&template, &QueryContext::with_note(note))
+        let Some(resolved) = resolve_collection_query(template, &QueryContext::with_note(note))
         else {
             self.flash("This query needs an open note.", cx);
-            return;
+            return false;
         };
         let group = self.layout.active_group();
         self.open_collection(group, resolved, Vec::new(), cx);
+        true
     }
 
     /// `RefreshCollection`: run the active group's collection query again,
@@ -1108,11 +1162,9 @@ impl Workspace {
     /// The `OpenQueryInSidebar` chord in the browser: its typed query goes
     /// to [`Self::open_browser_query_in_find`].
     pub(crate) fn promote_browser_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
-            return;
-        };
-        let query = picker.read(cx).input.read(cx).value().to_string();
-        self.open_browser_query_in_find(query, window, cx);
+        if let Some(query) = self.browser_query(cx) {
+            self.open_browser_query_in_find(query, window, cx);
+        }
     }
 
     /// The browser's `Open in FIND` button, with the query typed in it:
