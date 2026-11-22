@@ -1,4 +1,4 @@
----
+---`
 type: idea
 status: growing
 topic: distributed systems
@@ -9,7 +9,7 @@ tags:
 # CAP Theorem
 
 Notes on the CAP theorem and its implications for [[distributed-systems]].
-
+`
 ## The Three Properties
 
 - **Consistency**: Every read receives the most recent write or an error
