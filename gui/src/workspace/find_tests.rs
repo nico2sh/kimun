@@ -8,10 +8,12 @@
 //! the test clock.
 #![cfg(test)]
 
+use super::note::NoteLeft;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext as _, Entity, Focusable as _, SharedString, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::layout::Side;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::query::QueryHit;
@@ -856,6 +858,49 @@ fn tags_list_counts_filter_and_run_in_find(cx: &mut TestAppContext) {
     assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);
 }
 
+/// Bind the `OpenQueryAsCollection` chord (`ctrl+alt+o`): it has no default.
+fn bind_collection_chord(cx: &mut TestAppContext) {
+    let overrides = [(
+        "OpenQueryAsCollection".to_string(),
+        vec!["ctrl+alt+o".to_string()],
+    )]
+    .into_iter()
+    .collect();
+    let (keymap, errors) =
+        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
+    assert!(errors.is_empty(), "{errors:?}");
+    cx.update(|cx| crate::keymap::init(cx, keymap));
+}
+
+/// The search browser open on `#go`, through TAGS.
+fn browser_on_go(started: &Started, rt: &Runtime, cx: &mut TestAppContext) {
+    leader(started, "ft", cx);
+    assert_eq!(tag_rows(started, rt, cx).len(), 3);
+    click(started, tag_row_id("go"), cx);
+    started.settle_dialog(cx);
+    assert_eq!(browser_query(started, cx).as_deref(), Some("#go"));
+}
+
+fn active_group(started: &Started, cx: &TestAppContext) -> GroupId {
+    cx.read(|cx| started.workspace.read(cx).layout.active_group())
+}
+
+/// The resolved query of the collection `group` shows.
+fn collection_of(started: &Started, group: GroupId, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx))
+}
+
+/// Drive until `group` shows a collection; its query.
+fn wait_for_collection(
+    started: &Started,
+    rt: &Runtime,
+    group: GroupId,
+    cx: &mut TestAppContext,
+) -> Option<String> {
+    drive(rt, cx, |cx| collection_of(started, group, cx).is_some());
+    collection_of(started, group, cx)
+}
+
 /// The search browser's `Open as collection` button: the browser closes and
 /// the active group shows the query's notes as a collection.
 #[gpui_kit::test]
@@ -863,26 +908,15 @@ fn the_browser_opens_its_query_as_a_collection(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
-    leader(&started, "ft", cx);
-    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
-    click(&started, tag_row_id("go"), cx);
-    started.settle_dialog(cx);
-    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
+    browser_on_go(&started, &rt, cx);
     click(&started, BROWSER_COLLECTION_ID, cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
-    let group = cx.read(|cx| started.workspace.read(cx).layout.active_group());
-    drive(&rt, cx, |cx| {
-        cx.read(|cx| {
-            started
-                .workspace
-                .read(cx)
-                .collection_query_in(group, cx)
-                .is_some()
-        })
-    });
-    let query = cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx));
+    let group = active_group(&started, cx);
+    let query = wait_for_collection(&started, &rt, group, cx);
     assert_eq!(query.as_deref(), Some("#go"));
+    // It opened: the browser stays closed.
+    assert_eq!(started.shown_modal(cx), None);
 }
 
 /// The `OpenQueryAsCollection` chord, once bound, does what the browser's
@@ -892,70 +926,121 @@ fn the_collection_chord_works_in_the_browser(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
-    let overrides = [(
-        "OpenQueryAsCollection".to_string(),
-        vec!["ctrl+alt+o".to_string()],
-    )]
-    .into_iter()
-    .collect();
-    let (keymap, errors) =
-        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
-    assert!(errors.is_empty(), "{errors:?}");
-    cx.update(|cx| crate::keymap::init(cx, keymap));
-    leader(&started, "ft", cx);
-    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
-    click(&started, tag_row_id("go"), cx);
-    started.settle_dialog(cx);
-    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
+    bind_collection_chord(cx);
+    browser_on_go(&started, &rt, cx);
     press(&started, "ctrl-alt-o", cx);
     started.settle_dialog(cx);
     assert_eq!(started.shown_modal(cx), None);
-    let group = cx.read(|cx| started.workspace.read(cx).layout.active_group());
-    drive(&rt, cx, |cx| {
-        cx.read(|cx| {
-            started
-                .workspace
-                .read(cx)
-                .collection_query_in(group, cx)
-                .is_some()
-        })
-    });
-    let query = cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx));
-    assert_eq!(query.as_deref(), Some("#go"));
+    let group = active_group(&started, cx);
+    assert_eq!(
+        wait_for_collection(&started, &rt, group, cx).as_deref(),
+        Some("#go")
+    );
 }
 
-/// With the query syntax help over the browser, the collection chord does
-/// nothing (as the sort and save chords): the help stays, the browser stays.
+/// With the query syntax help over the browser, the collection and save
+/// chords do nothing (as the sort chord): the help and the browser stay.
 #[gpui_kit::test]
-fn the_collection_chord_waits_for_the_query_help(cx: &mut TestAppContext) {
+fn the_browser_chords_wait_for_the_query_help(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
-    let overrides = [(
-        "OpenQueryAsCollection".to_string(),
-        vec!["ctrl+alt+o".to_string()],
-    )]
-    .into_iter()
-    .collect();
-    let (keymap, errors) =
-        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
-    assert!(errors.is_empty(), "{errors:?}");
-    cx.update(|cx| crate::keymap::init(cx, keymap));
-    leader(&started, "ft", cx);
-    assert_eq!(tag_rows(&started, &rt, cx).len(), 3);
-    click(&started, tag_row_id("go"), cx);
-    started.settle_dialog(cx);
+    bind_collection_chord(cx);
+    browser_on_go(&started, &rt, cx);
     press(&started, "f1", cx);
     started.settle_dialog(cx);
     let help_open = |cx: &TestAppContext| cx.read(|cx| started.workspace.read(cx).query_help);
     assert!(help_open(cx), "the help is over the browser");
-    press(&started, "ctrl-alt-o", cx);
-    started.settle_dialog(cx);
-    assert!(help_open(cx), "the chord left the help alone");
+    // The collection chord, then the save chord (`Ctrl+D`).
+    for chord in ["ctrl-alt-o", "ctrl-d"] {
+        press(&started, chord, cx);
+        started.settle_dialog(cx);
+        assert!(help_open(cx), "{chord} left the help alone");
+        assert_eq!(started.shown_modal(cx), Some(ModalKind::Search), "{chord}");
+    }
+    let group = active_group(&started, cx);
+    assert_eq!(collection_of(&started, group, cx), None);
+}
+
+/// A collection that cannot open from the browser brings the browser back
+/// on its query: the load failed, or the open note could not be saved. Not
+/// when it opened, nor when the user opened a note meanwhile.
+#[gpui_kit::test]
+fn the_browser_comes_back_only_when_its_collection_does_not_open(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    let group = active_group(&started, cx);
+    let load = || kimun_notes::logic::query::CollectionLoad {
+        notes: Vec::new(),
+        total: 0,
+        unreadable: 0,
+    };
+    let left = |left: NoteLeft, cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            started.workspace.update(cx, |w, cx| {
+                w.collection_left(
+                    group,
+                    "#go".into(),
+                    load(),
+                    Vec::new(),
+                    Some("#go".into()),
+                    left,
+                    window,
+                    cx,
+                )
+            })
+        })
+        .unwrap();
+        started.settle_dialog(cx);
+    };
+    let failed = |cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| {
+            started.workspace.update(cx, |w, cx| {
+                w.collection_loaded(
+                    group,
+                    "#go".into(),
+                    Vec::new(),
+                    Some("#go".into()),
+                    Err("boom".into()),
+                    window,
+                    cx,
+                )
+            })
+        })
+        .unwrap();
+        started.settle_dialog(cx);
+    };
+    // The load failed: the browser is back, on its query, and says why.
+    failed(cx);
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
-    let group = cx.read(|cx| started.workspace.read(cx).layout.active_group());
-    let none = cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx));
-    assert_eq!(none, None);
+    assert_eq!(browser_query(&started, cx).as_deref(), Some("#go"));
+    assert!(
+        started
+            .flash(cx)
+            .is_some_and(|f| f.starts_with("Couldn't run")),
+        "{:?}",
+        started.flash(cx)
+    );
+    // With a dialog open, nothing opens over it, and nothing breaks.
+    failed(cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    // The note could not be saved: back.
+    left(NoteLeft::Stays, cx);
+    assert_eq!(started.shown_modal(cx), Some(ModalKind::Search));
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    // The user opened a note meanwhile: no browser over it, no collection.
+    left(NoteLeft::Redirected, cx);
+    assert_eq!(started.shown_modal(cx), None);
+    assert_eq!(collection_of(&started, group, cx), None);
+    // The collection showed: no browser.
+    left(NoteLeft::Flushed, cx);
+    assert_eq!(started.shown_modal(cx), None);
+    assert_eq!(collection_of(&started, group, cx).as_deref(), Some("#go"));
 }
 
 /// A double-click on a tag opens the browser once and opens no note: its

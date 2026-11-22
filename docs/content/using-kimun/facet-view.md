@@ -134,7 +134,7 @@ Open FIND, or the search dialog (`Ctrl+K`), and type a query. Then use one of th
 
 No key is set by default. All of them use the query that is now in FIND or in the dialog, not the results that you see. If the query is empty, a message says `No query to open`. If the query uses `{note}` and the pane has no open note, a message says `This query needs an open note.` The query is filled in with the open note when the collection opens, and it stays so.
 
-When you start from the search dialog, the dialog closes. If the collection cannot open, for example because Kimün cannot save the pane's note, the dialog comes back with your query.
+When you start from the search dialog, the dialog closes. If the collection cannot open, for example because the query fails or Kimün cannot save the pane's note, the dialog comes back with your query. It does not come back when you open a note meanwhile, or when another dialog is open.
 
 The collection opens in the current pane and replaces what the pane shows. Kimün saves the text of the pane's own note first. The pane header, and the tab, show the query as the title. The title row at the top of the view shows a small, dim `Collection` and, under it, the query in bold. A long query is shortened with `…`. Hover it to see the full query.
 

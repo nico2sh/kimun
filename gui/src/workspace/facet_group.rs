@@ -133,7 +133,7 @@ impl Workspace {
                 NoteLeft::Now | NoteLeft::Flushed => {
                     workspace.show_facet(group, note, text, picks, cx)
                 }
-                NoteLeft::Stays => {}
+                NoteLeft::Stays | NoteLeft::Redirected => {}
             },
             window,
             cx,

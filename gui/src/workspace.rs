@@ -648,9 +648,6 @@ pub(crate) struct Workspace {
     pub(crate) properties: Option<WeakEntity<properties::PropertiesDialog>>,
     /// The search browser's query syntax is shown over it ([`search`]).
     pub(crate) query_help: bool,
-    /// The search browser's query while its collection loads: the browser is
-    /// closed already, and comes back with this query if the load fails.
-    pub(crate) browser_return: Option<(GroupId, String)>,
     /// The query builder, while open ([`query_builder`]).
     pub(crate) query_builder: Option<query_builder::QueryBuilderOpen>,
     /// The Saved Searches in the modal slot, while open
@@ -914,7 +911,6 @@ impl Workspace {
             note_task: None,
             properties: None,
             query_help: false,
-            browser_return: None,
             query_builder: None,
             saved_searches: None,
             sort: None,
