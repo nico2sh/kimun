@@ -105,6 +105,23 @@ pub enum LeaderJob {
     CheckUpdates,
 }
 
+impl LeaderJob {
+    /// The flash that tells the user the job has started, for jobs whose
+    /// start is worth announcing. Both frontends show it before they spawn
+    /// the job.
+    ///
+    /// `TogglePin` and `JumpToPinned` return `None`: their result flash is
+    /// the whole message. `CheckUpdates` also returns `None`: what it
+    /// announces depends on frontend state (a cached update notice opens a
+    /// dialog instead of announcing), so each frontend decides it.
+    pub fn announce(&self) -> Option<&'static str> {
+        match self {
+            LeaderJob::Reindex => Some("reindexing…"),
+            LeaderJob::TogglePin(_) | LeaderJob::JumpToPinned(_) | LeaderJob::CheckUpdates => None,
+        }
+    }
+}
+
 /// What a fired leader leaf means. Data only, so the performer is a
 /// mechanical `match` and the decision is table-tested here.
 #[derive(Debug, Clone, PartialEq)]

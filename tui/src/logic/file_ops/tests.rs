@@ -91,6 +91,81 @@ fn move_target_refuses_the_entry_itself_and_its_descendants() {
     assert_eq!(move_target(&p("a/n.md"), &p("b")), Ok(p("b/n.md")));
 }
 
+/// What a rename, move or delete of a path touches: the path itself and
+/// what lies below it, compared by components (case and a leading root do
+/// not matter), never a sibling that only shares its name as a prefix.
+#[test]
+fn path_at_or_below_is_the_path_itself_or_below_it() {
+    assert!(path_at_or_below(&p("d/x.md"), &p("d/x.md")));
+    assert!(path_at_or_below(&p("D/X.md"), &p("/d/x.md")));
+    assert!(path_at_or_below(&p("d/x.md"), &p("d")));
+    assert!(path_at_or_below(&p("d/sub/y.md"), &p("/d")));
+    assert!(path_at_or_below(&p("d/x.md"), &VaultPath::root()));
+    assert!(!path_at_or_below(&p("dd/k.md"), &p("d")));
+    assert!(!path_at_or_below(&p("d"), &p("d/x.md")));
+    assert!(!path_at_or_below(&p("top.md"), &p("d")));
+}
+
+/// The delete check the groups used to spell as `relocated(p, gone, gone)`
+/// is the same question `path_at_or_below` answers.
+#[test]
+fn path_at_or_below_agrees_with_relocated_onto_itself() {
+    let paths = [
+        "d/x.md",
+        "d",
+        "d/x.md/y",
+        "d/sub/deep/z.md",
+        "d/y.md",
+        "e/x.md",
+        "dd/x.md",
+        "D/X.md",
+        "/d/x.md",
+        "/d",
+        "top.md",
+        "d/sub",
+    ];
+    let mut roots = vec![VaultPath::root(), VaultPath::empty()];
+    roots.extend(paths.iter().map(|s| p(s)));
+    for path in paths.iter().map(|s| p(s)).chain(roots.iter().cloned()) {
+        for gone in &roots {
+            assert_eq!(
+                path_at_or_below(&path, gone),
+                relocated(&path, gone, gone).is_some(),
+                "{path:?} vs {gone:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn effect_on_says_what_an_op_does_to_the_shown_path() {
+    let shown = p("a/n.md");
+    let renamed = |from: &str, to: &str| FileOp::Renamed {
+        from: p(from),
+        to: p(to),
+    };
+    let moved = |from: &str, to: &str| FileOp::Moved {
+        from: p(from),
+        to: p(to),
+    };
+    let retarget = |s: &str| ShownPathEffect::Retarget(p(s));
+    let cases = [
+        (renamed("a/n.md", "a/m.md"), retarget("a/m.md")),
+        (renamed("a", "z"), retarget("z/n.md")),
+        (moved("a/n.md", "b/n.md"), retarget("b/n.md")),
+        (moved("a", "b/a"), retarget("b/a/n.md")),
+        (FileOp::Deleted(p("a/n.md")), ShownPathEffect::Close),
+        (FileOp::Deleted(p("a")), ShownPathEffect::Close),
+        (FileOp::Deleted(p("a/other.md")), ShownPathEffect::Unchanged),
+        (renamed("q/x.md", "q/y.md"), ShownPathEffect::Unchanged),
+        (FileOp::Created(p("a/new.md")), ShownPathEffect::Unchanged),
+        (FileOp::ShowMenu(p("a/n.md")), ShownPathEffect::Unchanged),
+    ];
+    for (op, want) in cases {
+        assert_eq!(effect_on(&shown, &op), want, "{op:?}");
+    }
+}
+
 #[test]
 fn relocated_follows_the_entry_and_what_a_directory_holds() {
     // The entry itself.

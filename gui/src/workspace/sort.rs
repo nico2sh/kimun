@@ -177,7 +177,6 @@ pub(super) fn sort_chip(id: &'static str, label: SharedString, t: &Theme) -> Sta
         .border_color(theme::divider(t))
         .text_xs()
         .text_color(theme::muted(t))
-        .cursor_pointer()
         .hover(move |style| style.bg(hover))
         .child(label)
         .tooltip(|window, cx| Tooltip::new(sort_tip(cx)).build(window, cx))

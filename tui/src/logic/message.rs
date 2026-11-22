@@ -4,7 +4,6 @@
 use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -181,8 +180,6 @@ pub enum AppMessage {
     /// Sent by IndexingSection; PreferencesScreen intercepts.
     TriggerFastReindex,
     TriggerFullReindex,
-    /// Sent by indexing tokio task on completion.
-    IndexingDone(Result<Duration, String>),
     /// Open (or create) today's journal entry and switch to it in the editor.
     OpenJournal,
     /// Dismiss the active editor overlay (note browser, Saved Searches modal,
@@ -215,14 +212,8 @@ pub enum AppMessage {
     /// An async result addressed to the SEM (semantic search) drawer view.
     Semantic(SemanticData),
 
-    /// A vault was found to be structurally unusable (conflicts, invalid layout, etc.).
-    /// Carries a formatted, human-readable error message.
-    ///
-    /// Handled by `app::handle_app_message`, which clears the workspace,
-    /// saves settings, and opens the settings screen with an error overlay.
-    /// To add a new conflict source: emit this event from the detection site; no
-    /// other files need to change.
-    VaultConflict(String),
+    /// An indexing pass ended (see `startup::IndexOutcome`).
+    VaultIndexed(crate::logic::startup::IndexOutcome),
 
     // ── Workspace messages ──────────────────────────────────────────────
     /// User switched to a different workspace. Carries the workspace name.

@@ -10,7 +10,7 @@
 
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, Context, InteractiveElement, IntoElement, ParentElement as _,
-    Pixels, ScrollEvent, Styled, Window, anchored, deferred, point, px,
+    Pixels, ScrollEvent, Styled, Window, anchored, deferred, point, rems,
 };
 use kimun_notes::logic::autocomplete::PopupCommand;
 use kimun_notes::settings::themes::Theme;
@@ -18,12 +18,25 @@ use kimun_notes::settings::themes::Theme;
 use crate::autocomplete::wheel_command;
 use crate::theme;
 
+/// The narrowest a popup gets, in `rem`s so it follows the interface zoom.
+const MIN_WIDTH_REMS: f32 = 15.;
+/// The gap between the popup and the field it hangs from.
+const GAP_REMS: f32 = 0.125;
+/// The room the popup keeps from the window's edge.
+const MARGIN_REMS: f32 = 0.5;
+/// Vertical padding of one row, and of the frame, in the height estimate.
+const ROW_PAD_REMS: f32 = 0.25;
+const FRAME_PAD_REMS: f32 = 0.375;
+
 /// The popup's width: the field's, but never narrower than a suggestion is
 /// readable in (a short field, such as a property key's, would otherwise get
 /// a sliver). The field's box is the last frame's, so before its first paint
 /// it has none and the popup takes the minimum.
-pub(super) fn width_of(field: Bounds<Pixels>) -> Pixels {
-    field.size.width.max(px(240.))
+pub(super) fn width_of(field: Bounds<Pixels>, window: &Window) -> Pixels {
+    field
+        .size
+        .width
+        .max(rems(MIN_WIDTH_REMS).to_pixels(window.rem_size()))
 }
 
 /// What the wheel does over a popup: `act` runs with the step the wheel's
@@ -61,8 +74,9 @@ pub(super) fn frame<E: InteractiveElement + Styled>(list: E, width: Pixels, t: &
 /// field has room. Only the decision uses it: the popup is laid out by its
 /// content.
 fn estimated_height(rows: usize, window: &Window) -> Pixels {
-    let row = window.rem_size() * 1.25 + px(4.);
-    row * rows as f32 + px(6.)
+    let rem = window.rem_size();
+    let row = rem * 1.25 + rem * ROW_PAD_REMS;
+    row * rows as f32 + rem * FRAME_PAD_REMS
 }
 
 /// `list` as a layer under `field` (above it when the window has no room
@@ -74,8 +88,8 @@ pub(super) fn floating_under(
     list: impl IntoElement,
     window: &Window,
 ) -> AnyElement {
-    let margin = px(8.);
-    let gap = px(2.);
+    let margin = rems(MARGIN_REMS).to_pixels(window.rem_size());
+    let gap = rems(GAP_REMS).to_pixels(window.rem_size());
     let height = estimated_height(rows, window);
     let flip = field.bottom() + gap + height > window.viewport_size().height - margin
         && field.top() - gap - height >= margin;

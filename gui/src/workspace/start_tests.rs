@@ -15,6 +15,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AnyWindowHandle, AppContext, Entity, TestAppContext, WindowOptions};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::message::AppMessage;
+use kimun_notes::logic::startup::IndexOutcome;
 use kimun_notes::settings::gui::GuiSettings;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, SharedSettings};
@@ -682,15 +683,18 @@ fn a_case_conflict_makes_notes_read_only(cx: &mut TestAppContext) {
     let _guard = rt.enter();
     let v = rt.block_on(test_vault(&[], &[]));
     let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+    // The vault's own indexing reports first (a later `Done` would lift the
+    // read-only state): wait for it, then the conflict is the last word.
+    drive(&rt, cx, |cx| !started.indexing(cx));
     send(
         &started,
-        AppMessage::VaultConflict(
+        AppMessage::VaultIndexed(IndexOutcome::Conflict(
             "Case-sensitivity conflicts detected in vault:\na.md / A.md\nb.md / B.md".into(),
-        ),
+        )),
         cx,
     );
     assert!(!started.indexing(cx));
-    assert!(cx.read(|cx| started.workspace.read(cx).status.read_only));
+    assert!(cx.read(|cx| started.workspace.read(cx).status.read_only()));
     let flash = started.flash(cx).unwrap();
     assert!(
         flash.contains("2 names") && flash.contains("case"),
@@ -746,9 +750,75 @@ fn failed_indexing_is_flashed(cx: &mut TestAppContext) {
         .update(cx, |w, _| w.status.indexing = true);
     send(
         &started,
-        AppMessage::IndexingDone(Err("disk gone".into())),
+        AppMessage::VaultIndexed(IndexOutcome::Failed("disk gone".into())),
         cx,
     );
     assert!(!started.indexing(cx));
     assert!(started.flash(cx).unwrap().contains("disk gone"));
+}
+
+// ── read-only follows the vault's status ───────────────────────────────────
+
+/// Send a conflict, then wait for the Preferences it opens to settle (their
+/// load runs on the runtime, which must still be entered).
+fn send_conflict(started: &Started, rt: &Runtime, cx: &mut TestAppContext) {
+    let message = AppMessage::VaultIndexed(IndexOutcome::Conflict("a.md / A.md".into()));
+    send(started, message, cx);
+    let prefs = cx
+        .read(|cx| started.workspace.read(cx).preferences.clone())
+        .expect("Preferences show the conflict");
+    drive(rt, cx, |cx| cx.read(|cx| prefs.read(cx).model().is_some()));
+}
+
+fn read_only(started: &Started, cx: &mut TestAppContext) -> bool {
+    cx.read(|cx| started.workspace.read(cx).status.read_only())
+}
+
+#[gpui_kit::test]
+fn a_vault_conflict_makes_the_workspace_read_only(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[], &[]));
+    let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+    // The vault's own indexing reports first.
+    drive(&rt, cx, |cx| !started.indexing(cx));
+    assert!(!read_only(&started, cx));
+    send_conflict(&started, &rt, cx);
+    assert!(read_only(&started, cx));
+}
+
+#[gpui_kit::test]
+fn read_only_clears_when_a_later_index_is_done(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[], &[]));
+    let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+    // The vault's own indexing reports first.
+    drive(&rt, cx, |cx| !started.indexing(cx));
+    send_conflict(&started, &rt, cx);
+    assert!(read_only(&started, cx));
+    send(
+        &started,
+        AppMessage::VaultIndexed(IndexOutcome::Done(Duration::ZERO)),
+        cx,
+    );
+    assert!(!read_only(&started, cx));
+}
+
+#[gpui_kit::test]
+fn read_only_clears_when_the_workspace_is_switched(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[], &[]));
+    let started = open_started(cx, vault_start(&v, FirstNote::Restore), v.settings.clone());
+    // The vault's own indexing reports first.
+    drive(&rt, cx, |cx| !started.indexing(cx));
+    send_conflict(&started, &rt, cx);
+    assert!(read_only(&started, cx));
+    let workspace = started.workspace.clone();
+    cx.update_window(started.handle, |_, window, cx| {
+        workspace.update(cx, |w, cx| w.leave_vault(window, cx))
+    })
+    .unwrap();
+    assert!(!read_only(&started, cx));
 }

@@ -18,13 +18,14 @@ use std::sync::Arc;
 
 use gpui_kit::SharedString;
 use kimun_core::NoteVault;
-use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::SystemPath;
 use kimun_notes::logic::editor_region::{CollectionViews, EditorRegion, FacetViews};
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::{AppMessage, AppTx};
-use kimun_notes::logic::startup::{RestoreTarget, VaultOpen, restore_target};
+use kimun_notes::logic::startup::{
+    IndexOutcome, RestoreTarget, VaultOpen, index_vault, restore_target,
+};
 use kimun_notes::settings::SharedSettings;
 use kimun_notes::settings::session::{GroupTreeRecord, SessionRecord};
 
@@ -217,8 +218,8 @@ pub(crate) enum Landing {
 }
 
 /// Bring the index in step with the vault, then land where the last session
-/// left off. Reports on `tx` as the TUI's start screen does: `IndexingDone`
-/// (or `VaultConflict` for names that differ only by case).
+/// left off. Reports on `tx` as the TUI's start screen does: one
+/// `VaultIndexed` (a conflict for names that differ only by case).
 ///
 /// With `session` (the stored record), the answer is where to land, and
 /// nothing more is sent: that record when it still has something to show
@@ -239,22 +240,9 @@ pub(crate) async fn index_and_restore(
     session: Option<SessionRecord>,
     tx: AppTx,
 ) -> Option<Landing> {
-    let indexed = match vault.validate_and_init().await {
-        Ok(report) => {
-            tx.send(AppMessage::IndexingDone(Ok(report.duration))).ok();
-            true
-        }
-        Err(e @ VaultError::CaseConflict { .. }) => {
-            tracing::warn!("{e}");
-            tx.send(AppMessage::VaultConflict(e.to_string())).ok();
-            false
-        }
-        Err(e) => {
-            tracing::error!("indexing failed: {e}");
-            tx.send(AppMessage::IndexingDone(Err(e.to_string()))).ok();
-            false
-        }
-    };
+    let outcome = index_vault(&vault).await;
+    let indexed = matches!(outcome, IndexOutcome::Done(_));
+    outcome.send(&tx);
     let Some(record) = session else {
         if history {
             let target = restore_target(&settings, Some(&vault), indexed).await;

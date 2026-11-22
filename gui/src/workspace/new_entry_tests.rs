@@ -56,7 +56,7 @@ fn started_on(
         v.settings.clone(),
     );
     let want = notes.iter().find(|(p, _)| *p == first).unwrap().1;
-    // Wait for the indexing too. Its `IndexingDone` message reloads the
+    // Wait for the indexing too. Its `VaultIndexed` message reloads the
     // folder counts on tokio. If it is still in flight when the test ends,
     // the harness drains it after the runtime guard is gone, and the spawn
     // panics with `no reactor running`.

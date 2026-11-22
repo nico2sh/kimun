@@ -2,9 +2,11 @@
 //! name, and choosing which note a session lands on.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use kimun_core::error::VaultError;
 use kimun_core::nfs::VaultPath;
-use kimun_core::{NoteVault, VaultConfig};
+use kimun_core::{IndexReport, NoteVault, VaultConfig};
 
 use crate::settings::SharedSettings;
 
@@ -141,6 +143,90 @@ pub async fn restore_target(
         path: live.first().cloned().unwrap_or_else(VaultPath::root),
         gone: gone_message,
     }
+}
+
+/// How an indexing pass ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexOutcome {
+    /// Finished in this long.
+    Done(Duration),
+    /// The vault is structurally unusable (a case conflict): the message
+    /// to show.
+    Conflict(String),
+    /// Anything else went wrong: the message to show.
+    Failed(String),
+}
+
+impl IndexOutcome {
+    /// Deliver this outcome as `AppMessage::VaultIndexed`. A closed channel
+    /// (the app is shutting down) is ignored.
+    pub fn send(self, tx: &crate::logic::message::AppTx) {
+        tx.send(crate::logic::message::AppMessage::VaultIndexed(self))
+            .ok();
+    }
+}
+
+impl From<Result<IndexReport, VaultError>> for IndexOutcome {
+    fn from(result: Result<IndexReport, VaultError>) -> Self {
+        match result {
+            Ok(report) => Self::Done(report.duration),
+            Err(e @ VaultError::CaseConflict { .. }) => Self::Conflict(e.to_string()),
+            Err(e) => Self::Failed(e.to_string()),
+        }
+    }
+}
+
+impl From<Result<Duration, String>> for IndexOutcome {
+    fn from(result: Result<Duration, String>) -> Self {
+        match result {
+            Ok(duration) => Self::Done(duration),
+            Err(message) => Self::Failed(message),
+        }
+    }
+}
+
+/// Whether the open vault is usable. A conflict stays until an indexing
+/// pass finishes cleanly; a failed pass says nothing about it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum VaultStatus {
+    #[default]
+    Ready,
+    /// The vault has a case conflict: the message to show.
+    Conflicted(String),
+}
+
+impl VaultStatus {
+    /// Fold the end of an indexing pass into the status.
+    pub fn apply(&mut self, outcome: &IndexOutcome) {
+        match outcome {
+            IndexOutcome::Done(_) => *self = Self::Ready,
+            IndexOutcome::Conflict(msg) => *self = Self::Conflicted(msg.clone()),
+            IndexOutcome::Failed(_) => {}
+        }
+    }
+
+    pub fn is_conflicted(&self) -> bool {
+        matches!(self, Self::Conflicted(_))
+    }
+
+    /// The conflict message, if conflicted.
+    pub fn conflict(&self) -> Option<&str> {
+        match self {
+            Self::Conflicted(msg) => Some(msg),
+            Self::Ready => None,
+        }
+    }
+}
+
+/// Validate and index `vault`, logging a conflict or a failure.
+pub async fn index_vault(vault: &NoteVault) -> IndexOutcome {
+    let outcome = IndexOutcome::from(vault.validate_and_init().await);
+    match &outcome {
+        IndexOutcome::Done(_) => {}
+        IndexOutcome::Conflict(msg) => tracing::warn!("{msg}"),
+        IndexOutcome::Failed(msg) => tracing::error!("indexing failed: {msg}"),
+    }
+    outcome
 }
 
 #[cfg(test)]
@@ -291,5 +377,110 @@ mod tests {
             history(&settings),
             vec![VaultPath::new("locked/note.md"), VaultPath::new("still.md")]
         );
+    }
+
+    #[test]
+    fn send_delivers_vault_indexed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        IndexOutcome::Conflict("x".into()).send(&tx);
+        match rx.try_recv() {
+            Ok(crate::logic::message::AppMessage::VaultIndexed(IndexOutcome::Conflict(m))) => {
+                assert_eq!(m, "x")
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        drop(rx);
+        IndexOutcome::Failed("y".into()).send(&tx); // closed channel: no panic
+    }
+
+    #[test]
+    fn from_a_case_conflict_error_is_conflict() {
+        let e = kimun_core::error::VaultError::CaseConflict {
+            conflicts: vec!["a.md vs A.md".to_string()],
+        };
+        let msg = e.to_string();
+        assert_eq!(IndexOutcome::from(Err(e)), IndexOutcome::Conflict(msg));
+    }
+
+    #[test]
+    fn from_another_error_is_failed() {
+        let e = kimun_core::error::VaultError::TaskJoin("boom".to_string());
+        let msg = e.to_string();
+        assert_eq!(IndexOutcome::from(Err(e)), IndexOutcome::Failed(msg));
+        assert_eq!(
+            IndexOutcome::from(Err::<std::time::Duration, String>("x".into())),
+            IndexOutcome::Failed("x".into())
+        );
+    }
+
+    #[test]
+    fn from_ok_report_is_done_with_its_duration() {
+        let report = kimun_core::IndexReport {
+            start: std::time::SystemTime::now(),
+            duration: std::time::Duration::from_millis(42),
+        };
+        assert_eq!(
+            IndexOutcome::from(Ok(report)),
+            IndexOutcome::Done(std::time::Duration::from_millis(42))
+        );
+    }
+
+    fn conflicted() -> VaultStatus {
+        VaultStatus::Conflicted("old".into())
+    }
+
+    #[test]
+    fn done_makes_the_status_ready() {
+        let mut s = VaultStatus::default();
+        s.apply(&IndexOutcome::Done(Duration::from_millis(1)));
+        assert_eq!(s, VaultStatus::Ready);
+        assert!(!s.is_conflicted());
+        assert_eq!(s.conflict(), None);
+    }
+
+    #[test]
+    fn conflict_stores_the_message() {
+        let mut s = VaultStatus::default();
+        s.apply(&IndexOutcome::Conflict("a vs A".into()));
+        assert!(s.is_conflicted());
+        assert_eq!(s.conflict(), Some("a vs A"));
+    }
+
+    #[test]
+    fn failed_leaves_a_conflicted_status_unchanged() {
+        let mut s = conflicted();
+        s.apply(&IndexOutcome::Failed("boom".into()));
+        assert_eq!(s, conflicted());
+    }
+
+    #[test]
+    fn failed_leaves_a_ready_status_ready() {
+        let mut s = VaultStatus::Ready;
+        s.apply(&IndexOutcome::Failed("boom".into()));
+        assert_eq!(s, VaultStatus::Ready);
+    }
+
+    #[test]
+    fn a_later_done_clears_a_conflict() {
+        let mut s = conflicted();
+        s.apply(&IndexOutcome::Done(Duration::from_millis(1)));
+        assert_eq!(s, VaultStatus::Ready);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn index_vault_on_a_case_clashing_vault_is_conflict() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("note.md"), "a").unwrap();
+        std::fs::write(tmp.path().join("Note.md"), "b").unwrap();
+        let vault = NoteVault::new(VaultConfig::new(sys(tmp.path())))
+            .await
+            .unwrap();
+        match index_vault(&vault).await {
+            IndexOutcome::Conflict(msg) => {
+                assert!(msg.contains("note.md") && msg.contains("Note.md"), "{msg}")
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
     }
 }

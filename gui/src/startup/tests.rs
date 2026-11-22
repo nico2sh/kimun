@@ -8,7 +8,7 @@ use std::time::Duration;
 use kimun_core::nfs::VaultPath;
 use kimun_core::system::SystemPath;
 use kimun_notes::logic::message::AppMessage;
-use kimun_notes::logic::startup::VaultOpen;
+use kimun_notes::logic::startup::{IndexOutcome, VaultOpen};
 
 use super::*;
 use crate::test_vault::{TestVault, test_vault};
@@ -205,7 +205,7 @@ async fn indexing_then_the_restore_lands_on_the_newest_live_note() {
     let v = test_vault(&[("still.md", "still")], &["gone.md", "still.md"]).await;
     let sent = run(&v, true).await;
     assert!(
-        matches!(sent[0], AppMessage::IndexingDone(Ok(_))),
+        matches!(sent[0], AppMessage::VaultIndexed(IndexOutcome::Done(_))),
         "{sent:?}"
     );
     match &sent[1] {
@@ -274,7 +274,10 @@ async fn without_a_restore_only_indexing_reports() {
     let v = test_vault(&[("a.md", "a")], &["a.md"]).await;
     let sent = run(&v, false).await;
     assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(matches!(sent[0], AppMessage::IndexingDone(Ok(_))));
+    assert!(matches!(
+        sent[0],
+        AppMessage::VaultIndexed(IndexOutcome::Done(_))
+    ));
 }
 
 /// Names differing only by case: reported as a conflict, and the restore
@@ -289,7 +292,9 @@ async fn a_case_conflict_is_reported_and_the_history_kept() {
     std::fs::write(ws.join("Note.md"), "b").unwrap();
     let sent = run(&v, true).await;
     match &sent[0] {
-        AppMessage::VaultConflict(details) => assert!(details.contains("note.md"), "{details}"),
+        AppMessage::VaultIndexed(IndexOutcome::Conflict(details)) => {
+            assert!(details.contains("note.md"), "{details}")
+        }
         other => panic!("expected the conflict, got {other:?}"),
     }
     match &sent[1] {

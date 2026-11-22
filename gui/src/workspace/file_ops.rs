@@ -37,7 +37,7 @@
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::{App, AppContext as _, ClickEvent, Context, ParentElement as _, Window};
 use kimun_core::nfs::VaultPath;
-use kimun_notes::logic::file_ops::{self, relocated};
+use kimun_notes::logic::file_ops::{self, path_at_or_below, relocated};
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::FileOp;
 use kimun_notes::logic::nav::DrawerView;
@@ -141,14 +141,6 @@ async fn run_all_reads(
     reads: Vec<(GroupId, ReadRequest)>,
 ) -> Vec<(GroupId, Result<NoteRead, JoinError>)> {
     run_all_of(reads.into_iter().map(|(group, read)| (group, read.run()))).await
-}
-
-/// Whether `note` is `base` itself or lies below it (`base` a folder
-/// holding it): what a rename, move or delete of `base` touches. Compared
-/// by components (core's `is_like` / `is_ancestor_of`), so case and
-/// absolute / relative spellings do not matter.
-pub(super) fn path_at_or_below(note: &VaultPath, base: &VaultPath) -> bool {
-    note.is_like(base) || base.is_ancestor_of(note)
 }
 
 /// An entry's name as the dialogs and the editor Panel say it.
@@ -641,7 +633,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let read_only = self.status.read_only;
+        let read_only = self.status.read_only();
         let active = group == self.layout.active_group();
         let Some(state) = self.groups.get_mut(&group) else {
             return;
@@ -731,6 +723,35 @@ impl Workspace {
         }
         // LINKS and OUTLINE say "No note open".
         self.refresh_views(cx);
+        cx.notify();
+    }
+
+    /// The attachment or facet view `group` showed went away under a delete
+    /// (its group is already empty): say so, but only when `group` is the
+    /// active one. FILES stops marking the note and the content takes focus.
+    pub(super) fn say_shown_gone(
+        &mut self,
+        group: GroupId,
+        shown: &VaultPath,
+        cx: &mut Context<Self>,
+    ) {
+        if group != self.layout.active_group() {
+            return;
+        }
+        let name = shown.get_parent_path().1;
+        self.note_gone = Some((
+            group,
+            EmptyState {
+                title: format!("{name} was deleted"),
+                detail: String::new(),
+                failed: false,
+                shortcuts: Vec::new(),
+            },
+        ));
+        if let Some(files) = self.files.as_ref() {
+            files.update(cx, |pane, cx| pane.set_open_note(None, cx));
+        }
+        self.focus_shown_content(cx);
         cx.notify();
     }
 

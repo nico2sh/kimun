@@ -229,7 +229,7 @@ impl Workspace {
 
     /// [`Self::can_save`] for the note `group` holds.
     pub(super) fn can_save_in(&self, group: GroupId) -> bool {
-        !self.status.read_only && self.host_in(group).is_some_and(|h| h.note.is_some())
+        !self.status.read_only() && self.host_in(group).is_some_and(|h| h.note.is_some())
     }
 
     pub(super) fn editor_dirty(&self, cx: &App) -> bool {
@@ -256,7 +256,7 @@ impl Workspace {
     /// Why the edits in the editor of `group` cannot be written, for a flash.
     pub(super) fn unsaveable_in(&self, group: GroupId) -> String {
         match self.host_in(group).and_then(|h| h.note.as_ref()) {
-            Some(note) if self.status.read_only => {
+            Some(note) if self.status.read_only() => {
                 format!("Read-only: your edits to {note} can't be saved.")
             }
             Some(note) => format!("Your edits to {note} can't be saved."),
@@ -292,7 +292,7 @@ impl Workspace {
     /// [`Self::restart_tick_in`], unless the vault is read-only (no tick
     /// runs there).
     pub(super) fn restart_tick_unless_read_only_in(&mut self, group: GroupId) {
-        if !self.status.read_only {
+        if !self.status.read_only() {
             self.restart_tick_in(group);
         }
     }

@@ -28,9 +28,8 @@ use crate::components::preferences::workspaces_section::{
     Mode as WorkspaceMode, WorkspacesSection,
 };
 use crate::logic::message::{AppMessage, AppTx};
-use crate::logic::preferences::{
-    self as prefs, PreferencesModel, ReindexOutcome, SavePlan, WorkspaceError,
-};
+use crate::logic::preferences::{self as prefs, PreferencesModel, SavePlan, WorkspaceError};
+use crate::logic::startup::IndexOutcome;
 use crate::settings::AppSettings;
 use crate::settings::SharedSettings;
 use crate::settings::themes::Theme;
@@ -189,9 +188,9 @@ impl PreferencesScreen {
     /// Creates a settings screen with a `Failed` error overlay pre-populated.
     /// Used when the vault was rejected due to structural conflicts.
     ///
-    /// The `settings` passed in should already have the workspace cleared —
-    /// this is handled by the `VaultConflict` branch in `app::handle_app_message`
-    /// before calling `switch_screen`.
+    /// The `settings` passed in still name the conflicted workspace: the
+    /// `VaultIndexed` branch in `app::handle_app_message` drops the vault but
+    /// never clears or saves the workspace entry.
     pub fn new_with_error(settings: SharedSettings, error: String) -> Self {
         let mut s = Self::new(settings);
         s.overlay = Overlay::VaultConflict(error);
@@ -203,7 +202,7 @@ impl PreferencesScreen {
         match prefs::save_plan(&s, &self.initial_settings) {
             Err(e) => {
                 drop(s);
-                tx.send(AppMessage::IndexingDone(Err(e.to_string()))).ok();
+                IndexOutcome::Failed(e.to_string()).send(tx);
             }
             Ok(SavePlan::NeedsReindex { workspace, cache }) => {
                 drop(s);
@@ -242,7 +241,8 @@ impl PreferencesScreen {
 
 /// Rebuild the index of `workspace` on a throwaway vault in the background
 /// (a Save after the vault moved, and Full Reindex); the outcome comes back
-/// as `IndexingDone` or, for a case conflict, `VaultConflict`.
+/// as `VaultIndexed` (the app handles a conflict; Done and Failed come back
+/// to this screen).
 fn spawn_recreate_index(
     workspace: kimun_core::system::SystemPath,
     cache: Option<kimun_core::IndexFile>,
@@ -250,12 +250,7 @@ fn spawn_recreate_index(
 ) -> IndexingProgressState {
     let tx2 = tx.clone();
     let handle = tokio::spawn(async move {
-        let event = match prefs::reindex_new_vault(workspace, cache).await {
-            ReindexOutcome::Done(duration) => AppMessage::IndexingDone(Ok(duration)),
-            ReindexOutcome::Conflict(msg) => AppMessage::VaultConflict(msg),
-            ReindexOutcome::Failed(msg) => AppMessage::IndexingDone(Err(msg)),
-        };
-        tx2.send(event).ok();
+        prefs::reindex_new_vault(workspace, cache).await.send(&tx2);
     });
     spawn_running(handle, tx)
 }
@@ -835,16 +830,13 @@ impl AppScreen for PreferencesScreen {
                 // low-cost incremental operation unlike full reindex.
                 let target = prefs::reindex_target(&self.settings.read().unwrap());
                 let Some((workspace, cache)) = target else {
-                    tx.send(AppMessage::IndexingDone(
-                        Err("No workspace set".to_string()),
-                    ))
-                    .ok();
+                    IndexOutcome::Failed("No workspace set".to_string()).send(tx);
                     return;
                 };
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = prefs::fast_reindex(workspace, cache).await;
-                    tx2.send(AppMessage::IndexingDone(result)).ok();
+                    IndexOutcome::from(result).send(&tx2);
                 });
                 self.overlay = Overlay::IndexingProgress(spawn_running(handle, tx));
             }
@@ -853,8 +845,8 @@ impl AppScreen for PreferencesScreen {
                     focused_button: ConfirmButton::Cancel,
                 };
             }
-            AppMessage::IndexingDone(result) => match result {
-                Ok(duration) => {
+            AppMessage::VaultIndexed(outcome) => match outcome {
+                IndexOutcome::Done(duration) => {
                     self.settings.write().unwrap().report_indexed();
                     if self.pending_save_after_index {
                         self.pending_save_after_index = false;
@@ -865,10 +857,13 @@ impl AppScreen for PreferencesScreen {
                             Overlay::IndexingProgress(IndexingProgressState::Done(duration));
                     }
                 }
-                Err(msg) => {
+                IndexOutcome::Failed(msg) => {
                     self.pending_save_after_index = false;
                     self.overlay = Overlay::IndexingProgress(IndexingProgressState::Failed(msg));
                 }
+                // The app owns a conflict: it swaps in a fresh Preferences
+                // screen with the error, so there is nothing to do here.
+                IndexOutcome::Conflict(_) => {}
             },
             _ => {}
         }
@@ -1354,7 +1349,7 @@ mod settings_screen_tests {
     }
 
     #[tokio::test]
-    async fn indexing_done_ok_with_pending_auto_closes() {
+    async fn vault_indexed_done_with_pending_auto_closes() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.pending_save_after_index = true;
@@ -1363,7 +1358,10 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(1))), &tx)
+            .handle_app_message(
+                AppMessage::VaultIndexed(IndexOutcome::Done(Duration::from_secs(1))),
+                &tx,
+            )
             .await;
         let msg = rx.try_recv().expect("expected PreferencesSaved");
         assert!(matches!(msg, AppMessage::PreferencesSaved));
@@ -1371,7 +1369,7 @@ mod settings_screen_tests {
     }
 
     #[tokio::test]
-    async fn indexing_done_err_with_pending_shows_failed_no_save() {
+    async fn vault_indexed_failed_with_pending_shows_failed_no_save() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.pending_save_after_index = true;
@@ -1380,7 +1378,10 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Err("disk error".to_string())), &tx)
+            .handle_app_message(
+                AppMessage::VaultIndexed(IndexOutcome::Failed("disk error".to_string())),
+                &tx,
+            )
             .await;
         assert!(
             rx.try_recv().is_err(),
@@ -1394,7 +1395,7 @@ mod settings_screen_tests {
     }
 
     #[tokio::test]
-    async fn indexing_done_ok_without_pending_shows_done() {
+    async fn vault_indexed_done_without_pending_shows_done() {
         let (tx, mut rx) = unbounded_channel();
         let mut screen = make_screen();
         screen.pending_save_after_index = false;
@@ -1403,7 +1404,10 @@ mod settings_screen_tests {
             ticker: tokio::spawn(async {}),
         });
         screen
-            .handle_app_message(AppMessage::IndexingDone(Ok(Duration::from_secs(2))), &tx)
+            .handle_app_message(
+                AppMessage::VaultIndexed(IndexOutcome::Done(Duration::from_secs(2))),
+                &tx,
+            )
             .await;
         assert!(
             rx.try_recv().is_err(),
@@ -1412,6 +1416,36 @@ mod settings_screen_tests {
         assert!(matches!(
             screen.overlay,
             Overlay::IndexingProgress(IndexingProgressState::Done(_))
+        ));
+    }
+
+    /// The app owns a conflict (it swaps in a fresh Preferences with the
+    /// error): this screen neither saves nor reports anything for it.
+    #[tokio::test]
+    async fn vault_indexed_conflict_with_pending_neither_saves_nor_reports() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = make_screen();
+        screen.pending_save_after_index = true;
+        screen
+            .handle_app_message(
+                AppMessage::VaultIndexed(IndexOutcome::Conflict("a vs A".to_string())),
+                &tx,
+            )
+            .await;
+        assert!(rx.try_recv().is_err(), "no PreferencesSaved on a conflict");
+    }
+
+    /// A reindex with no workspace reports `Failed`, as `VaultIndexed`.
+    #[tokio::test]
+    async fn fast_reindex_without_a_workspace_sends_vault_indexed_failed() {
+        let (tx, mut rx) = unbounded_channel();
+        let mut screen = make_screen();
+        screen
+            .handle_app_message(AppMessage::TriggerFastReindex, &tx)
+            .await;
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppMessage::VaultIndexed(IndexOutcome::Failed(_)))
         ));
     }
 

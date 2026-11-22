@@ -94,7 +94,6 @@ pub(crate) fn close_button(
         .flex()
         .items_center()
         .justify_center()
-        .cursor_pointer()
         .hover(move |style| style.bg(hover))
         .child(Icon::new(CLOSE_ICON).size_3())
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))

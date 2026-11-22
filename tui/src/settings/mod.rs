@@ -960,9 +960,8 @@ impl AppSettings {
     /// preserved. After this call, `workspace_config` remains `Some` but
     /// `get_current_workspace()` returns `None`.
     ///
-    /// Deliberately leaves the index and history on disk: the caller for this
-    /// is a vault the app could not open (a case conflict it wants fixed), and
-    /// the user is expected to re-add the same workspace once they have. See
+    /// Deliberately leaves the index and history on disk, so re-adding the same
+    /// workspace later finds them again. See
     /// [`crate::settings::delete_artifacts`] for the deletion that goes with an
     /// intentional "remove this workspace".
     pub fn clear_workspace(&mut self) {

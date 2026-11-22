@@ -2071,6 +2071,7 @@ impl EditorScreen {
 
     /// Spawn an asynchronous leader leaf (`leader_route::jobs`).
     fn run_leader_job(&mut self, job: LeaderJob, tx: &AppTx) {
+        let announce = job.announce();
         match job {
             LeaderJob::TogglePin(path) => {
                 tokio::spawn(jobs::toggle_pin(self.vault.clone(), path, tx.clone()));
@@ -2079,7 +2080,9 @@ impl EditorScreen {
                 tokio::spawn(jobs::jump_to_pinned(self.vault.clone(), n, tx.clone()));
             }
             LeaderJob::Reindex => {
-                self.footer.flash("reindexing…".to_string(), tx);
+                if let Some(text) = announce {
+                    self.footer.flash(text.to_string(), tx);
+                }
                 tokio::spawn(jobs::reindex(self.vault.clone(), tx.clone()));
             }
             LeaderJob::CheckUpdates => {
@@ -3185,6 +3188,18 @@ mod tests {
             matches!(&e, AppMessage::OpenPath { path, .. } if path.is_like(&b)),
             "{e:?}"
         );
+    }
+
+    /// Leader `v r` announces the reindex with the text shared with the GUI
+    /// (`LeaderJob::announce`) in the footer, before the job reports.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn leader_v_r_announces_the_reindex() {
+        let (mut screen, _, _, _dir) = test_screen().await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        screen.handle_input(&ctrl_key('b'), &tx);
+        screen.handle_input(&chr('v'), &tx);
+        screen.handle_input(&chr('r'), &tx);
+        assert_eq!(screen.footer.flash_text(), Some("reindexing…"));
     }
 
     /// A digit with no pin in that slot flashes instead of failing silently.
