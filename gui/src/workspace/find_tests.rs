@@ -12,6 +12,7 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext as _, Entity, Focusable as _, SharedString, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::layout::Side;
+use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::nav::{DrawerView, LinksTab};
 use kimun_notes::logic::query::QueryHit;
@@ -24,7 +25,7 @@ use super::find::{
     FIND_PREVIEW_HEADER_ID, FIND_SORT_ID, FindView, ROW_CAP, find_row_id,
 };
 use super::modal::ModalKind;
-use super::picker::TO_FIND_BUTTON_ID;
+use super::picker::{BROWSER_COLLECTION_ID, TO_FIND_BUTTON_ID};
 use super::rail_cell_id;
 use super::search::{PREVIEW_DEBOUNCE, SearchPreview};
 use super::start_tests::{Started, drive, open_started, runtime, send, vault_start};
@@ -854,6 +855,110 @@ fn tags_list_counts_filter_and_run_in_find(cx: &mut TestAppContext) {
     assert!(shown(&started, DrawerView::Find, cx));
     assert_eq!(query(&started, cx), "#go");
     assert_eq!(find_names(&started, &rt, cx), ["epsilon"]);
+}
+
+/// Bind the `OpenQueryAsCollection` chord (`ctrl+alt+o`): it has no default.
+fn bind_collection_chord(cx: &mut TestAppContext) {
+    let overrides = [(
+        "OpenQueryAsCollection".to_string(),
+        vec!["ctrl+alt+o".to_string()],
+    )]
+    .into_iter()
+    .collect();
+    let (keymap, errors) =
+        crate::keymap::Keymap::load(crate::keymap::Platform::LinuxWindows, &overrides);
+    assert!(errors.is_empty(), "{errors:?}");
+    cx.update(|cx| crate::keymap::init(cx, keymap));
+}
+
+/// The search browser open on `#go`, through TAGS.
+fn browser_on_go(started: &Started, rt: &Runtime, cx: &mut TestAppContext) {
+    leader(started, "ft", cx);
+    assert_eq!(tag_rows(started, rt, cx).len(), 3);
+    click(started, tag_row_id("go"), cx);
+    started.settle_dialog(cx);
+    assert_eq!(browser_query(started, cx).as_deref(), Some("#go"));
+}
+
+fn active_group(started: &Started, cx: &TestAppContext) -> GroupId {
+    cx.read(|cx| started.workspace.read(cx).layout.active_group())
+}
+
+/// The resolved query of the collection `group` shows.
+fn collection_of(started: &Started, group: GroupId, cx: &TestAppContext) -> Option<String> {
+    cx.read(|cx| started.workspace.read(cx).collection_query_in(group, cx))
+}
+
+/// Drive until `group` shows a collection; its query.
+fn wait_for_collection(
+    started: &Started,
+    rt: &Runtime,
+    group: GroupId,
+    cx: &mut TestAppContext,
+) -> Option<String> {
+    drive(rt, cx, |cx| collection_of(started, group, cx).is_some());
+    collection_of(started, group, cx)
+}
+
+/// The search browser's `Open as collection` button: the browser closes and
+/// the active group shows the query's notes as a collection.
+#[gpui_kit::test]
+fn the_browser_opens_its_query_as_a_collection(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    browser_on_go(&started, &rt, cx);
+    click(&started, BROWSER_COLLECTION_ID, cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    let group = active_group(&started, cx);
+    let query = wait_for_collection(&started, &rt, group, cx);
+    assert_eq!(query.as_deref(), Some("#go"));
+    // It opened: the browser stays closed.
+    assert_eq!(started.shown_modal(cx), None);
+}
+
+/// The `OpenQueryAsCollection` chord, once bound, does what the browser's
+/// button does, from whatever panel opened the browser.
+#[gpui_kit::test]
+fn the_collection_chord_works_in_the_browser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    bind_collection_chord(cx);
+    browser_on_go(&started, &rt, cx);
+    press(&started, "ctrl-alt-o", cx);
+    started.settle_dialog(cx);
+    assert_eq!(started.shown_modal(cx), None);
+    let group = active_group(&started, cx);
+    assert_eq!(
+        wait_for_collection(&started, &rt, group, cx).as_deref(),
+        Some("#go")
+    );
+}
+
+/// With the query syntax help over the browser, the collection and save
+/// chords do nothing (as the sort chord): the help and the browser stay.
+#[gpui_kit::test]
+fn the_browser_chords_wait_for_the_query_help(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, started) = started_on(cx, &rt, NOTES, "alpha.md");
+    bind_collection_chord(cx);
+    browser_on_go(&started, &rt, cx);
+    press(&started, "f1", cx);
+    started.settle_dialog(cx);
+    let help_open = |cx: &TestAppContext| cx.read(|cx| started.workspace.read(cx).query_help);
+    assert!(help_open(cx), "the help is over the browser");
+    // The collection chord, then the save chord (`Ctrl+D`).
+    for chord in ["ctrl-alt-o", "ctrl-d"] {
+        press(&started, chord, cx);
+        started.settle_dialog(cx);
+        assert!(help_open(cx), "{chord} left the help alone");
+        assert_eq!(started.shown_modal(cx), Some(ModalKind::Search), "{chord}");
+    }
+    let group = active_group(&started, cx);
+    assert_eq!(collection_of(&started, group, cx), None);
 }
 
 /// A double-click on a tag opens the browser once and opens no note: its

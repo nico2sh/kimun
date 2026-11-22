@@ -96,6 +96,7 @@ pub(crate) const SAVE_BUTTON_ID: &str = "note-picker-save";
 pub(crate) const TO_FIND_BUTTON_ID: &str = "note-picker-to-find";
 pub(crate) const PICKER_DELETE_ID: &str = "note-picker-delete";
 pub(crate) const BROWSER_SORT_ID: &str = "note-picker-sort";
+pub(crate) const BROWSER_COLLECTION_ID: &str = "note-picker-collection";
 
 /// The picker's width, in rems.
 const WIDTH_REMS: f32 = 36.;
@@ -821,6 +822,28 @@ impl<R: PickerRow> Render for NotePicker<R> {
                             .ok();
                     }))
                     .into_any_element();
+                let to_collection = Button::new(BROWSER_COLLECTION_ID)
+                    .ghost()
+                    .xsmall()
+                    .icon(super::find::COLLECTION_ICON)
+                    .accessibility_label(super::find::COLLECTION_LABEL)
+                    .tooltip(super::chrome::tooltip_with_chord(
+                        super::find::COLLECTION_LABEL,
+                        &kimun_notes::logic::actions::ActionShortcuts::OpenQueryAsCollection,
+                        cx,
+                    ))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        let query = this.input.read(cx).value().to_string();
+                        // The busy check reads this picker: after this update.
+                        this.workspace
+                            .update(cx, |workspace, cx| {
+                                workspace.with_window(cx, |workspace, window, cx| {
+                                    workspace.open_browser_as_collection(query, window, cx)
+                                })
+                            })
+                            .ok();
+                    }))
+                    .into_any_element();
                 let tools = QueryTools {
                     ids: QueryToolIds {
                         build: BUILD_BUTTON_ID,
@@ -830,7 +853,7 @@ impl<R: PickerRow> Render for NotePicker<R> {
                     chip: Some(self.render_sort_chip(cx).into_any_element()),
                     can_save: !self.core.query().trim().is_empty(),
                     busy: self.busy,
-                    extras: vec![to_find],
+                    extras: vec![to_find, to_collection],
                     on_build: Box::new(cx.listener(|this, _: &ClickEvent, _, cx| {
                         // The builder reads this field and whether the
                         // browser is busy: after this update.
