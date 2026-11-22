@@ -1014,7 +1014,7 @@ impl Workspace {
             return;
         };
         let template = find.read(cx).query(cx);
-        self.open_query_as_collection(&template, cx);
+        self.open_query_as_collection(&template, None, cx);
     }
 
     /// The query typed in the open search browser (none: no browser).
@@ -1025,60 +1025,67 @@ impl Workspace {
     }
 
     /// The `OpenQueryAsCollection` chord in the browser: its typed query goes
-    /// to [`Self::open_browser_as_collection`], unless the browser is busy
-    /// (as the save chord's rule).
+    /// to [`Self::open_browser_as_collection`].
     pub(crate) fn promote_browser_query_to_collection(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.picker_busy(cx) {
-            return;
-        }
         if let Some(query) = self.browser_query(cx) {
             self.open_browser_as_collection(query, window, cx);
         }
     }
 
-    /// The search browser's `Open as collection` button: the same as FIND's,
-    /// for the query typed in the browser. The browser closes when the
-    /// collection starts to load; a blank or unresolvable query keeps it. If
-    /// the load then fails, or the open note cannot be left, the browser
-    /// comes back with the query ([`Self::restore_browser`]).
+    /// The search browser's `Open as collection` button and chord: the same
+    /// as FIND's, for the query typed in the browser. Does nothing while the
+    /// browser is busy (a `Create:` runs), as the save chord. The browser
+    /// closes when the collection starts to load; a blank or unresolvable
+    /// query keeps it. If the load then fails, or the open note cannot be
+    /// saved, the browser comes back with the query
+    /// ([`Self::restore_browser`]).
     pub(crate) fn open_browser_as_collection(
         &mut self,
         query: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.picker_busy(cx) {
+            return;
+        }
         if self.find.is_none() || self.vault().is_none() {
             self.flash(super::route::NO_WORKSPACE, cx);
             return;
         }
-        if self.open_query_as_collection(&query, cx) {
+        if self.open_query_as_collection(&query, Some(query.clone()), cx) {
             self.close_modal(window, cx);
-            self.browser_return = Some((self.layout.active_group(), query));
         }
     }
 
-    /// The collection `group` was to show did not open: bring back the
-    /// search browser on the query it was opened from, if it was.
+    /// The collection from the browser did not open: bring the search
+    /// browser back on `back`, the query it held. Nothing when `back` is
+    /// none, or while another dialog is open (the reason was flashed).
     pub(super) fn restore_browser(
         &mut self,
-        group: GroupId,
+        back: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some((g, query)) = self.browser_return.take_if(|(g, _)| *g == group) {
-            let _ = g;
+        if let Some(query) = back {
             self.open_search(Some(query), window, cx);
         }
     }
 
     /// Resolve `template` against the active group's note, once, and show
-    /// its notes as a collection in the active group. Says why and returns
-    /// false when it cannot.
-    fn open_query_as_collection(&mut self, template: &str, cx: &mut Context<Self>) -> bool {
+    /// its notes as a collection in the active group; `back` is the browser
+    /// query to restore if it does not open (see
+    /// [`Self::open_collection_from`]). Says why and returns false when it
+    /// cannot start.
+    fn open_query_as_collection(
+        &mut self,
+        template: &str,
+        back: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if template.trim().is_empty() {
             self.flash("No query to open", cx);
             return false;
@@ -1094,8 +1101,7 @@ impl Workspace {
             return false;
         };
         let group = self.layout.active_group();
-        self.open_collection(group, resolved, Vec::new(), cx);
-        true
+        self.open_collection_from(group, resolved, Vec::new(), back, cx)
     }
 
     /// `RefreshCollection`: run the active group's collection query again,

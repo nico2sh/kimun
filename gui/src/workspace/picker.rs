@@ -830,11 +830,14 @@ impl<R: PickerRow> Render for NotePicker<R> {
                         &kimun_notes::logic::actions::ActionShortcuts::OpenQueryAsCollection,
                         cx,
                     ))
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         let query = this.input.read(cx).value().to_string();
+                        // The busy check reads this picker: after this update.
                         this.workspace
                             .update(cx, |workspace, cx| {
-                                workspace.open_browser_as_collection(query, window, cx)
+                                workspace.with_window(cx, |workspace, window, cx| {
+                                    workspace.open_browser_as_collection(query, window, cx)
+                                })
                             })
                             .ok();
                     }))
