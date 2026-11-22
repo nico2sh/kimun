@@ -149,6 +149,8 @@ pub(crate) const UPDATE_CHECK_LABEL: &str = "Check for updates on startup";
 pub(crate) const CHECK_UPDATES_ID: &str = "preferences-check-updates";
 /// The running app's version, shown under the update check.
 pub(crate) const VERSION_ID: &str = "preferences-version";
+/// The row that says whether the terminal app is installed, and its version.
+pub(crate) const TERMINAL_APP_ID: &str = "preferences-terminal-app";
 pub(crate) const UPDATE_CHECK_HELP_ID: &str = "preferences-update-check-help";
 pub(crate) const UPDATE_CHECK_HELP: &str =
     "Checks GitHub for a newer release on startup. Check now looks right away.";
@@ -414,6 +416,9 @@ pub(crate) struct PreferencesView {
     server_error: Option<SharedString>,
     /// What the window knows about an update of the server ([`super::server`]).
     server_update: super::server::ServerUpdateRow,
+    /// What the window knows about the installed terminal app
+    /// ([`super::terminal_app`]): read-only text under the version.
+    terminal_app: super::terminal_app::TerminalAppRow,
     /// The inline problem line.
     message: Option<SharedString>,
     confirm: Option<Discard>,
@@ -522,6 +527,7 @@ impl PreferencesView {
             server_input,
             server_error: None,
             server_update: super::server::ServerUpdateRow::default(),
+            terminal_app: super::terminal_app::TerminalAppRow::default(),
             message: None,
             confirm: None,
             saving: None,
@@ -596,6 +602,18 @@ impl PreferencesView {
     ) {
         if self.server_update != row {
             self.server_update = row;
+            cx.notify();
+        }
+    }
+
+    /// The window tells what it knows about the installed terminal app.
+    pub(crate) fn set_terminal_app(
+        &mut self,
+        row: super::terminal_app::TerminalAppRow,
+        cx: &mut Context<Self>,
+    ) {
+        if self.terminal_app != row {
+            self.terminal_app = row;
             cx.notify();
         }
     }
@@ -1817,6 +1835,19 @@ impl PreferencesView {
 
     /// The update check on startup, and `Check now`. The checkbox's own
     /// label names the setting, so it has no heading above it.
+    /// The terminal app row's words: none while the window has no lookup.
+    fn terminal_app_text(&self) -> Option<String> {
+        use super::terminal_app::TerminalAppRow;
+        use kimun_notes::logic::update::{TERMINAL_APP_CHECKING_TEXT, terminal_app_text};
+        match &self.terminal_app {
+            TerminalAppRow::Hidden => None,
+            TerminalAppRow::Checking => Some(TERMINAL_APP_CHECKING_TEXT.to_string()),
+            TerminalAppRow::Found(app) => {
+                Some(terminal_app_text(app, kimun_notes::update::CURRENT_VERSION))
+            }
+        }
+    }
+
     fn render_update_check(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
@@ -1843,20 +1874,28 @@ impl PreferencesView {
                     })),
             );
         let version = format!("Kimün version {}", kimun_notes::update::CURRENT_VERSION);
-        unheaded_field(
-            controls,
-            [
-                help(UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP, t).into_any_element(),
+        let mut helps = vec![
+            help(UPDATE_CHECK_HELP_ID, UPDATE_CHECK_HELP, t).into_any_element(),
+            div()
+                .id(VERSION_ID)
+                .test_support()
+                .role(Role::Label)
+                .aria_label(version.clone())
+                .child(note(version, t))
+                .into_any_element(),
+        ];
+        if let Some(text) = self.terminal_app_text() {
+            helps.push(
                 div()
-                    .id(VERSION_ID)
+                    .id(TERMINAL_APP_ID)
                     .test_support()
                     .role(Role::Label)
-                    .aria_label(version.clone())
-                    .child(note(version, t))
+                    .aria_label(text.clone())
+                    .child(note(text, t))
                     .into_any_element(),
-            ],
-        )
-        .into_any_element()
+            );
+        }
+        unheaded_field(controls, helps).into_any_element()
     }
 
     fn sort_group(
@@ -2402,6 +2441,7 @@ impl Workspace {
                 Some(cx.subscribe_in(&view, window, Self::on_preferences_event));
             self.preferences = Some(view);
             self.push_server_row(cx);
+            self.start_terminal_app_lookup(cx);
         }
         self.apply_focus(window, cx);
         cx.notify();
@@ -2419,6 +2459,7 @@ impl Workspace {
     pub(super) fn drop_preferences(&mut self) {
         self.preferences = None;
         self._preferences_events = None;
+        self.stop_terminal_app_lookup();
     }
 
     /// The window's close asked while Preferences show: true when it may go

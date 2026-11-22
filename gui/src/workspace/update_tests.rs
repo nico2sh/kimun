@@ -25,7 +25,7 @@ use kimun_notes::logic::update::{
 };
 use kimun_notes::settings::SharedSettings;
 use kimun_notes::settings::themes::Theme;
-use kimun_notes::update::InstallChannel;
+use kimun_notes::update::{InstallChannel, TerminalApp};
 use tokio::runtime::Runtime;
 
 use kimun_notes::logic::message::AppMessage;
@@ -40,9 +40,10 @@ use super::modal::ModalKind;
 use super::note::Closing;
 use super::preferences::{
     CHECK_UPDATES_ID, SERVER_OPEN_ID, SERVER_UPDATE_ID, SERVER_UPDATE_TEXT_ID, Section,
-    UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID,
+    TERMINAL_APP_ID, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID,
 };
 use super::start_tests::{Started, drive, runtime, send, vault_start};
+use super::terminal_app::TerminalAppLookup;
 use super::update::{
     ACTION_TOAST_LIFETIME, INSTALL_LABEL, RESTART_LABEL, RETRY_LABEL, TITLE, TITLE_INSTALLED,
     UPDATE_COMMAND_ID, UPDATE_DIALOG_ID, UPDATE_ERROR_ID, UPDATE_INSTALL_ID, UPDATE_LATER_ID,
@@ -1624,4 +1625,172 @@ fn open_server_settings_is_off_without_an_address(cx: &mut TestAppContext) {
         s.up_label(SERVER_UPDATE_TEXT_ID, cx).is_none(),
         "no update row"
     );
+}
+
+// ---- Preferences > Display: the terminal app row --------------------------------
+
+/// A lookup the test steers: it answers from a queue, and each call waits
+/// until the test lets it go, so the "checking…" state can be seen.
+struct FakeTerminalApp {
+    answers: std::sync::Mutex<std::collections::VecDeque<TerminalApp>>,
+    gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl FakeTerminalApp {
+    /// The lookup, and the sender that lets one call finish.
+    fn new(answers: Vec<TerminalApp>) -> (Arc<Self>, std::sync::mpsc::Sender<()>) {
+        let (release, gate) = std::sync::mpsc::channel();
+        let fake = Arc::new(Self {
+            answers: std::sync::Mutex::new(answers.into()),
+            gate: std::sync::Mutex::new(gate),
+            asked: Default::default(),
+        });
+        (fake, release)
+    }
+
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl TerminalAppLookup for FakeTerminalApp {
+    fn find(&self) -> TerminalApp {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // A closed gate (the test is over) lets the call through.
+        let _ = self.gate.lock().unwrap().recv();
+        self.answers
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("an answer that the test did not script")
+    }
+}
+
+/// The window on a vault, the update check off, with `fake` as its terminal app lookup.
+fn with_terminal_app(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+    fake: &Arc<FakeTerminalApp>,
+) -> (TestVault, Started) {
+    let v = vault(rt);
+    set_update_check(&v, false);
+    let s = on_vault(cx, rt, &v, None);
+    let lookup = fake.clone() as Arc<dyn TerminalAppLookup>;
+    s.up_on_window(cx, |w, _, _| w.set_terminal_app_lookup(lookup));
+    (v, s)
+}
+
+fn open_display(s: &Started, rt: &Runtime, cx: &mut TestAppContext) {
+    s.pf_route(cx);
+    s.pf_loaded(rt, cx);
+    s.pf_section(cx, Section::Display);
+}
+
+/// The row says "checking…" while the lookup runs, then the text for what it found: an older
+/// terminal app gets the update hint.
+#[gpui_kit::test]
+fn preferences_shows_the_terminal_app_after_checking(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (fake, release) = FakeTerminalApp::new(vec![TerminalApp::Installed {
+        version: "0.0.1".into(),
+    }]);
+    let (_v, s) = with_terminal_app(cx, &rt, &fake);
+    open_display(&s, &rt, cx);
+    assert_eq!(
+        s.up_label(TERMINAL_APP_ID, cx).as_deref(),
+        Some("Terminal app: checking…")
+    );
+
+    release.send(()).unwrap();
+    let current = kimun_notes::update::CURRENT_VERSION;
+    let expected =
+        format!("Terminal app: 0.0.1 (this app is {current}). Run `kimun update` to update it.");
+    drive(&rt, cx, |cx| {
+        s.up_label(TERMINAL_APP_ID, cx).as_deref() == Some(expected.as_str())
+    });
+}
+
+/// Each way the lookup can end has its own words.
+#[gpui_kit::test]
+fn the_terminal_app_row_words_what_was_found(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let current = kimun_notes::update::CURRENT_VERSION;
+    for (found, text) in [
+        (
+            TerminalApp::NotInstalled,
+            "Terminal app: not installed".to_string(),
+        ),
+        (
+            TerminalApp::Installed {
+                version: current.into(),
+            },
+            format!("Terminal app: {current}"),
+        ),
+        (
+            TerminalApp::VersionUnknown {
+                path: "/x/kimun".into(),
+            },
+            "Terminal app: found at /x/kimun, version unknown".to_string(),
+        ),
+    ] {
+        let (fake, release) = FakeTerminalApp::new(vec![found]);
+        let (_v, s) = with_terminal_app(cx, &rt, &fake);
+        open_display(&s, &rt, cx);
+        release.send(()).unwrap();
+        drive(&rt, cx, |cx| {
+            s.up_label(TERMINAL_APP_ID, cx).as_deref() == Some(text.as_str())
+        });
+    }
+}
+
+/// Each open of Preferences looks again: a terminal app updated in a shell shows its new version.
+#[gpui_kit::test]
+fn each_open_of_preferences_looks_again(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let current = kimun_notes::update::CURRENT_VERSION;
+    let (fake, release) = FakeTerminalApp::new(vec![
+        TerminalApp::NotInstalled,
+        TerminalApp::Installed {
+            version: current.into(),
+        },
+    ]);
+    let (_v, s) = with_terminal_app(cx, &rt, &fake);
+    open_display(&s, &rt, cx);
+    release.send(()).unwrap();
+    drive(&rt, cx, |cx| {
+        s.up_label(TERMINAL_APP_ID, cx).as_deref() == Some("Terminal app: not installed")
+    });
+
+    // Close Preferences, open them again.
+    s.up_press("escape", cx);
+    assert!(!s.pf_is_open(cx), "Preferences closed");
+    open_display(&s, &rt, cx);
+    assert_eq!(
+        s.up_label(TERMINAL_APP_ID, cx).as_deref(),
+        Some("Terminal app: checking…"),
+        "the old answer is not shown while the new lookup runs"
+    );
+    release.send(()).unwrap();
+    let expected = format!("Terminal app: {current}");
+    drive(&rt, cx, |cx| {
+        s.up_label(TERMINAL_APP_ID, cx).as_deref() == Some(expected.as_str())
+    });
+    assert_eq!(fake.asked(), 2);
+}
+
+/// With no lookup (a window that cannot find its config directory, and every test that does not
+/// give one) there is no row.
+#[gpui_kit::test]
+fn without_a_lookup_there_is_no_terminal_app_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    set_update_check(&v, false);
+    let s = on_vault(cx, &rt, &v, None);
+    open_display(&s, &rt, cx);
+    assert!(s.up_label(TERMINAL_APP_ID, cx).is_none());
 }
