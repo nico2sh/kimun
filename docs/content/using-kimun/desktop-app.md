@@ -142,12 +142,14 @@ Press `F4` or `Ctrl+,`. The list on the left has these sections:
 
 - Workspaces: add, rename, or remove a workspace.
 - Appearance: pick the theme.
-- Display: the editor font and size, the rail position, and the update check.
+- Display: the editor font and size, reduce motion, the rail position, and the update check.
 - Sorting, Indexing, Editor, and Server: the other settings.
 
 ![The Display section of Preferences](/img/gui-preferences.png)
 
 Click `Save` or press `Ctrl+S` to keep your changes.
+
+Reduce motion stops the bouncing logo and the loading spinners. The default, System, follows the animation setting of your operating system. Choose Reduce or Allow to override it.
 
 If the title bar looks wrong on your desktop, add `window_decorations = "system"` to the `[gui]` section of `config.toml`. Restart the app to apply it.
 

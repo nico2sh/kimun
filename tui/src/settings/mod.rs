@@ -1935,7 +1935,7 @@ created = "2026-01-01T00:00:00Z"
 
         AppSettings::update_gui_at(path.clone(), |gui| {
             gui.set_layout_preset(Some("writing"));
-            gui.set_reduce_motion(true);
+            gui.set_reduce_motion(crate::settings::gui::ReduceMotion::Reduce);
         })
         .unwrap();
 
@@ -1947,7 +1947,10 @@ created = "2026-01-01T00:00:00Z"
             "never written back unmigrated"
         );
         assert_eq!(back.gui.layout_preset().as_deref(), Some("writing"));
-        assert!(back.gui.reduce_motion());
+        assert_eq!(
+            back.gui.reduce_motion(),
+            crate::settings::gui::ReduceMotion::Reduce
+        );
     }
 
     /// A TUI that loaded before the GUI changed its layout keeps that layout
@@ -1983,11 +1986,17 @@ created = "2026-01-01T00:00:00Z"
             .join("sub")
             .join("config.toml");
 
-        AppSettings::update_gui_at(path.clone(), |gui| gui.set_reduce_motion(true)).unwrap();
+        AppSettings::update_gui_at(path.clone(), |gui| {
+            gui.set_reduce_motion(crate::settings::gui::ReduceMotion::Reduce)
+        })
+        .unwrap();
 
         let back = AppSettings::load_read_only_from(path).unwrap();
         // The defaults the TUI's own first start writes, plus the edit.
-        assert!(back.gui.reduce_motion());
+        assert_eq!(
+            back.gui.reduce_motion(),
+            crate::settings::gui::ReduceMotion::Reduce
+        );
         assert_eq!(back.theme, AppSettings::default().theme);
     }
 
@@ -2065,13 +2074,17 @@ created = "2026-01-01T00:00:00Z"
         let mut copy = AppSettings::load_read_only_migrated_from(path.clone()).unwrap();
         AppSettings::update_gui_at(path.clone(), |gui| gui.set_layout_preset(Some("b"))).unwrap();
         let before = copy.gui.clone();
-        copy.gui.set_reduce_motion(true);
+        copy.gui
+            .set_reduce_motion(crate::settings::gui::ReduceMotion::Reduce);
 
         copy.save_to_disk_if_parsable_with_gui(|gui| gui.apply_changes(&before, &copy.gui))
             .unwrap();
 
         let back = AppSettings::load_read_only_from(path).unwrap();
-        assert!(back.gui.reduce_motion());
+        assert_eq!(
+            back.gui.reduce_motion(),
+            crate::settings::gui::ReduceMotion::Reduce
+        );
         assert_eq!(back.gui.layout_preset().as_deref(), Some("b"));
     }
 

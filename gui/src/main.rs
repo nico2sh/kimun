@@ -64,6 +64,7 @@ use kimun_core::system::SystemPath;
 use kimun_notes::logic::layout_tree::LayoutTree;
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::startup::try_open_vault;
+use kimun_notes::settings::gui::ReduceMotion;
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 
@@ -136,11 +137,18 @@ fn load_keymap(settings: &AppSettings) -> Keymap {
 
 /// `[gui] reduce_motion` onto GPUI's own switch, which every
 /// `with_animation` (the Welcome wordmark's bounce, the kit's spinners)
-/// honours by drawing its end state. GPUI reads no OS hint for it, so the
-/// setting is the only source. Applied at startup and again after every
+/// honours by drawing its end state. `System` (the key is missing) follows
+/// the operating system's setting, which the kit reads itself; `Reduce` and
+/// `Allow` override it. Applied at startup and again after every
 /// Preferences save (Display > Reduce motion), so a change needs no restart.
-pub(crate) fn apply_reduce_motion(reduce: bool, cx: &mut App) {
-    cx.set_reduce_motion(reduce);
+pub(crate) fn apply_reduce_motion(reduce: ReduceMotion, cx: &mut App) {
+    use gpui_kit::base::{ReduceMotionPreference, set_reduce_motion_preference};
+    let preference = match reduce {
+        ReduceMotion::System => ReduceMotionPreference::System,
+        ReduceMotion::Reduce => ReduceMotionPreference::Reduce,
+        ReduceMotion::Allow => ReduceMotionPreference::Allow,
+    };
+    set_reduce_motion_preference(preference, cx);
 }
 
 /// Where kimün was started from, for a relative note on the command line.
