@@ -3958,6 +3958,7 @@ mod layout_writer;
 mod leader;
 mod link_menu;
 mod links;
+mod menu_overlay;
 mod modal;
 mod motion;
 mod motion_box;

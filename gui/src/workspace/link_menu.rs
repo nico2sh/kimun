@@ -19,14 +19,19 @@
 //! the other. Escape, a press outside, a chord, the menu's note (`from`)
 //! renamed, moved or deleted, its group closed or showing another note, or
 //! a drag starting close it.
+//!
+//! **Hand-built on purpose.** The menu is not the kit's `PopupMenu`: it picks
+//! by a single letter, hides an item that cannot act, hands a key it does not
+//! use to its parent, and anchors at the pointer or a group's corner. The
+//! surface comes from [`super::menu_overlay`], which draws the kit's popover
+//! look, so it matches the row menus.
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, Pixels, Point, Render, Role, StatefulInteractiveElement, Styled, Subscription,
-    Window, anchored, deferred, div, point, px, rems,
+    FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels,
+    Point, Render, Role, StatefulInteractiveElement, Styled, Subscription, Window, div,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::claim::FollowTarget;
@@ -57,9 +62,6 @@ pub(crate) const LABEL_COPIED: &str = "Label copied";
 
 /// The menu's width, in rems.
 const MENU_REMS: f32 = 16.;
-
-/// How far the menu keeps from the window's edges, in px.
-const EDGE_MARGIN: f32 = 8.;
 
 /// One row of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,9 +576,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let open = self.link_menu.as_ref()?;
-        let theme = theme::current(cx);
-        let t = &*theme;
-        let size = window.viewport_size();
         let workspace = cx.entity().downgrade();
         let dismiss = move || {
             let workspace = workspace.clone();
@@ -586,39 +585,15 @@ impl Workspace {
                     .ok();
             }
         };
-        let menu = div()
-            .occlude()
-            .w(rems(MENU_REMS))
-            .p_1()
-            .bg(theme::panel_background(t))
-            .border_1()
-            .border_color(theme::divider(t))
-            .rounded_md()
-            .shadow_md()
-            .child(open.view.clone());
-        Some(
-            deferred(
-                anchored().position(point(px(0.), px(0.))).child(
-                    div()
-                        .id(LINK_MENU_LAYER_ID)
-                        .test_support()
-                        .occlude()
-                        .w(size.width)
-                        .h(size.height)
-                        .on_mouse_down(MouseButton::Left, dismiss())
-                        .on_mouse_down(MouseButton::Right, dismiss())
-                        .on_mouse_down(MouseButton::Middle, dismiss())
-                        .on_scroll(|_, _, cx| cx.stop_propagation())
-                        .child(
-                            anchored()
-                                .position(open.at)
-                                .snap_to_window_with_margin(px(EDGE_MARGIN))
-                                .child(menu),
-                        ),
-                ),
-            )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element(),
-        )
+        Some(super::menu_overlay::overlay(
+            LINK_MENU_LAYER_ID,
+            MENU_REMS,
+            open.view.clone(),
+            open.at,
+            gpui_kit::Anchor::TopLeft,
+            window,
+            cx,
+            dismiss(),
+        ))
     }
 }
