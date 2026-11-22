@@ -72,7 +72,9 @@ use kimun_notes::logic::preferences::{
     LEADER_DELAY_MIN_MS, PreferencesModel, SortSlot, backend_label, configured_server_url,
     same_font_family,
 };
-use kimun_notes::settings::gui::{EDITOR_FONT_MAX_PX, EDITOR_FONT_MIN_PX, clamp_editor_font_size};
+use kimun_notes::settings::gui::{
+    EDITOR_FONT_MAX_PX, EDITOR_FONT_MIN_PX, ReduceMotion, clamp_editor_font_size,
+};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings};
 use std::cell::Cell;
@@ -123,14 +125,12 @@ pub(crate) const FONT_HELP_ID: &str = "preferences-editor-font-help";
 pub(crate) const FONT_HELP: &str = "Applies to the editor. Takes effect when you save.";
 pub(crate) const FONT_LOADING_HELP_ID: &str = "preferences-editor-font-loading";
 pub(crate) const FONT_LOADING_HELP: &str = "Loading installed fonts...";
-/// Display's `Reduce motion` (`[gui] reduce_motion`). GPUI reads no system
-/// hint, hence the help's second sentence.
+/// Display's `Reduce motion` (`[gui] reduce_motion`): one radio per
+/// [`ReduceMotion`] choice.
 pub(crate) const REDUCE_MOTION_ID: &str = "preferences-reduce-motion";
-/// The checkbox's visible label, which is also its accessible name.
-pub(crate) const REDUCE_MOTION_LABEL: &str = "Reduce motion";
 pub(crate) const REDUCE_MOTION_HELP_ID: &str = "preferences-reduce-motion-help";
-pub(crate) const REDUCE_MOTION_HELP: &str =
-    "Stops the bouncing logo and loading spinners. Not read from your system settings.";
+pub(crate) const REDUCE_MOTION_HELP: &str = "Stops the bouncing logo and loading spinners. \
+     System follows your operating system's setting.";
 /// Display's `Rail position` (`[gui] rail`, ADR-0055).
 pub(crate) const RAIL_ID: &str = "preferences-rail";
 pub(crate) const RAIL_HELP_ID: &str = "preferences-rail-help";
@@ -808,9 +808,9 @@ impl PreferencesView {
     }
 
     /// Display's `Reduce motion`.
-    pub(crate) fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_reduce_motion(&mut self, choice: ReduceMotion, cx: &mut Context<Self>) {
         if let Some(model) = self.model_mut() {
-            model.reduce_motion = on;
+            model.reduce_motion = choice;
         }
         cx.notify();
     }
@@ -1752,21 +1752,32 @@ impl PreferencesView {
         field("Size", stepper, [help(FONT_HELP_ID, FONT_HELP, t)], t).into_any_element()
     }
 
-    /// `Reduce motion`. The checkbox's own label names the setting, so it
-    /// has no heading above it.
+    /// `Reduce motion`: one radio per choice.
     fn render_reduce_motion(&self, model: &PreferencesModel, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
-        let checkbox = Checkbox::new(REDUCE_MOTION_ID)
-            .label(REDUCE_MOTION_LABEL)
-            .checked(model.reduce_motion)
+        let radios = RadioGroup::horizontal(REDUCE_MOTION_ID)
+            .selected_index(
+                ReduceMotion::ALL
+                    .iter()
+                    .position(|choice| *choice == model.reduce_motion),
+            )
             .disabled(self.saving.is_some())
-            .on_click(
-                cx.listener(|this, checked: &bool, _, cx| this.set_reduce_motion(*checked, cx)),
+            .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                if let Some(choice) = ReduceMotion::ALL.get(*ix) {
+                    this.set_reduce_motion(*choice, cx)
+                }
+            }))
+            .children(
+                ReduceMotion::ALL
+                    .into_iter()
+                    .map(|choice| Radio::new(choice.label()).label(choice.label())),
             );
-        unheaded_field(
-            checkbox,
+        field(
+            "Reduce motion",
+            radios,
             [help(REDUCE_MOTION_HELP_ID, REDUCE_MOTION_HELP, t)],
+            t,
         )
         .into_any_element()
     }

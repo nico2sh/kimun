@@ -33,7 +33,7 @@
 //! window all the time: a ~600 ms
 //! spring, then a rest, every 2.4 s); it moves by an offset only, in a fixed
 //! line box, so nothing beside it shifts. Reduced motion (`[gui] reduce_motion`,
-//! GPUI's `App::reduce_motion`: GPUI reads no OS hint) keeps it still.
+//! GPUI's `App::reduce_motion`, which follows the OS unless the setting overrides it) keeps it still.
 //!
 //! **Finish** applies the draft off the UI thread (`apply_draft`: the folder
 //! is created, the workspace registered), then hands over to the window,

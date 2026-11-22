@@ -22,7 +22,7 @@ use kimun_notes::logic::leader_route::LeaderRoute;
 use kimun_notes::logic::message::AppMessage;
 use kimun_notes::logic::preferences::{PreferencesModel, SortSlot};
 use kimun_notes::logic::sort::{SortField, SortOrder};
-use kimun_notes::settings::gui::GuiSettings;
+use kimun_notes::settings::gui::{GuiSettings, ReduceMotion};
 use kimun_notes::settings::themes::Theme;
 use kimun_notes::settings::{AppSettings, EditorBackendSetting, SharedSettings, SortOrderSetting};
 use tokio::runtime::Runtime;
@@ -35,9 +35,9 @@ use super::preferences::{
     DisplaySetting, FONT_DEFAULT_LABEL, FONT_FAMILY_ID, FONT_HELP, FONT_HELP_ID, FONT_LOADING_HELP,
     FONT_LOADING_HELP_ID, FONT_SIZE_ID, KEEP_EDITING_ID, MESSAGE_ID, PREFERENCES_ID,
     PreferencesView, RAIL_HELP, RAIL_HELP_ID, RAIL_ID, REDUCE_MOTION_HELP, REDUCE_MOTION_HELP_ID,
-    REDUCE_MOTION_ID, REDUCE_MOTION_LABEL, SAVE_ID, SECTIONS_ID, SERVER_ERROR_ID, SERVER_ID,
-    Section, UPDATE_CHECK_HELP, UPDATE_CHECK_HELP_ID, UPDATE_CHECK_ID, UPDATE_CHECK_LABEL,
-    needs_reopen, section_id, stepper_down_id, stepper_up_id, theme_row_id,
+    REDUCE_MOTION_ID, SAVE_ID, SECTIONS_ID, SERVER_ERROR_ID, SERVER_ID, Section, UPDATE_CHECK_HELP,
+    UPDATE_CHECK_HELP_ID, UPDATE_CHECK_ID, UPDATE_CHECK_LABEL, needs_reopen, section_id,
+    stepper_down_id, stepper_up_id, theme_row_id,
 };
 use super::start_tests::{Started, drive, runtime};
 use super::{LayoutStore, Workspace};
@@ -896,9 +896,10 @@ fn nvim_nerd_fonts_and_mouse_survive_a_save(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
-/// Display > Reduce motion: part of the draft (dirty enables Save, toggling
-/// back is clean), saved as `[gui] reduce_motion` with the rest of `[gui]`
-/// kept, and applied to GPUI's switch at once, without a restart or reopen.
+/// Display > Reduce motion: part of the draft (dirty enables Save, choosing
+/// the saved value again is clean), saved as `[gui] reduce_motion` with the
+/// rest of `[gui]` kept (System removes the key), and applied to GPUI's
+/// switch at once, without a restart or reopen.
 #[gpui_kit::test]
 fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -917,20 +918,21 @@ fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
     assert!(!cx.read(|cx| cx.reduce_motion()));
     s.pf_section(cx, Section::Display);
     assert!(s.pf_shows(REDUCE_MOTION_HELP_ID, cx));
-    assert!(REDUCE_MOTION_HELP.contains("Not read from your system settings"));
+    assert!(REDUCE_MOTION_HELP.contains("System follows"));
     assert!(s.pf_disabled(SAVE_ID, cx), "clean: Save is off");
+    assert_eq!(s.pf_model(cx, |m| m.reduce_motion), ReduceMotion::System);
 
-    s.pf_click(REDUCE_MOTION_ID, cx);
-    assert!(s.pf_model(cx, |m| m.reduce_motion));
+    s.pf_with_view(cx, |v, _, cx| v.set_reduce_motion(ReduceMotion::Reduce, cx));
+    assert_eq!(s.pf_model(cx, |m| m.reduce_motion), ReduceMotion::Reduce);
     assert!(!s.pf_disabled(SAVE_ID, cx), "dirty: Save is on");
     assert!(!cx.read(|cx| cx.reduce_motion()), "not applied before Save");
-    s.pf_click(REDUCE_MOTION_ID, cx);
-    assert!(s.pf_disabled(SAVE_ID, cx), "toggled back: clean");
+    s.pf_with_view(cx, |v, _, cx| v.set_reduce_motion(ReduceMotion::System, cx));
+    assert!(s.pf_disabled(SAVE_ID, cx), "chosen back: clean");
 
-    s.pf_click(REDUCE_MOTION_ID, cx);
+    s.pf_with_view(cx, |v, _, cx| v.set_reduce_motion(ReduceMotion::Reduce, cx));
     s.pf_save(&rt, cx);
     for settings in [v.settings.read().unwrap().clone(), on_disk(&v)] {
-        assert!(settings.gui.reduce_motion());
+        assert_eq!(settings.gui.reduce_motion(), ReduceMotion::Reduce);
         assert_eq!(
             settings.gui.window_decorations(),
             system,
@@ -939,6 +941,44 @@ fn reduce_motion_is_a_draft_setting_applied_on_save(cx: &mut TestAppContext) {
     }
     assert!(cx.read(|cx| cx.reduce_motion()), "applied at once");
     assert_eq!(s.files_id(cx), files, "no reopen");
+
+    settle(&rt, cx);
+}
+
+/// `Allow` is saved as an explicit `false` and plays motion even where the
+/// switch was on; choosing `System` removes the key again.
+#[gpui_kit::test]
+fn reduce_motion_allow_is_saved_and_system_removes_the_key(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    AppSettings::update_gui_at(config(&v), |gui| {
+        gui.set_reduce_motion(ReduceMotion::Reduce)
+    })
+    .unwrap();
+    v.settings
+        .write()
+        .unwrap()
+        .gui
+        .set_reduce_motion(ReduceMotion::Reduce);
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    s.pf_with_view(cx, |v, _, cx| v.set_reduce_motion(ReduceMotion::Allow, cx));
+    s.pf_save(&rt, cx);
+    assert_eq!(on_disk(&v).gui.reduce_motion(), ReduceMotion::Allow);
+    let text = std::fs::read_to_string(config(&v)).unwrap();
+    assert!(text.contains("reduce_motion = false"), "{text}");
+    assert!(!cx.read(|cx| cx.reduce_motion()), "motion plays again");
+    settle(&rt, cx);
+
+    let s = with_prefs(cx, &rt, &v);
+    s.pf_section(cx, Section::Display);
+    s.pf_with_view(cx, |v, _, cx| v.set_reduce_motion(ReduceMotion::System, cx));
+    s.pf_save(&rt, cx);
+    assert_eq!(on_disk(&v).gui.reduce_motion(), ReduceMotion::System);
+    let text = std::fs::read_to_string(config(&v)).unwrap();
+    assert!(!text.contains("reduce_motion"), "{text}");
     settle(&rt, cx);
 }
 
@@ -986,7 +1026,6 @@ fn display_shows_its_groups_and_settings_in_order(cx: &mut TestAppContext) {
         FONT_SIZE_ID,
         FONT_HELP_ID,
         DISPLAY_MOTION_GROUP_ID,
-        REDUCE_MOTION_ID,
         REDUCE_MOTION_HELP_ID,
         RAIL_HELP_ID,
         DISPLAY_BEHAVIOR_GROUP_ID,
@@ -1019,23 +1058,14 @@ fn display_shows_its_groups_and_settings_in_order(cx: &mut TestAppContext) {
             "the accessible name matches the visible words"
         );
     }
-    // The checkboxes draw their label and set no accessible name of their
-    // own, so the kit names them by that label: the same words twice.
-    for (id, label, words) in [
-        (REDUCE_MOTION_ID, REDUCE_MOTION_LABEL, "Reduce motion"),
-        (
-            UPDATE_CHECK_ID,
-            UPDATE_CHECK_LABEL,
-            "Check for updates on startup",
-        ),
-    ] {
-        assert_eq!(label, words, "{id}: the visible label");
-        assert_eq!(
-            s.pf_named(id, cx).0.as_deref(),
-            Some(label),
-            "{id}: the accessible name is the visible label"
-        );
-    }
+    // The checkbox draws its label and sets no accessible name of its own,
+    // so the kit names it by that label: the same words twice.
+    assert_eq!(UPDATE_CHECK_LABEL, "Check for updates on startup");
+    assert_eq!(
+        s.pf_named(UPDATE_CHECK_ID, cx).0.as_deref(),
+        Some(UPDATE_CHECK_LABEL),
+        "the accessible name is the visible label"
+    );
     settle(&rt, cx);
 }
 
@@ -1638,7 +1668,7 @@ fn a_rail_move_before_preferences_is_not_undone_by_saving_them(cx: &mut TestAppC
     s.pf_loaded(&rt, cx);
     assert_eq!(s.pf_model(cx, |m| m.rail), RailPosition::Top);
     s.pf_section(cx, Section::Display);
-    s.pf_click(REDUCE_MOTION_ID, cx);
+    s.pf_with_view(cx, |v, _, cx| v.set_reduce_motion(ReduceMotion::Reduce, cx));
     s.pf_save(&rt, cx);
     assert_eq!(cx.read(|cx| s.workspace.read(cx).rail), RailPosition::Top);
     assert_eq!(on_disk(&v).gui.rail(), RailPosition::Top);

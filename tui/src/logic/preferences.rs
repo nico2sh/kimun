@@ -22,6 +22,7 @@ use kimun_core::{IndexFile, NoteVault, NotesValidation, VaultConfig};
 use crate::keys::action_shortcuts::ActionShortcuts;
 use crate::logic::layout_tree::RailPosition;
 use crate::settings::config_migration::CURRENT_CONFIG_VERSION;
+use crate::settings::gui::ReduceMotion;
 use crate::settings::history::HistoryFile;
 use crate::settings::themes::Theme;
 use crate::settings::workspace_config::{WorkspaceConfig, WorkspaceConfigError};
@@ -341,11 +342,11 @@ pub struct PreferencesModel {
     pub update_check: bool,
     /// Whether the TUI captures the mouse (read at startup only).
     pub mouse: bool,
-    /// `[gui] reduce_motion`: the desktop app keeps its decorative motion
-    /// still. Desktop-only: the TUI does not show it and carries it
+    /// `[gui] reduce_motion`: whether the desktop app keeps its decorative
+    /// motion still, or follows the system. Desktop-only: the TUI does not show it and carries it
     /// unchanged; it is written only when it differs from the config's
     /// value, so a save that did not touch it never adds the key.
-    pub reduce_motion: bool,
+    pub reduce_motion: ReduceMotion,
     /// `[gui] editor_font_family`: `None` = the theme's font. Desktop-only,
     /// written only when it differs from the config's value.
     pub editor_font_family: Option<String>,
