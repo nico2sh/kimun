@@ -1013,6 +1013,20 @@ impl Workspace {
         self.open_query_as_collection(&template, cx);
     }
 
+    /// The `OpenQueryAsCollection` chord in the browser: its typed query goes
+    /// to [`Self::open_browser_as_collection`].
+    pub(crate) fn promote_browser_query_to_collection(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(picker) = self.picker.as_ref().and_then(|p| p.upgrade()) else {
+            return;
+        };
+        let query = picker.read(cx).input.read(cx).value().to_string();
+        self.open_browser_as_collection(query, window, cx);
+    }
+
     /// The search browser's `Open as collection` button: the same as FIND's,
     /// for the query typed in the browser. The browser closes when the
     /// collection opens; a blank or unresolvable query keeps it.
