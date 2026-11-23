@@ -1019,6 +1019,10 @@ impl Workspace {
                     self.open_link_menu_in_editor(group, *at, target.clone(), window, cx);
                 }
             }
+            EditorEvent::OpenRemoteImage { url } => self.open_remote_image(url, cx),
+            EditorEvent::AlwaysLoadFrom { host, url } => {
+                self.always_load_from(editor.clone(), host.clone(), url.clone(), cx)
+            }
         }
     }
 
@@ -1037,6 +1041,7 @@ impl Workspace {
         self.config
             .update(cx, |view, cx| view.set_settings(settings.clone(), cx));
         self.settings = Some(settings);
+        self.sync_remote_hosts(cx);
         self.set_channel(tx, rx, cx);
         self.enter(start, window, cx);
     }
@@ -4132,6 +4137,8 @@ mod properties_tests;
 mod query_builder_tests;
 #[cfg(test)]
 mod rail_tests;
+#[cfg(test)]
+mod remote_image_tests;
 #[cfg(test)]
 mod reopen_tests;
 #[cfg(test)]

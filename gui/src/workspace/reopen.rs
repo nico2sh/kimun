@@ -42,7 +42,7 @@
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::{AppContext as _, Context, Window};
+use gpui_kit::{AppContext as _, Context, Entity, Window};
 use kimun_core::NoteVault;
 use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::editor_region::EditorRegion;
@@ -57,6 +57,8 @@ use tokio::task::JoinError;
 use super::note::Closing;
 use super::note_flush::FlushBlock;
 use super::{LayoutStore, Workspace};
+use crate::editor_view::EditorView;
+use crate::remote_image::RemoteImages;
 use crate::startup;
 use crate::status_row::Status;
 
@@ -148,6 +150,57 @@ impl Workspace {
             tracing::warn!("could not save the settings: {error}");
             this.update(cx, |workspace, cx| {
                 workspace.flash_error(format!("Couldn't save the settings: {error}"), cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Hand the store of remote images the allowed hosts of the settings.
+    /// Called when the settings load and after each change of the list.
+    pub(crate) fn sync_remote_hosts(&self, cx: &mut gpui_kit::App) {
+        let Some(settings) = &self.settings else {
+            return;
+        };
+        let hosts = settings
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .remote_image_hosts
+            .clone();
+        cx.default_global::<RemoteImages>()
+            .clone()
+            .set_allowed_hosts(&hosts);
+    }
+
+    /// "Always load from" `host` on a placeholder in `editor`: write the
+    /// host to the allowed hosts through the settings writer, then hand the
+    /// store the new list, then load `url` in that editor. The other embeds
+    /// of the host on screen then load on their own. A failed write flashes
+    /// and still loads this one image, which the reader asked for. Must run
+    /// with the tokio runtime entered.
+    pub(crate) fn always_load_from(
+        &mut self,
+        editor: Entity<EditorView>,
+        host: String,
+        url: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(settings) = self.settings.clone() else {
+            editor.update(cx, |view, cx| view.load_remote(&url, cx));
+            return;
+        };
+        let write = write_settings(self.store.clone(), settings, move |settings| {
+            settings.allow_host(&host);
+        });
+        cx.spawn(async move |this, cx| {
+            let result = write.await;
+            this.update(cx, |workspace, cx| {
+                if let Err(error) = result {
+                    tracing::warn!("could not save the allowed host: {error}");
+                    workspace.flash_error(format!("Couldn't save the settings: {error}"), cx);
+                }
+                workspace.sync_remote_hosts(cx);
+                editor.update(cx, |view, cx| view.load_remote(&url, cx));
             })
             .ok();
         })

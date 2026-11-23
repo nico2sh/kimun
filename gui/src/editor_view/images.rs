@@ -30,6 +30,14 @@
 //! evicted to make room for another, and a decode that lands never asks for
 //! another.
 //!
+//! An editor that edits also draws **Remote image**s (CONTEXT.md). Until an
+//! address has a saved copy, its embed takes the two lines of the
+//! placeholder ([`remote_rows`]). A saved copy is a file like a vault image:
+//! its header gives its rows, and it is pinned and decoded as one. Only the
+//! embeds on screen on an allowed host load on their own. When a fetch
+//! ends, the lines are sized again once. A read-only editor keeps its
+//! remote embed lines as text for now.
+//!
 //! [`EditorSession::set_image_lines`]: kimun_notes::logic::editor::session::EditorSession::set_image_lines
 
 use std::num::NonZeroU64;
@@ -45,7 +53,10 @@ use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
 use crate::attachment_index::AttachmentIndex;
-use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, natural_of};
+use crate::image_core::{
+    Embed, ImageLook, ImagePane, RemoteLook, embeds_of, image_file, look_of, natural_of,
+    remote_rows,
+};
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 use crate::remote_image::RemoteImages;
 
@@ -68,8 +79,11 @@ pub(crate) struct ImageDraw {
     /// What the pointer over it shows: the alt text, else the file name.
     pub(crate) tip: SharedString,
     /// The attachment it draws: a right-click on it opens its **Entry
-    /// menu**. `None` for a failed image's note.
+    /// menu**. `None` for a failed image's note and a remote image.
     pub(crate) path: Option<VaultPath>,
+    /// The web address of a remote embed: a right-click on its loaded image
+    /// opens the remote menu, and its placeholder's buttons act on it.
+    pub(crate) url: Option<String>,
 }
 
 /// What a set of image lines was found for. The same key again finds the
@@ -79,8 +93,9 @@ struct Key {
     revision: NonZeroU64,
     note: Option<VaultPath>,
     pane: ImagePane,
-    /// Counts the attachment listings that landed and the decodes that
-    /// failed: the events that change the lines.
+    /// Counts the attachment listings that landed, the decodes that
+    /// failed, and the remote fetches that ended or copies removed: the
+    /// events that change the lines.
     epoch: u64,
 }
 
@@ -114,8 +129,12 @@ pub(super) struct Images {
     key: Option<Key>,
     epoch: u64,
     /// The embeds the lines were found from, by row, and those lines.
-    embeds: Vec<Embed>,
+    pub(super) embeds: Vec<Embed>,
     lines: Vec<ImageLine>,
+    /// For each remote embed, by row: whether it had a saved copy when the
+    /// lines were sized. Another view can load or clear a copy, and this
+    /// editor then sizes its lines again.
+    saved: Vec<(usize, bool)>,
     /// The image files on screen at the last frame. Their decodes are asked
     /// for when this set changes, never when a decode lands. They are pinned
     /// in the store, so the cache never drops an image on screen: two
@@ -140,6 +159,7 @@ impl Images {
             epoch: 0,
             embeds: Vec::new(),
             lines: Vec::new(),
+            saved: Vec::new(),
             visible: Vec::new(),
             pins: None,
             #[cfg(test)]
@@ -151,6 +171,12 @@ impl Images {
     /// was replaced (another editor engine).
     pub(super) fn forget_lines(&mut self) {
         self.key = None;
+    }
+
+    /// Size the lines again at the next frame: a remote fetch ended, or a
+    /// saved copy was removed, so an embed's rows may have changed.
+    pub(super) fn resize_lines(&mut self) {
+        self.epoch += 1;
     }
 }
 
@@ -293,12 +319,17 @@ impl EditorView {
     /// press copies a selection) and the find bar shut (it owns the
     /// pointer while open). `None` in a read-only editor.
     pub(crate) fn image_menu(&self) -> Option<EntryMenu> {
+        self.entry_menu.clone().filter(|_| self.menu_free())
+    }
+
+    /// Whether a right press on an image opens its menu now: nothing
+    /// selected, the find bar shut, and an editor that edits.
+    pub(super) fn menu_free(&self) -> bool {
         let unselected = self
             .editor
             .selection()
             .is_none_or(|(start, end)| start == end);
-        let free = !self.read_only && unselected && self.editor.find_bar().is_none();
-        self.entry_menu.clone().filter(|_| free)
+        !self.read_only && unselected && self.editor.find_bar().is_none()
     }
 
     /// The attachment the image on the caret's line draws, when that line
@@ -391,9 +422,11 @@ impl EditorView {
                     &images.vault,
                     limit,
                 );
-                // The editor does not draw remote embeds yet: their lines
-                // stay text.
-                embeds.retain(|embed| embed.remote.is_none());
+                // A read-only editor does not draw remote embeds yet: their
+                // lines stay text there.
+                if images.source.is_some() {
+                    embeds.retain(|embed| embed.remote.is_none());
+                }
                 embeds
             }
             // Until the attachments are listed no embed resolves: the lines
@@ -401,6 +434,7 @@ impl EditorView {
             _ => Vec::new(),
         };
         images.lines = image_lines(&images.embeds, pane, cx);
+        images.saved = saved_copies(&images.embeds, cx);
         self.editor
             .session_mut()
             .set_image_lines(images.lines.clone());
@@ -449,13 +483,46 @@ impl EditorView {
         }
         let spots = self.editor.session().display.image_spots();
         let mut store = cx.default_global::<ImageStore>().clone();
+        let remote = cx.default_global::<RemoteImages>().clone();
         let mut visible = Vec::new();
         let mut draws = Vec::new();
+        // The remote embeds on screen whose host is allowed and that wait
+        // for their first load.
+        let mut to_load = Vec::new();
+        // A remote embed whose copy came or went since the lines were sized.
+        let mut stale = false;
         for spot in spots {
             let Some(embed) = images.embeds.iter().find(|e| e.row == spot.row) else {
                 continue;
             };
-            let state = embed.file.as_ref().map(|file| store.size_of(file));
+            let url = embed.remote.as_ref().map(|r| r.url.clone());
+            // The vault file, or the saved copy of a remote embed.
+            let file = image_file(embed, &remote);
+            stale |= images
+                .saved
+                .iter()
+                .any(|&(row, saved)| row == embed.row && saved != file.is_some());
+            if file.is_none() && embed.remote.is_some() {
+                let ImageLook::Remote(look) = look_of(embed, &mut store, &remote, pane) else {
+                    continue;
+                };
+                if let (RemoteLook::Placeholder { host, actions }, Some(url)) = (&look, &url)
+                    && !actions.always
+                {
+                    to_load.push((url.clone(), host.clone()));
+                }
+                draws.push(ImageDraw {
+                    row: spot.row,
+                    top: spot.top,
+                    lines: spot.lines,
+                    look: ImageLook::Remote(look),
+                    tip: embed.tip(),
+                    path: None,
+                    url,
+                });
+                continue;
+            }
+            let state = file.as_ref().map(|file| store.size_of(file));
             let fitted = |natural| fit(natural, pane.column_px, pane.pane_px);
             let look = match state {
                 _ if spot.note => {
@@ -475,14 +542,14 @@ impl EditorView {
                 // at the next frame.
                 Some(ImageState::Failed(_)) | None => continue,
             };
-            if let (ImageLook::Ready(..) | ImageLook::Pending(_), Some(file)) = (&look, &embed.file)
+            if let (ImageLook::Ready(..) | ImageLook::Pending(_), Some(file)) = (&look, &file)
                 && !visible.contains(file)
             {
                 visible.push(file.clone());
             }
-            let path = match look {
-                ImageLook::Note(_) => None,
-                _ => embed.found.clone(),
+            let (path, url) = match look {
+                ImageLook::Note(_) => (None, None),
+                _ => (embed.found.clone(), url),
             };
             draws.push(ImageDraw {
                 row: spot.row,
@@ -491,6 +558,20 @@ impl EditorView {
                 look,
                 tip: embed.tip(),
                 path,
+                url,
+            });
+        }
+        if stale {
+            images.resize_lines();
+            cx.notify();
+        }
+        if !to_load.is_empty() {
+            // The store skips an address that is saved, loading, or failed in
+            // this session, so a dead address is asked once.
+            let view = cx.weak_entity();
+            let mut remote = remote.clone();
+            remote.auto_load(&to_load, cx, move |cx| {
+                super::remote::fetch_ended(&view, cx)
             });
         }
         if visible != images.visible {
@@ -564,19 +645,38 @@ fn on_decoded(view: WeakEntity<EditorView>, file: PathBuf) -> impl FnOnce(&mut A
     }
 }
 
+/// For each remote embed of `embeds`, its row and whether it has a saved
+/// copy now.
+fn saved_copies(embeds: &[Embed], cx: &mut App) -> Vec<(usize, bool)> {
+    let remote = cx.default_global::<RemoteImages>().clone();
+    embeds
+        .iter()
+        .filter(|embed| embed.remote.is_some())
+        .map(|embed| (embed.row, image_file(embed, &remote).is_some()))
+        .collect()
+}
+
 /// The image line of each embed, sized from its file's header. Nothing is
 /// decoded here: [`EditorView::image_draws`] asks for the images on screen.
+/// A remote embed with no saved copy takes the placeholder's rows. A saved
+/// copy takes the rows of its height, from the saved file's header.
 fn image_lines(embeds: &[Embed], pane: ImagePane, cx: &mut App) -> Vec<ImageLine> {
     let mut store = cx.default_global::<ImageStore>().clone();
     let remote = cx.default_global::<RemoteImages>().clone();
     embeds
         .iter()
         .map(|embed| {
-            let natural = natural_of(embed, &mut store, &remote);
-            let rows = natural.map_or(0, |natural| {
-                let (_, height) = fit(natural, pane.column_px, pane.pane_px);
-                rows_for(height, pane.row_px)
-            });
+            let rows = match natural_of(embed, &mut store, &remote) {
+                Some(natural) => {
+                    let (_, height) = fit(natural, pane.column_px, pane.pane_px);
+                    rows_for(height, pane.row_px)
+                }
+                // A remote embed with no saved copy shows its placeholder.
+                None if embed.remote.is_some() && image_file(embed, &remote).is_none() => {
+                    remote_rows()
+                }
+                None => 0,
+            };
             ImageLine {
                 row: embed.row,
                 rows,
