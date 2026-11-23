@@ -144,7 +144,21 @@ impl QueryTransport for Stub {
 /// A vault holding [`NOTES`], started on `a.md`, indexed; the server can
 /// answer, through `stub`.
 fn ready(cx: &mut TestAppContext, rt: &Runtime, stub: Arc<Stub>) -> (TestVault, Started) {
+    ready_with(cx, rt, stub, &[])
+}
+
+/// [`ready`], with the attachments `files` saved into the vault.
+fn ready_with(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+    stub: Arc<Stub>,
+    files: &[(&str, Vec<u8>)],
+) -> (TestVault, Started) {
     let v = rt.block_on(test_vault(NOTES, &[]));
+    for (name, bytes) in files {
+        rt.block_on(v.vault.save_attachment(&path(name), bytes))
+            .expect("the attachment is saved");
+    }
     let started = open_started(
         cx,
         vault_start(&v, FirstNote::Note(path("a.md"))),
@@ -1596,4 +1610,128 @@ fn the_ask_slot_header_says_ask_and_the_part_says_sources(cx: &mut TestAppContex
         label_of(&started, SOURCES_PART_ID, cx).as_deref(),
         Some("Sources")
     );
+}
+
+// ---- The reader's inline images -------------------------------------------------
+
+/// A PNG of `w`x`h` pixels.
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::RgbaImage::from_pixel(w, h, image::Rgba([200, 10, 10, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .unwrap();
+    out
+}
+
+/// `b.md` with an image in its Intro and one in its Details section.
+const IMAGED: &str = "# Intro\nintro text\n![i](pic.png)\n# Details\ndetails text\n![d](pic.png)\n";
+
+/// The reader open on `b.md`'s Details section, landed, its images drawn.
+fn reader_on_images(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+) -> (TestVault, Started, Entity<super::search::SearchPreview>) {
+    let stub = Stub::with(vec![(
+        "see [1]",
+        vec![chunk(
+            "b.md",
+            "Details",
+            "# Details\ndetails text\n![d](pic.png)",
+            1,
+        )],
+    )]);
+    let (v, started) = ready_with(cx, rt, stub, &[("pic.png", png(10, 120))]);
+    rt.block_on(v.vault.save_note(&path("b.md"), IMAGED))
+        .expect("the note is saved");
+    ask(&started, rt, "why?", cx);
+    click(&started, source_row_id(1), cx);
+    press(&started, "enter", cx);
+    let view = sources(&started, cx);
+    let reader = cx.read(|cx| view.read(cx).reader.clone());
+    settle(rt, cx, |cx| {
+        cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let painted = cx.read(|cx| reader.read(cx).painted_slices());
+        reader_note(&started, cx) == Some(path("b.md"))
+            && !painted.is_empty()
+            && painted.iter().all(|p| p.ready)
+    });
+    (v, started, reader)
+}
+
+/// The rows of image `image` in the reader, and the first of them.
+fn image_rows_of(
+    reader: &Entity<super::search::SearchPreview>,
+    image: usize,
+    cx: &TestAppContext,
+) -> (usize, usize) {
+    let images = cx.read(|cx| reader.read(cx).shown_images());
+    (images[image].rows, images[image].first_row)
+}
+
+/// An embed inside the marked section keeps its raw line, marked, above
+/// its image rows, which paint.
+#[gpui_kit::test]
+fn an_embed_inside_the_marked_section_shows_raw_and_image(cx: &mut TestAppContext) {
+    use super::search::RowKind;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, _started, reader) = reader_on_images(cx, &rt);
+    let (rows, first) = image_rows_of(&reader, 1, cx);
+    assert!(rows >= 2, "{rows} rows");
+    let kinds = cx.read(|cx| reader.read(cx).shown_kinds());
+    let lines = cx.read(|cx| reader.read(cx).shown_lines());
+    assert_eq!(kinds[first - 1], RowKind::Text);
+    assert_eq!(
+        lines[first - 1],
+        (
+            "![d](pic.png)".to_string(),
+            vec!["![d](pic.png)".to_string()]
+        ),
+        "the raw line, marked"
+    );
+    for index in 0..rows {
+        assert_eq!(kinds[first + index], RowKind::Image { image: 1, index });
+    }
+    let painted = cx.read(|cx| reader.read(cx).painted_slices());
+    assert!(
+        painted.iter().any(|p| p.image == 1 && p.ready),
+        "its slices paint: {painted:?}"
+    );
+}
+
+/// An embed outside the marked section shows its image rows alone, no raw
+/// line.
+#[gpui_kit::test]
+fn an_embed_outside_it_shows_only_the_image(cx: &mut TestAppContext) {
+    use super::search::RowKind;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, _started, reader) = reader_on_images(cx, &rt);
+    let (rows, first) = image_rows_of(&reader, 0, cx);
+    let kinds = cx.read(|cx| reader.read(cx).shown_kinds());
+    let lines = cx.read(|cx| reader.read(cx).shown_lines());
+    assert_eq!(first, 2, "right under `intro text`");
+    assert_eq!(lines[first - 1].0, "intro text");
+    for index in 0..rows {
+        assert_eq!(kinds[first + index], RowKind::Image { image: 0, index });
+    }
+    assert!(
+        !lines.iter().any(|(text, _)| text == "![i](pic.png)"),
+        "no raw line for it"
+    );
+}
+
+/// The section's anchor (its first line, scrolled to) is the row right
+/// after the image rows above it.
+#[gpui_kit::test]
+fn the_section_anchor_row_is_right_after_image_rows(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, _started, reader) = reader_on_images(cx, &rt);
+    let (rows, first) = image_rows_of(&reader, 0, cx);
+    let (first_hit, _, _) = cx.read(|cx| reader.read(cx).wrap_state());
+    assert_eq!(first_hit, Some(first + rows));
+    let lines = cx.read(|cx| reader.read(cx).shown_lines());
+    assert_eq!(lines[first + rows].0, "# Details");
 }

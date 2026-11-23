@@ -29,7 +29,14 @@
 //! text above them only when it holds a match (the Source reader: when it
 //! lies in the marked section). The read waits for the vault's shared
 //! attachment list ([`AttachmentIndex`]) and reads each image's header with
-//! the note; a re-wrap at another width or height reads no file.
+//! the note; a re-wrap at another width or height reads no file. Each image
+//! row paints its own slice of the image (the whole image moved up by its
+//! index in rows, clipped to the row), so a row scrolled in alone draws its
+//! part; the image's tooltip covers it. Only the images on screen are
+//! decoded, each time their set changes, and pinned in the app's store; a
+//! decode that lands only redraws. One whose pixels then fail to decode
+//! becomes its note row, by one re-wrap that keeps the same text in view.
+//! An image row does nothing on a press, as a text row.
 //!
 //! **Opening.** Enter (or a double-click: a click only selects, the
 //! preview follows) on a note opens it with the
@@ -56,15 +63,18 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(test)]
+use std::{cell::RefCell, rc::Rc};
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, FontWeight, HighlightStyle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Role, ScrollEvent, ScrollStrategy, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledText, Task, UniformListScrollHandle,
-    Window, canvas, div, font, px, rems, uniform_list,
+    AnyElement, AppContext as _, Bounds, Context, FontWeight, HighlightStyle,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, RenderImage, Rgba,
+    Role, ScrollEvent, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, StyledText, Task, UniformListScrollHandle, Window, canvas, div, font, point, px,
+    rems, size, uniform_list,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
@@ -83,14 +93,17 @@ use super::files::ellipsis;
 use super::modal::{self, ModalKind, Slot};
 use super::note::{Closing, flush_problem};
 use crate::attachment_index::AttachmentIndex;
+use crate::editor_element::image_tooltip;
 use crate::grid::CellMetrics;
-use crate::image_core::{Embed, ImagePane, embeds_of, natural_of};
-use crate::inline_image::{Failure, ImageState, ImageStore, fit, rows_for};
+use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, look_of, natural_of, paint_look};
+use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 use crate::theme;
 
 /// Element ids, for tests.
 pub(crate) const PREVIEW_ID: &str = "search-preview";
 pub(crate) const PREVIEW_ROW_ID: &str = "search-preview-row";
+/// The hover target over an image row's image, inside the row (tests).
+pub(crate) const PREVIEW_IMAGE_ID: &str = "search-preview-image";
 pub(crate) const PREVIEW_TRUNCATED_ID: &str = "search-preview-truncated";
 pub(crate) const QUERY_HELP_ID: &str = "query-help";
 
@@ -176,6 +189,8 @@ struct PreviewRow {
 /// An image the rows draw (an **Inline image**, CONTEXT.md).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreviewImage {
+    /// Its embed in [`ImagePlan::embeds`].
+    pub(crate) embed: usize,
     /// The attachment's file, when the embed resolved.
     pub(crate) file: Option<PathBuf>,
     /// The file name as written, and the alt text.
@@ -222,6 +237,9 @@ pub(crate) struct ImagePlan {
     /// The room the images are fitted to.
     pub(crate) pane: ImagePane,
     pub(crate) raw: RawRule,
+    /// Bumped each time a decode failed after the header read and its
+    /// image was turned into a note here: a wrap made before is stale.
+    pub(crate) failed: usize,
 }
 
 impl ImagePlan {
@@ -233,6 +251,7 @@ impl ImagePlan {
             failures: Vec::new(),
             pane,
             raw: RawRule::Hits,
+            failed: 0,
         }
     }
 }
@@ -245,11 +264,9 @@ struct Wrapped {
     rows: Vec<PreviewRow>,
     /// The row holding the first match, scrolled to when the preview lands.
     first_hit: Option<usize>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the image rows are painted from the next task")
-    )]
     images: Vec<PreviewImage>,
+    /// The plan's [`ImagePlan::failed`] it was wrapped with.
+    failed: usize,
 }
 
 /// `lines` wrapped to `columns`, each embed line of `images` followed by
@@ -278,6 +295,7 @@ fn wrap_lines(
         }
         let image = drawn.len();
         let mut drawn_image = PreviewImage {
+            embed: e,
             file: embed.file.clone(),
             name: embed.name.clone(),
             alt: embed.alt.clone(),
@@ -323,6 +341,7 @@ fn wrap_lines(
         rows,
         first_hit,
         images: drawn,
+        failed: images.failed,
     }
 }
 
@@ -380,6 +399,7 @@ impl PreviewText {
     fn wrapped_for(&self, columns: usize, pane: ImagePane) -> bool {
         self.wrapped.columns == columns
             && (self.plan.embeds.is_empty() || self.wrapped.pane == pane)
+            && self.wrapped.failed == self.plan.failed
     }
 }
 
@@ -486,6 +506,7 @@ fn plan_images(
         failures,
         pane,
         raw: RawRule::Hits,
+        failed: 0,
     }
 }
 
@@ -667,6 +688,181 @@ impl<T> Drop for AbortOnDrop<T> {
 
 // ---- The preview -------------------------------------------------------------
 
+/// How a preview row is drawn: in the needles' or the section's mark, a
+/// failed image's note and an image's empty box colours, at `scale` device
+/// pixels per logical one.
+#[derive(Clone, Copy)]
+struct RowStyle {
+    mark: HighlightStyle,
+    note: Rgba,
+    placeholder: Rgba,
+    scale: f32,
+}
+
+/// The pixels of each image the rows of one render draw, looked up once
+/// per image. `None` store: the note draws no image.
+struct ImagePixels {
+    store: Option<ImageStore>,
+    found: Vec<(usize, Option<Arc<RenderImage>>)>,
+}
+
+impl ImagePixels {
+    fn new(store: Option<ImageStore>) -> Self {
+        Self {
+            store,
+            found: Vec::new(),
+        }
+    }
+
+    /// The decoded pixels of image `image` of `shown`, `None` while it is
+    /// not decoded (or any more, or its decode failed: the note it becomes
+    /// lands with a re-wrap).
+    fn of(&mut self, image: usize, shown: &PreviewText) -> Option<Arc<RenderImage>> {
+        if let Some((_, pixels)) = self.found.iter().find(|(i, _)| *i == image) {
+            return pixels.clone();
+        }
+        let store = self.store.as_mut()?;
+        let embed = shown
+            .wrapped
+            .images
+            .get(image)
+            .and_then(|i| shown.plan.embeds.get(i.embed))?;
+        // The look's state only: the size is the model's own `fitted`.
+        let pixels = match look_of(embed, store, shown.wrapped.pane) {
+            ImageLook::Ready(pixels, _) => Some(pixels),
+            ImageLook::Pending(_) | ImageLook::Note(_) => None,
+        };
+        self.found.push((image, pixels.clone()));
+        pixels
+    }
+}
+
+/// Where an image row records the slice it paints, and its row (tests).
+#[cfg(test)]
+#[derive(Clone)]
+struct SliceLog {
+    painted: Rc<RefCell<Vec<PaintedSlice>>>,
+    row: usize,
+}
+
+/// A row's element; in tests with where its slice's paint is recorded.
+#[cfg(test)]
+type RowItem = (Stateful<gpui_kit::Div>, SliceLog);
+#[cfg(not(test))]
+type RowItem = Stateful<gpui_kit::Div>;
+
+/// Preview row `row` of `shown` in `item`, one row high: a piece of
+/// text, a failed image's note, or one slice of an image, with the image's
+/// tooltip over the slice.
+/// Already wrapped to the pane: never wrapped again, never cut with an
+/// ellipsis.
+fn render_row(
+    item: RowItem,
+    row: &PreviewRow,
+    shown: &PreviewText,
+    pixels: &mut ImagePixels,
+    style: &RowStyle,
+) -> Stateful<gpui_kit::Div> {
+    #[cfg(test)]
+    let (item, log) = item;
+    let item = item
+        .h(rems(LINE_REMS))
+        .flex()
+        .items_center()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap();
+    let image_of = |image: usize| shown.wrapped.images.get(image);
+    match row.kind {
+        RowKind::Text => item.child(
+            StyledText::new(row.text.clone())
+                .with_highlights(row.hits.iter().map(|hit| (hit.clone(), style.mark))),
+        ),
+        RowKind::Note { image } => {
+            let note =
+                image_of(image).map(|i| i.failed.unwrap_or(Failure::Missing).note(&i.name, &i.alt));
+            item.text_color(style.note).children(note)
+        }
+        RowKind::Image { image, index } => {
+            let Some(drawn) = image_of(image) else {
+                return item;
+            };
+            let fitted = drawn.fitted;
+            let tip = shown
+                .plan
+                .embeds
+                .get(drawn.embed)
+                .map(Embed::tip)
+                .unwrap_or_default();
+            let ready = pixels.of(image, shown);
+            let placeholder = style.placeholder;
+            // The canvas spans the row, its slice's clip; the hover target
+            // spans the image's width, as the editor's does.
+            let paint = canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    let rect = slice_rect(bounds, index, fitted, window.scale_factor());
+                    paint_look(window, rect, bounds, ready.as_ref(), placeholder);
+                    #[cfg(test)]
+                    log.painted.borrow_mut().push(PaintedSlice {
+                        row: log.row,
+                        image,
+                        index,
+                        rect,
+                        clip: bounds,
+                        ready: ready.is_some(),
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            let hover = div()
+                .id(PREVIEW_IMAGE_ID)
+                .role(Role::Image)
+                .aria_label(tip.clone())
+                .h_full()
+                .w(px(fitted.0 / style.scale))
+                .tooltip(image_tooltip(tip))
+                .test_support();
+            item.relative().w_full().child(paint).child(hover)
+        }
+    }
+}
+
+/// One image row's slice as painted (tests).
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct PaintedSlice {
+    /// The row, its image and the slice's index in that image.
+    pub(crate) row: usize,
+    pub(crate) image: usize,
+    pub(crate) index: usize,
+    /// Where the whole image would be, and the row it is clipped to.
+    pub(crate) rect: Bounds<Pixels>,
+    pub(crate) clip: Bounds<Pixels>,
+    /// Its pixels, not the empty box.
+    pub(crate) ready: bool,
+}
+
+/// Where the whole image of slice `index` (one row high) of the row
+/// `bounds` is, drawn at `fitted` device pixels at `scale` device pixels
+/// per logical one: its top `index` rows above the row, at the row's left.
+fn slice_rect(
+    bounds: Bounds<Pixels>,
+    index: usize,
+    fitted: (f32, f32),
+    scale: f32,
+) -> Bounds<Pixels> {
+    let top = bounds.origin.y - bounds.size.height * index as f32;
+    // Device pixels to logical ones: pixel exact at any scale.
+    Bounds::new(
+        point(bounds.origin.x, top),
+        size(px(fitted.0 / scale), px(fitted.1 / scale)),
+    )
+}
+
 /// What the preview should show: a note and what to mark in it.
 type Wanted = (VaultPath, Mark);
 
@@ -703,6 +899,25 @@ pub(crate) struct SearchPreview {
     /// Redraws the pane when the theme changes: it is drawn cached, so its
     /// parent's redraw does not reach it.
     _theme: gpui_kit::Subscription,
+    /// The image files on screen at the last check. Their decodes are asked
+    /// for when this set changes, never when a decode lands; they are
+    /// pinned in the store, so none of them is evicted for another.
+    visible: Vec<PathBuf>,
+    /// The pins of `visible`, made at the first image on screen; they drop
+    /// with the preview.
+    pins: Option<Pins>,
+    /// The rows the list rendered last in this frame (the visible range
+    /// comes after the list's one-row measure), and whether the check of
+    /// the images among them is already deferred to the frame's end.
+    seen: Option<Range<usize>>,
+    check_deferred: bool,
+    /// The image slices painted at the last render (tests).
+    #[cfg(test)]
+    painted: Rc<RefCell<Vec<PaintedSlice>>>,
+    /// How many times the images on screen were checked (tests: a note
+    /// without any checks none).
+    #[cfg(test)]
+    pub(crate) visible_checks: usize,
     /// Reads started (tests: the debounce reads nothing while arrowing).
     #[cfg(test)]
     pub(crate) reads: usize,
@@ -727,6 +942,14 @@ impl SearchPreview {
             scroll: UniformListScrollHandle::new(),
             scrolled: false,
             _theme: theme::observe(cx),
+            visible: Vec::new(),
+            pins: None,
+            seen: None,
+            check_deferred: false,
+            #[cfg(test)]
+            painted: Rc::default(),
+            #[cfg(test)]
+            visible_checks: 0,
             #[cfg(test)]
             reads: 0,
             #[cfg(test)]
@@ -821,6 +1044,19 @@ impl SearchPreview {
             .as_ref()
             .map(|s| s.images().to_vec())
             .unwrap_or_default()
+    }
+
+    /// The image slices painted at the last render (tests).
+    #[cfg(test)]
+    pub(crate) fn painted_slices(&self) -> Vec<PaintedSlice> {
+        self.painted.borrow().clone()
+    }
+
+    /// How many failed decodes turned the shown note's images into notes
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn failure_rewraps(&self) -> usize {
+        self.shown.as_ref().map_or(0, |s| s.plan.failed)
     }
 
     /// The room the shown rows' images are fitted to, and the one the pane
@@ -1114,9 +1350,11 @@ impl SearchPreview {
             .shown
             .as_ref()
             .is_some_and(|s| !s.plan.embeds.is_empty());
+        let failed = self.shown.as_ref().map_or(0, |s| s.plan.failed);
         if !current
             || wrapped.columns != self.wrap_columns()
             || (images && wrapped.pane != self.wrap_pane())
+            || wrapped.failed != failed
         {
             return;
         }
@@ -1163,6 +1401,106 @@ impl SearchPreview {
         let top = (-state.base_handle.offset().y / row_height).max(0.) as usize;
         let row = &rows[top.min(rows.len() - 1)];
         Some((row.line, row.start, ScrollStrategy::Top))
+    }
+
+    /// The list rendered `range` of the shown rows: check the images among
+    /// them once the frame is drawn. The list renders a row to measure it
+    /// first, so the last range of the frame is the one on screen.
+    fn saw_rows(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.seen = Some(range);
+        if self.check_deferred {
+            return;
+        }
+        self.check_deferred = true;
+        let preview = cx.weak_entity();
+        cx.defer(move |cx| {
+            preview
+                .update(cx, |preview, cx| preview.check_visible(cx))
+                .ok();
+        });
+    }
+
+    /// The images on screen, after a frame: when their set changed (a note
+    /// shown, a scroll, a resize), pin them and ask for the decode of each
+    /// one not decoded; a decode that lands only redraws. One whose decode
+    /// failed after its header read becomes a note.
+    fn check_visible(&mut self, cx: &mut Context<Self>) {
+        self.check_deferred = false;
+        #[cfg(test)]
+        {
+            self.visible_checks += 1;
+        }
+        let range = self.seen.take().unwrap_or(0..0);
+        let mut store = cx.default_global::<ImageStore>().clone();
+        let mut visible: Vec<PathBuf> = Vec::new();
+        let mut failed = Vec::new();
+        if let Some(shown) = &self.shown {
+            let rows = &shown.wrapped.rows;
+            let range = range.start.min(rows.len())..range.end.min(rows.len());
+            for row in &rows[range] {
+                let RowKind::Image { image, .. } = row.kind else {
+                    continue;
+                };
+                let Some(file) = shown
+                    .wrapped
+                    .images
+                    .get(image)
+                    .and_then(|i| i.file.as_ref())
+                else {
+                    continue;
+                };
+                if visible.contains(file) || failed.iter().any(|(f, _)| f == file) {
+                    continue;
+                }
+                match store.size_of(file) {
+                    ImageState::Failed(failure) => failed.push((file.clone(), failure)),
+                    _ => visible.push(file.clone()),
+                }
+            }
+        }
+        if visible != self.visible {
+            // Pinned first: a decode that lands never evicts one on screen.
+            self.pins.get_or_insert_with(|| store.pins()).set(&visible);
+            let preview = cx.weak_entity();
+            for file in &visible {
+                if matches!(store.size_of(file), ImageState::Sized { .. }) {
+                    let preview = preview.clone();
+                    store.request(file, cx, move |cx| {
+                        preview.update(cx, |_, cx| cx.notify()).ok();
+                    });
+                }
+            }
+            self.visible = visible;
+        }
+        if !failed.is_empty() {
+            self.decodes_failed(&failed, cx);
+        }
+    }
+
+    /// The decodes of `failed` failed after their headers read: their
+    /// images become one note row each, by a re-wrap that reads no file and
+    /// keeps the same text in view. An image already a note is left alone,
+    /// so this happens once per file.
+    fn decodes_failed(&mut self, failed: &[(PathBuf, Failure)], cx: &mut Context<Self>) {
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        let plan = &mut shown.plan;
+        let mut changed = false;
+        for (e, embed) in plan.embeds.iter().enumerate() {
+            let Some((_, failure)) = failed.iter().find(|(f, _)| embed.file.as_ref() == Some(f))
+            else {
+                continue;
+            };
+            if plan.naturals.get_mut(e).and_then(Option::take).is_some() {
+                plan.failures[e] = Some(*failure);
+                changed = true;
+            }
+        }
+        if changed {
+            plan.failed += 1;
+            self.rewrap(cx);
+        }
     }
 
     fn render_header(&self, cx: &gpui_kit::App) -> AnyElement {
@@ -1276,37 +1614,46 @@ impl Render for SearchPreview {
                     }
                 };
                 let row_id = self.ids.1;
+                let style = RowStyle {
+                    mark,
+                    note: theme::image_note(t),
+                    placeholder: theme::image_placeholder(t),
+                    scale: window.scale_factor(),
+                };
+                #[cfg(test)]
+                self.painted.borrow_mut().clear();
                 uniform_list(
                     SharedString::from(format!("{}-lines", self.ids.0)),
                     shown.wrapped.rows.len(),
-                    cx.processor(move |this, range: Range<usize>, _, _| {
+                    cx.processor(move |this, range: Range<usize>, _, cx| {
                         let Some(shown) = this.shown.as_ref() else {
                             return Vec::new();
                         };
-                        range
+                        // Most notes embed nothing: no image work at all.
+                        let images = !shown.wrapped.images.is_empty();
+                        let mut pixels = ImagePixels::new(
+                            images.then(|| cx.default_global::<ImageStore>().clone()),
+                        );
+                        let rows = range
+                            .clone()
                             .filter_map(|ix| Some((ix, shown.wrapped.rows.get(ix)?)))
                             .map(|(ix, row)| {
-                                // An image row or a note row is blank for
-                                // now: it keeps the row height.
-                                let text = (row.kind == RowKind::Text).then(|| {
-                                    StyledText::new(row.text.clone()).with_highlights(
-                                        row.hits.iter().map(|hit| (hit.clone(), mark)),
-                                    )
-                                });
-                                // Already wrapped to the pane: never wrapped
-                                // again, never cut with an ellipsis.
-                                div()
-                                    .id((row_id, ix))
-                                    .test_support()
-                                    .h(rems(LINE_REMS))
-                                    .flex()
-                                    .items_center()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .children(text)
+                                let item = div().id((row_id, ix));
+                                #[cfg(test)]
+                                let item = (
+                                    item,
+                                    SliceLog {
+                                        painted: this.painted.clone(),
+                                        row: ix,
+                                    },
+                                );
+                                render_row(item, row, shown, &mut pixels, &style).test_support()
                             })
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>();
+                        if images || !this.visible.is_empty() {
+                            this.saw_rows(range, cx);
+                        }
+                        rows
                     }),
                 )
                 .track_scroll(&self.scroll)

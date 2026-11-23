@@ -111,10 +111,6 @@ pub(crate) fn natural_of(embed: &Embed, store: &mut ImageStore) -> Option<(u32, 
 
 /// What the embed draws now, fitted to `pane`. A failed or unresolved image
 /// is a note (an unresolved one reads "not found").
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the read-only views use it from the next task")
-)]
 pub(crate) fn look_of(embed: &Embed, store: &mut ImageStore, pane: ImagePane) -> ImageLook {
     let fitted = |natural| fit(natural, pane.column_px, pane.pane_px);
     match embed.file.as_ref().map(|file| store.size_of(file)) {

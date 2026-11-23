@@ -36,7 +36,7 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, CursorStyle, Element, ElementId,
+    AnyElement, AnyView, App, AvailableSpace, Bounds, ContentMask, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
     InteractiveElement as _, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, RenderImage, Rgba, Role, ScrollEvent, ShapedLine, SharedString,
@@ -388,6 +388,18 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The tooltip over an inline image, showing `tip` (the alt text, else
+/// the file name): the editor's and the read-only previews'.
+pub(crate) fn image_tooltip(
+    tip: SharedString,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |window, cx| {
+        #[cfg(test)]
+        BUILT_TIPS.with(|built| built.borrow_mut().push(tip.clone()));
+        Tooltip::new(tip.clone()).build(window, cx)
+    }
+}
+
 /// The hover target over an inline image: as big as its visible part, it
 /// paints nothing and shows `tip` as a tooltip. Its accessible name is the
 /// same text, the image's alternative text. With a `menu` (the builder and
@@ -404,11 +416,7 @@ fn image_hover(
         .aria_label(tip.clone())
         .w(at.width)
         .h(at.height)
-        .tooltip(move |window, cx| {
-            #[cfg(test)]
-            BUILT_TIPS.with(|built| built.borrow_mut().push(tip.clone()));
-            Tooltip::new(tip.clone()).build(window, cx)
-        })
+        .tooltip(image_tooltip(tip))
         .test_support();
     match menu {
         Some((menu, path)) => hover
