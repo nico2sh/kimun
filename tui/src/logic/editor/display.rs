@@ -161,6 +161,11 @@ pub struct EditorDisplay {
     /// 0. Cursor-dependent (the cursor row reveals raw `> `), so rebuilt with
     /// the same cursor-affected-row logic as `rendered_cache`.
     gutter_insets: Vec<usize>,
+    /// Per-logical-row count of blank pad lines the layout reserves under the
+    /// row, for a frontend to paint an inline image over. Empty (no pads
+    /// anywhere) unless a frontend hands counts in through
+    /// [`Self::set_image_reserves`]; the TUI never does.
+    image_reserves: Vec<usize>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     /// Either a Real or Placeholder parse — see [`ParseState`].
@@ -255,6 +260,8 @@ pub struct PendingLayoutJob {
     pub width: usize,
     pub rendered_cache: Vec<Vec<bool>>,
     pub gutter_insets: Vec<usize>,
+    /// The pad lines reserved per row, as of capture.
+    pub image_reserves: Vec<usize>,
     /// The rows a folded frontmatter block hides, as of capture.
     pub hidden: Option<Range<usize>>,
 }
@@ -362,6 +369,7 @@ impl EditorDisplay {
             fm_hidden: None,
             code_box_width: Vec::new(),
             gutter_insets: Vec::new(),
+            image_reserves: Vec::new(),
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
             parse_state: ParseState::Real(ParsedBuffer::placeholder(&crate::ropetext::Text::new())),
@@ -456,6 +464,7 @@ impl EditorDisplay {
             width: self.last_layout_width as usize,
             rendered_cache: self.rendered_cache.clone(),
             gutter_insets: self.gutter_insets.clone(),
+            image_reserves: self.image_reserves.clone(),
             hidden: self.fm_hidden.clone(),
         })
     }
@@ -479,6 +488,8 @@ impl EditorDisplay {
         // reader may have opened or folded it since.
         let text = self.text_snapshot.clone();
         self.relayout_frontmatter(&text);
+        // Likewise the pads: the reserves may have changed since capture.
+        self.relayout_reserved_rows(&text);
         // The wrapped layout numbers visual rows differently from the stub, so
         // a detached top would now point somewhere else in the note.
         self.detached = false;
@@ -507,6 +518,7 @@ impl EditorDisplay {
             let hints = row_hints(
                 &self.rendered_cache,
                 &self.gutter_insets,
+                &self.image_reserves,
                 self.fm_hidden.as_ref(),
             );
             self.layout = Layout::compute(text, width as usize, Metrics::default(), &hints);
@@ -623,6 +635,28 @@ impl EditorDisplay {
         self.needles = needles;
     }
 
+    /// Reserve blank pad lines under rows, as `(logical row, pad count)`, for a
+    /// frontend to paint an inline image over. Rows not named reserve nothing,
+    /// so an empty list removes every pad. Sticky across frames, in the current
+    /// text's row numbering: call it after each `update`, before drawing.
+    ///
+    /// Only rows whose pads changed are laid out again. The TUI never calls
+    /// this, so its layout never holds a pad line.
+    pub fn set_image_reserves(&mut self, reserves: Vec<(usize, usize)>) {
+        let mut dense = vec![0; self.layout.row_count()];
+        for (row, pads) in reserves {
+            if let Some(entry) = dense.get_mut(row) {
+                *entry = pads;
+            }
+        }
+        if dense == self.image_reserves {
+            return;
+        }
+        self.image_reserves = dense;
+        let text = self.text_snapshot.clone();
+        self.relayout_reserved_rows(&text);
+    }
+
     /// Declare that the edit just performed was a *bulk* one — it changed rows
     /// the cursor does not point at.
     ///
@@ -660,6 +694,7 @@ impl EditorDisplay {
         let hints = row_hints(
             &self.rendered_cache,
             &self.gutter_insets,
+            &self.image_reserves,
             self.fm_hidden.as_ref(),
         );
         let goal = self
@@ -1143,6 +1178,7 @@ impl EditorDisplay {
                 let hints = row_hints(
                     &self.rendered_cache,
                     &self.gutter_insets,
+                    &self.image_reserves,
                     self.fm_hidden.as_ref(),
                 );
                 self.layout.relayout_rows(&snap.text, &hints, rows, delta);
@@ -1167,6 +1203,7 @@ impl EditorDisplay {
                         let hints = row_hints(
                             &self.rendered_cache,
                             &self.gutter_insets,
+                            &self.image_reserves,
                             self.fm_hidden.as_ref(),
                         );
                         // Line count is unchanged on this path — the caller above
@@ -1181,6 +1218,7 @@ impl EditorDisplay {
                             let hints = row_hints(
                                 &self.rendered_cache,
                                 &self.gutter_insets,
+                                &self.image_reserves,
                                 self.fm_hidden.as_ref(),
                             );
                             self.layout
@@ -1875,12 +1913,69 @@ impl EditorDisplay {
         let hints = row_hints(
             &self.rendered_cache,
             &self.gutter_insets,
+            &self.image_reserves,
             self.fm_hidden.as_ref(),
         );
         self.layout.relayout_rows(text, &hints, rows, 0);
         let delta = self.layout.visual_line_count() as isize - before as isize;
         if delta != 0 && below.is_some_and(|start| top >= start) {
             self.viewport.scroll_by(&self.layout, delta);
+        }
+    }
+
+    /// Re-lay every row whose pad lines differ from `image_reserves`, leaving
+    /// every other row alone. Like [`Self::relayout_frontmatter`], a view
+    /// scrolled below a changed row moves by the difference and keeps showing
+    /// the same text.
+    ///
+    /// Skipped while a `Layout::unwrapped` stub is installed: the background
+    /// job captured the reserves, and `install_full_layout` comes back here.
+    fn relayout_reserved_rows(&mut self, text: &crate::ropetext::Text) {
+        // Never handed reserves (the TUI): no row can hold a pad.
+        if self.image_reserves.is_empty()
+            || self.layout_pending.is_some()
+            || !self.layout.describes(text)
+        {
+            return;
+        }
+        let rows = self.layout.row_count();
+        let mut laid = vec![0; rows];
+        for line in self.layout.visual_lines().iter().filter(|l| l.pad) {
+            if let Some(count) = laid.get_mut(line.logical_row) {
+                *count += 1;
+            }
+        }
+        let hints = row_hints(
+            &self.rendered_cache,
+            &self.gutter_insets,
+            &self.image_reserves,
+            self.fm_hidden.as_ref(),
+        );
+        // A hidden row lays out no pads, whatever it reserves.
+        let wanted = |row: usize| {
+            hints
+                .get(row)
+                .filter(|h| !h.hidden)
+                .map_or(0, |h| h.reserve)
+        };
+        let mut row = 0;
+        while row < rows {
+            if laid[row] == wanted(row) {
+                row += 1;
+                continue;
+            }
+            let start = row;
+            while row < rows && laid[row] != wanted(row) {
+                row += 1;
+            }
+            let top = self.viewport.top();
+            let below = self.layout.row_start(row);
+            let before = self.layout.visual_line_count();
+            self.layout.relayout_rows(text, &hints, start..row, 0);
+            let delta = self.layout.visual_line_count() as isize - before as isize;
+            if delta != 0 && below.is_some_and(|start| top >= start) {
+                self.viewport.scroll_by(&self.layout, delta);
+            }
         }
     }
 
@@ -2034,13 +2129,14 @@ impl EditorDisplay {
 
     /// The logical (row, col) of the text drawn in screen cell
     /// (`screen_row`, `screen_col`), or `None` when the cell draws no text:
-    /// below the last row, in a gutter, or right of the text on its visual
-    /// row. Unlike [`Self::click_at_screen`] it never clamps to the nearest
+    /// below the last row, on a pad line, in a gutter, or right of the text on
+    /// its visual row. Unlike [`Self::click_at_screen`] it never clamps to the nearest
     /// text, so a host can ask what lies under the pointer without placing
     /// the caret.
     pub fn text_at_screen(&self, screen_row: usize, screen_col: usize) -> Option<(usize, usize)> {
         let vrow = screen_row + self.viewport.top();
-        if vrow >= self.layout.visual_lines().len() {
+        let vl = self.layout.visual_lines().get(vrow)?;
+        if vl.pad {
             return None;
         }
         let (row, col, end, gutter) = self.cell_to_logical(vrow, screen_col);
@@ -2052,6 +2148,13 @@ impl EditorDisplay {
             return (0, 0);
         }
         let vrow = vrow.min(self.layout.visual_lines().len() - 1);
+        // A click on a pad line (over an inline image) lands on the start of
+        // the row the pads are reserved under, as `Layout::position_at_cell`
+        // does.
+        let vl = &self.layout.visual_lines()[vrow];
+        if vl.pad {
+            return (vl.logical_row.min(u16::MAX as usize) as u16, 0);
+        }
         let (row, logical_col, end, _) = self.cell_to_logical(vrow, vcol);
         let row_u16 = row.min(u16::MAX as usize) as u16;
         // Clamp to the visual line clicked. `rendered_col_to_logical_with` maps a
@@ -2120,28 +2223,30 @@ impl Default for EditorDisplay {
     }
 }
 
-/// Per-row hints for the layout: what the syntax layer draws, and how far each
-/// row is inset by its gutter.
+/// Per-row hints for the layout: what the syntax layer draws, how far each
+/// row is inset by its gutter, and how many pad lines it reserves below.
 ///
 /// Built per rebuild rather than stored, because both halves already live on the
 /// view and a third copy would be a third thing to keep in step.
 ///
 /// `pub(crate)`: the background wrap task spawned by the owning
 /// `TextEditorComponent` (`mod.rs`) rebuilds the same hints from a
-/// [`PendingLayoutJob`]'s owned `rendered_cache`/`gutter_insets` clones —
+/// [`PendingLayoutJob`]'s owned `rendered_cache`/`gutter_insets`/`image_reserves` clones —
 /// `RowHints` borrows, so it cannot cross the `tokio::spawn` boundary
 /// itself and has to be reconstructed on the other side from owned data.
 pub(crate) fn row_hints<'a>(
     rendered: &'a [Vec<bool>],
     insets: &'a [usize],
+    reserves: &[usize],
     hidden: Option<&Range<usize>>,
 ) -> Vec<RowHints<'a>> {
-    let rows = rendered.len().max(insets.len());
+    let rows = rendered.len().max(insets.len()).max(reserves.len());
     (0..rows)
         .map(|row| RowHints {
             visible: rendered.get(row).map(Vec::as_slice).unwrap_or(&[]),
             inset: insets.get(row).copied().unwrap_or(0),
             hidden: hidden.is_some_and(|rows| rows.contains(&row)),
+            reserve: reserves.get(row).copied().unwrap_or(0),
         })
         .collect()
 }
@@ -2256,7 +2361,12 @@ pub(crate) mod tests {
             let mut v = EditorDisplay::new();
             update_view(&mut v, &lines, (park, 0), rect(20), 1, None);
             let text = v.text_snapshot.clone();
-            let hints = row_hints(&v.rendered_cache, &v.gutter_insets, v.fm_hidden.as_ref());
+            let hints = row_hints(
+                &v.rendered_cache,
+                &v.gutter_insets,
+                &v.image_reserves,
+                v.fm_hidden.as_ref(),
+            );
             for vrow in 0..v.layout.visual_lines().len() {
                 for vcol in 0..24 {
                     let (tui_row, tui_col) = v.click_to_logical_for_testing(vrow, vcol);
@@ -3284,7 +3394,12 @@ pub(crate) mod tests {
             "stub row count must match input"
         );
         let real_visual_lines = {
-            let hints = row_hints(&v.rendered_cache, &v.gutter_insets, v.fm_hidden.as_ref());
+            let hints = row_hints(
+                &v.rendered_cache,
+                &v.gutter_insets,
+                &v.image_reserves,
+                v.fm_hidden.as_ref(),
+            );
             Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints).visual_line_count()
         };
         assert!(
@@ -3298,7 +3413,12 @@ pub(crate) mod tests {
         // Caller (TextEditorComponent in production) spawns the real wrap
         // and installs the result. Simulate that here.
         let job = pending.unwrap();
-        let hints = row_hints(&job.rendered_cache, &job.gutter_insets, job.hidden.as_ref());
+        let hints = row_hints(
+            &job.rendered_cache,
+            &job.gutter_insets,
+            &job.image_reserves,
+            job.hidden.as_ref(),
+        );
         let real = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
         let real_count = real.visual_line_count();
         v.install_full_layout(job.generation, real);
@@ -3368,7 +3488,12 @@ pub(crate) mod tests {
         );
 
         // The current generation's install lands.
-        let hints = row_hints(&v.rendered_cache, &v.gutter_insets, v.fm_hidden.as_ref());
+        let hints = row_hints(
+            &v.rendered_cache,
+            &v.gutter_insets,
+            &v.image_reserves,
+            v.fm_hidden.as_ref(),
+        );
         let real = Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints);
         v.install_full_layout(2, real);
         assert!(
@@ -3394,7 +3519,12 @@ pub(crate) mod tests {
         // Pane resized before the background wrap for width 40 lands.
         update_view(&mut v, &lines, (0, 0), (80, rect(40).1), 1, None);
 
-        let hints = row_hints(&job.rendered_cache, &job.gutter_insets, job.hidden.as_ref());
+        let hints = row_hints(
+            &job.rendered_cache,
+            &job.gutter_insets,
+            &job.image_reserves,
+            job.hidden.as_ref(),
+        );
         let stale_width_layout = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
         v.install_full_layout(job.generation, stale_width_layout);
         assert!(
@@ -3731,7 +3861,7 @@ pub(crate) mod tests {
 
         // After incremental wrap, layout must equal a fresh compute of the edited buffer.
         let fresh_text = crate::ropetext::Text::from(edited.join("\n").as_str());
-        let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[], None);
+        let fresh_hints = row_hints(v.rendered_cache_for_testing(), &[], &[], None);
         let fresh_layout = Layout::compute(&fresh_text, 40, Metrics::default(), &fresh_hints);
 
         let actual = v.layout.visual_lines();
@@ -4610,5 +4740,164 @@ mod frontmatter_fold_tests {
         assert_eq!(v.fm_hidden, None, "the cursor inside opens it");
         assert!(v.move_cursor_visually(&mut buf, true, false));
         assert_eq!(buf.cursor().0, 4);
+    }
+}
+
+/// Pad lines a frontend reserves under rows (inline images), and the TUI's
+/// promise that it never gets any.
+#[cfg(test)]
+mod image_reserve_tests {
+    use super::tests::{rect, update_view};
+    use super::*;
+    use crate::logic::editor::rope_buffer::RopeBuffer;
+    use crate::logic::editor::snapshot::EditorSnapshot;
+    use crate::ropetext::{Column, Text};
+    use std::num::NonZeroU64;
+
+    fn note() -> Vec<String> {
+        ["intro", "![a](x.png)", "after"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// `(logical row, pad)` of every visual line.
+    fn shape(v: &EditorDisplay) -> Vec<(usize, bool)> {
+        v.layout
+            .visual_lines()
+            .iter()
+            .map(|l| (l.logical_row, l.pad))
+            .collect()
+    }
+
+    fn fresh_layout(v: &EditorDisplay) -> Layout {
+        let hints = row_hints(
+            &v.rendered_cache,
+            &v.gutter_insets,
+            &v.image_reserves,
+            v.fm_hidden.as_ref(),
+        );
+        Layout::compute(&v.text_snapshot, 40, Metrics::default(), &hints)
+    }
+
+    const PADDED: [(usize, bool); 6] = [
+        (0, false),
+        (1, false),
+        (1, true),
+        (1, true),
+        (1, true),
+        (2, false),
+    ];
+
+    #[test]
+    fn an_image_row_reserves_nothing_until_a_frontend_asks() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        assert_eq!(shape(&v), [(0, false), (1, false), (2, false)]);
+    }
+
+    #[test]
+    fn reserving_pads_a_row_and_an_empty_list_removes_them() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        v.set_image_reserves(vec![(1, 3)]);
+        assert_eq!(shape(&v), PADDED);
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+        v.set_image_reserves(vec![(7, 2)]); // past the last row: ignored
+        assert_eq!(shape(&v), [(0, false), (1, false), (2, false)]);
+    }
+
+    #[test]
+    fn pads_survive_cursor_moves_and_edits_elsewhere() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        v.set_image_reserves(vec![(1, 3)]);
+        update_view(&mut v, &note(), (1, 3), rect(10), 1, None);
+        assert_eq!(shape(&v), PADDED, "the cursor on the embed row");
+        let mut edited = note();
+        edited[2].push('x');
+        update_view(&mut v, &edited, (2, 6), rect(10), 2, None);
+        assert_eq!(shape(&v), PADDED, "an edit on another row");
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+    }
+
+    #[test]
+    fn a_click_on_a_pad_row_lands_on_the_row_start() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        v.set_image_reserves(vec![(1, 3)]);
+        for vrow in 2..5 {
+            assert_eq!(
+                v.click_to_logical_for_testing(vrow, 6),
+                (1, 0),
+                "vrow {vrow}"
+            );
+            assert_eq!(v.text_at_screen(vrow, 0), None, "a pad draws no text");
+        }
+        assert_eq!(v.click_to_logical_for_testing(5, 2), (2, 2));
+    }
+
+    #[test]
+    fn visual_motion_through_the_display_skips_pads() {
+        let mut buf = RopeBuffer::new(Text::from("intro\n![a](x.png)\nafter"));
+        let at = buf.text().position(1, Column::new(0)).unwrap();
+        buf.move_to(at);
+        let mut v = EditorDisplay::new();
+        let snap = EditorSnapshot::of_buffer(
+            buf.text().clone(),
+            buf.cursor(),
+            NonZeroU64::new(1).unwrap(),
+        );
+        v.update_sized(&snap, 40, 10);
+        v.set_image_reserves(vec![(1, 3)]);
+        assert!(v.move_cursor_visually(&mut buf, true, false));
+        assert_eq!(buf.cursor(), (2, 0));
+        v.clear_visual_goal();
+        assert!(v.move_cursor_visually(&mut buf, false, false));
+        assert_eq!(buf.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn growing_pads_above_the_view_keep_the_same_text_on_screen() {
+        let lines: Vec<String> = (0..30).map(|i| format!("row {i}")).collect();
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &lines, (20, 0), rect(5), 1, None);
+        let top = v.viewport.top();
+        assert!(top > 2, "scrolled below row 2");
+        v.set_image_reserves(vec![(2, 4)]);
+        assert_eq!(v.viewport.top(), top + 4);
+        v.set_image_reserves(Vec::new());
+        assert_eq!(v.viewport.top(), top);
+    }
+
+    #[test]
+    fn a_background_layout_job_carries_the_reserves_and_install_catches_up() {
+        let mut lines: Vec<String> = (0..1500).map(|i| format!("row {i}")).collect();
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &lines, (750, 0), rect(40), 1, None);
+        lines.insert(750, "```".to_string());
+        update_view(&mut v, &lines, (750, 3), rect(40), 2, None);
+        v.set_image_reserves(vec![(10, 2)]);
+        let job = v.take_pending_full_layout().expect("a stub is pending");
+        assert_eq!(job.image_reserves.get(10), Some(&2));
+        // The reserves change while the job is out.
+        v.set_image_reserves(vec![(10, 2), (20, 3)]);
+        let hints = row_hints(
+            &job.rendered_cache,
+            &job.gutter_insets,
+            &job.image_reserves,
+            job.hidden.as_ref(),
+        );
+        let real = Layout::compute(&job.text, job.width, Metrics::default(), &hints);
+        v.install_full_layout(job.generation, real);
+        let pads = |row: usize| {
+            v.layout
+                .visual_lines()
+                .iter()
+                .filter(|l| l.pad && l.logical_row == row)
+                .count()
+        };
+        assert_eq!((pads(10), pads(20)), (2, 3));
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
     }
 }
