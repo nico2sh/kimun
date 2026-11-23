@@ -8,7 +8,7 @@ use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
 use gpui_kit::{Entity, TestAppContext, VisualTestContext, point, px};
 use kimun_core::nfs::VaultPath;
 
@@ -321,4 +321,109 @@ fn a_refresh_lists_the_attachments_again(cx: &mut TestAppContext) {
     assert!(notes(cx).is_empty());
     let file = v.vault.path_to_pathbuf(&VaultPath::new("late.png"));
     assert_eq!(shown_files(&view, 0, cx), [file]);
+}
+
+/// A press on chunk `i`'s cell (`col`, `row`) with `button`, the primary
+/// modifier held when `primary`, and its release.
+fn press_at(
+    view: &Entity<FacetView>,
+    (col, row): (u16, u16),
+    button: gpui_kit::MouseButton,
+    primary: bool,
+    cx: &mut VisualTestContext,
+) {
+    let at = super::facet_tests::cell(view, 0, col, row, cx);
+    cx.update(|window, cx| {
+        if primary {
+            window.change_modifiers(gpui_kit::Modifiers::control(), cx);
+        }
+        window.pointer_down(at, button, cx);
+        window.pointer_up(at, button, cx);
+        if primary {
+            window.change_modifiers(gpui_kit::Modifiers::none(), cx);
+        }
+    });
+    cx.run_until_parked();
+}
+
+/// The follows and Link menus `events` holds.
+fn follows(events: &Events) -> Vec<FacetEvent> {
+    events
+        .borrow()
+        .iter()
+        .filter(|e| matches!(e, FacetEvent::Follow { .. } | FacetEvent::LinkMenu { .. }))
+        .cloned()
+        .collect()
+}
+
+/// Every press on the embed line itself (the image's first row), inside
+/// the hidden link's columns: a right press, a plain click, a primary
+/// press. None follows the hidden link or opens its Link menu.
+fn assert_no_follow_on_embed_row(text: &str, cx: &mut TestAppContext) {
+    use gpui_kit::MouseButton::{Left, Right};
+    let v = vault_with(&[("n.md", text)], &[("pic.png", png(10, 60))]);
+    let (view, cx, events, _sub) = open_note(cx, &v, "n.md", text);
+    let mut followed = Vec::new();
+    // Each on its own cell: a press right after a click that followed, on
+    // the same cell, is a plain press.
+    for (col, button, primary) in [(3, Right, false), (5, Left, false), (7, Left, true)] {
+        press_at(&view, (col, 1), button, primary, cx);
+        rest(cx);
+        if !follows(&events).is_empty() {
+            followed.push(format!("{button:?} primary {primary}"));
+        }
+        events.borrow_mut().clear();
+    }
+    assert_eq!(followed, Vec::<String>::new(), "these presses followed");
+}
+
+#[gpui_kit::test]
+fn a_press_on_the_first_row_of_an_image_follows_nothing(cx: &mut TestAppContext) {
+    assert_no_follow_on_embed_row(NOTE, cx);
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_failed_images_note_follows_nothing(cx: &mut TestAppContext) {
+    assert_no_follow_on_embed_row("intro\n![[gone.png]]\nafter", cx);
+}
+
+/// A link in the chunk's prose still follows and still opens its menu.
+#[gpui_kit::test]
+fn a_link_in_prose_next_to_an_image_still_follows(cx: &mut TestAppContext) {
+    use gpui_kit::MouseButton::{Left, Right};
+    let text = "see [[other]] now\n![[pic.png]]";
+    let v = vault_with(&[("n.md", text)], &[("pic.png", png(10, 60))]);
+    let (view, cx, events, _sub) = open_note(cx, &v, "n.md", text);
+    press_at(&view, (6, 0), Right, false, cx);
+    assert!(matches!(
+        follows(&events)[..],
+        [FacetEvent::LinkMenu { .. }]
+    ));
+    press_at(&view, (6, 0), Left, true, cx);
+    assert!(matches!(
+        follows(&events)[..],
+        [FacetEvent::LinkMenu { .. }, FacetEvent::Follow { .. }]
+    ));
+}
+
+/// A drag that starts on an image's row still selects.
+#[gpui_kit::test]
+fn a_drag_from_an_image_row_selects(cx: &mut TestAppContext) {
+    let v = vault_with(&[("n.md", NOTE)], &[("pic.png", png(10, 60))]);
+    let (view, cx, _events, _sub) = open_note(cx, &v, "n.md", NOTE);
+    let rows = image_rows(60, cx) as u16;
+    let from = super::facet_tests::cell(&view, 0, 3, 1, cx);
+    let to = super::facet_tests::cell(&view, 0, 3, 1 + rows, cx);
+    cx.update(|window, cx| {
+        window.pointer_down(from, gpui_kit::MouseButton::Left, cx);
+        window.pointer_move(to, Some(gpui_kit::MouseButton::Left), cx);
+        window.pointer_up(to, gpui_kit::MouseButton::Left, cx);
+    });
+    cx.run_until_parked();
+    let chunk = chunk(&view, 0, cx);
+    let selection = cx.update(|_, cx| chunk.read(cx).editor.selection());
+    assert!(
+        selection.is_some_and(|(start, end)| start != end),
+        "{selection:?}"
+    );
 }

@@ -246,6 +246,26 @@ impl EditorView {
         })
     }
 
+    /// Whether screen row `row` draws an image or a failed image's note.
+    /// The embed line there hides its link: a press in a read-only editor
+    /// reaches no target on it.
+    pub(crate) fn on_drawn_image(&self, row: u16) -> bool {
+        if self
+            .images
+            .as_ref()
+            .is_none_or(|images| images.embeds.is_empty())
+        {
+            return false;
+        }
+        let row = row as isize;
+        self.editor
+            .session()
+            .display
+            .image_spots()
+            .iter()
+            .any(|spot| (spot.top..spot.top + spot.lines as isize).contains(&row))
+    }
+
     /// How many times this editor found its image lines (tests).
     #[cfg(test)]
     pub(crate) fn image_finds(&self) -> usize {
