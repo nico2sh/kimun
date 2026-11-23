@@ -1735,3 +1735,73 @@ fn the_section_anchor_row_is_right_after_image_rows(cx: &mut TestAppContext) {
     let lines = cx.read(|cx| reader.read(cx).shown_lines());
     assert_eq!(lines[first + rows].0, "# Details");
 }
+
+/// The user leaves the window and comes back to it: the shared attachment
+/// list is listed again and the reader reads its note again.
+fn reactivate(s: &Started, cx: &mut TestAppContext) {
+    gpui_kit::VisualTestContext::from_window(s.handle, cx).deactivate_window();
+    cx.update_window(s.handle, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// Another section of the same note taken while the reader still reads
+/// that note again (after an activation): the new section lands at the top
+/// of the pane, not at the old section's place. (Another note clears the
+/// pane first, so it never takes the old place.)
+#[gpui_kit::test]
+fn another_section_during_a_reread_lands_at_its_own_place(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let filler: String = (0..150).map(|i| format!("line {i}\n")).collect();
+    let note = format!("# Details\ndetails text\n![d](pic.png)\n{filler}# Far\nfar body\n{filler}");
+    let stub = Stub::with(vec![(
+        "see [1]",
+        vec![
+            chunk(
+                "b.md",
+                "Details",
+                "# Details\ndetails text\n![d](pic.png)",
+                1,
+            ),
+            chunk("b.md", "Far", "# Far\nfar body", 2),
+        ],
+    )]);
+    let (v, started) = ready_with(cx, &rt, stub, &[("pic.png", png(10, 120))]);
+    rt.block_on(v.vault.save_note(&path("b.md"), &note))
+        .expect("the note is saved");
+    ask(&started, &rt, "why?", cx);
+    click(&started, source_row_id(1), cx);
+    press(&started, "right", cx);
+    let view = sources(&started, cx);
+    let reader = cx.read(|cx| view.read(cx).reader.clone());
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(started.handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    };
+    settle(&rt, cx, |cx| {
+        draw(cx);
+        reader_note(&started, cx) == Some(path("b.md"))
+    });
+    assert_eq!(cx.read(|cx| reader.read(cx).wrap_state()).0, Some(0));
+    let reads = cx.read(|cx| reader.read(cx).read_paths.len());
+    reactivate(&started, cx);
+    draw(cx);
+    assert!(
+        cx.read(|cx| reader.read(cx).is_pending()),
+        "the re-read runs"
+    );
+    assert_eq!(cx.read(|cx| reader.read(cx).read_paths.len()), reads + 1);
+    press(&started, "down", cx);
+    settle(&rt, cx, |cx| {
+        draw(cx);
+        reader_marked(&started, cx).first().map(String::as_str) == Some("# Far")
+            && !cx.read(|cx| reader.read(cx).is_pending())
+    });
+    draw(cx);
+    let (first_hit, _, _) = cx.read(|cx| reader.read(cx).wrap_state());
+    let first_hit = first_hit.expect("the section resolves");
+    assert!(first_hit > 150, "far down: {first_hit}");
+    let top = cx.read(|cx| reader.read(cx).top_row());
+    assert_eq!(top, first_hit, "the section at the top, not the old place");
+}

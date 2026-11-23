@@ -1142,6 +1142,9 @@ impl SearchPreview {
         self.wanted = wanted.clone();
         self.error = None;
         self.generation += 1;
+        // A re-read of the old note still under way is dropped or ignored
+        // from here: the new note takes its own place, not the old one's.
+        self.reloading = false;
         let Some((path, mark)) = wanted else {
             self.load = None;
             self.rewrap = None;
@@ -1302,6 +1305,7 @@ impl SearchPreview {
                 self.rewrap(cx);
             }
             Err(e) => {
+                self.reloading = false;
                 self.shown = None;
                 self.rewrap = None;
                 self.error = Some(match wanted.1 {
