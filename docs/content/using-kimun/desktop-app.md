@@ -119,6 +119,18 @@ Images also show in other views. They use the same sizes and formats as in the n
 - Only the first 100 images of a note show in a preview. A facet chunk also shows only its first 100 images. A preview reads only the first 256 KB of a note.
 - Point at a picture to see its alt text. There is no click and no menu on a picture in these views.
 
+### Images in the attachment view
+
+When you open an image file, the image shows in the attachment view, below the header. This view is different from a note. The image can use the whole area.
+
+- The image shows at its natural size. It is never larger. If it does not fit, Kimün scales it down to fit the whole area, both width and height. It stays in the center and there is no scrolling.
+- The image fits again when you resize the window or the panel.
+- A GIF shows its first frame only. A photo that was rotated by the camera shows upright.
+- An SVG file shows as a picture. Its text does not show. Use Open externally to read the text.
+- If Kimün cannot draw the file, the view shows "No preview" and gives the reason. The file may be missing, over 20 MB, or damaged.
+- Other binary files, such as a zip or a PDF, show "No preview" and "Open it externally to view it." Text files still show their text.
+- The size and date in the header do not update if the file changes while the view is open. Open the file again to refresh them.
+
 ## Properties
 
 Properties are facts about a note, such as `status` or `due`. The footer shows how many a note has. Click it to open the list. Use `Add`, `Edit`, and `Delete`, or press `A`, `E`, and `D`.
