@@ -375,6 +375,15 @@ impl VaultPath {
         })
     }
 
+    /// Whether [`Self::get_name`] is `name`, without building the flattened
+    /// path when the last component is a name (flattening keeps it last).
+    pub(crate) fn name_is(&self, name: &str) -> bool {
+        match self.slices.last() {
+            Some(VaultPathSlice::PathSlice(last)) => last == name,
+            _ => self.get_name() == name,
+        }
+    }
+
     /// Returns the path of `self` written relative to a note file's *directory*.
     ///
     /// Markdown engines resolve relative links against the containing folder,
@@ -969,6 +978,24 @@ mod tests {
     use std::path::PathBuf;
 
     use super::with_note_extension;
+
+    #[test]
+    fn name_is_agrees_with_get_name() {
+        for p in [
+            "/a/b.png",
+            "a/b.png",
+            "a/./b.png",
+            "a/x/../b.png",
+            "a/b/..",
+            "a/b/.",
+            "/",
+        ] {
+            let path = super::VaultPath::new(p);
+            let name = path.get_name();
+            assert!(path.name_is(&name), "{p}: {name}");
+            assert!(!path.name_is("other.png"), "{p}");
+        }
+    }
 
     #[test]
     fn with_note_extension_appends_when_missing() {

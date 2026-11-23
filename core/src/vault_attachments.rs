@@ -33,10 +33,12 @@ impl NoteVault {
             .append(&VaultPath::new(filename))
     }
 
-    /// Every attachment in the vault (any non-note file, hidden entries
-    /// skipped; a legacy in-vault index file counts, as in a browse), as canonical absolute paths in no particular order. A fresh
-    /// walk of the vault tree each call, never cached and never touching the
-    /// index. Resolve a bare `![[name]]` image embed with it
+    /// Every attachment in the vault, as canonical absolute paths in no
+    /// particular order. An attachment is any file that is not a note.
+    /// Hidden entries are skipped. An old index file still kept inside the
+    /// vault is listed too, as a browse of the vault lists it. Each call
+    /// walks the vault tree afresh: nothing is cached, and the index is
+    /// never read. Resolve a bare `![[name]]` image embed with it
     /// ([`crate::note::resolve_image_embed`]).
     pub fn list_attachments(&self) -> Vec<VaultPath> {
         nfs::list_attachments(self.workspace_path())
