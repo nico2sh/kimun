@@ -44,6 +44,17 @@ enum TextChangeKind {
     Full,
 }
 
+/// An **Inline image**'s embed line, as a frontend hands it to
+/// [`EditorDisplay::set_image_lines`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageLine {
+    /// The logical row of the embed line.
+    pub row: usize,
+    /// How many lines tall the image draws. Zero for an image that cannot be
+    /// drawn: its one-line note takes the embed line itself.
+    pub rows: usize,
+}
+
 enum RenderedCacheRebuild {
     Full,
     Rows(Vec<usize>),
@@ -166,6 +177,14 @@ pub struct EditorDisplay {
     /// anywhere) unless a frontend hands counts in through
     /// [`Self::set_image_reserves`]; the TUI never does.
     image_reserves: Vec<usize>,
+    /// Per-logical-row image height in lines for an inline image's embed
+    /// row, `None` on every other row. Empty unless a frontend hands lines in
+    /// through [`Self::set_image_lines`]; the TUI never does. Off the cursor
+    /// row an embed row draws nothing (its rendered mask hides every char)
+    /// and reserves one pad line fewer than the image is tall, so the image
+    /// covers the row and its pads. On the cursor row the raw markdown shows
+    /// and the image takes pads below it.
+    image_lines: Vec<Option<usize>>,
     /// Per-line parse cache built in `update()`. Eliminates redundant pulldown-cmark
     /// invocations across `render()`, cursor placement, and click mapping.
     /// Either a Real or Placeholder parse — see [`ParseState`].
@@ -370,6 +389,7 @@ impl EditorDisplay {
             code_box_width: Vec::new(),
             gutter_insets: Vec::new(),
             image_reserves: Vec::new(),
+            image_lines: Vec::new(),
             // Empty buffer, spliceable — preserves the previous
             // `placeholder_active: false` initial state.
             parse_state: ParseState::Real(ParsedBuffer::placeholder(&crate::ropetext::Text::new())),
@@ -489,7 +509,7 @@ impl EditorDisplay {
         let text = self.text_snapshot.clone();
         self.relayout_frontmatter(&text);
         // Likewise the pads: the reserves may have changed since capture.
-        self.relayout_reserved_rows(&text);
+        self.relayout_reserved_rows(&text, &[]);
         // The wrapped layout numbers visual rows differently from the stub, so
         // a detached top would now point somewhere else in the note.
         self.detached = false;
@@ -654,7 +674,93 @@ impl EditorDisplay {
         }
         self.image_reserves = dense;
         let text = self.text_snapshot.clone();
-        self.relayout_reserved_rows(&text);
+        self.relayout_reserved_rows(&text, &[]);
+    }
+
+    /// Name the rows that embed an **Inline image** and how tall each image
+    /// draws, in lines. Rows not named are plain text, so an empty list
+    /// turns every image line back into text. Sticky across frames, in the
+    /// current text's row numbering: call it after each `update`, before
+    /// drawing.
+    ///
+    /// The cursor row decides the rest (**Reveal**): off the cursor row an
+    /// embed row draws nothing and reserves `rows - 1` pad lines, so the image
+    /// takes the row and its pads; on the cursor row the raw markdown shows
+    /// and the row reserves `rows` pad lines below it. An image of zero rows
+    /// (one that cannot be drawn) reserves nothing, and off the cursor row
+    /// its row still draws nothing: the frontend writes its note there.
+    ///
+    /// Only rows whose pads or drawn text changed are laid out again; the
+    /// same lines again cost one pass over the rows and no layout.
+    pub fn set_image_lines(&mut self, lines: &[ImageLine]) {
+        let rows = self.layout.row_count();
+        let mut dense = vec![None; rows];
+        for line in lines {
+            if let Some(entry) = dense.get_mut(line.row) {
+                *entry = Some(line.rows);
+            }
+        }
+        // Unchanged lines still go on: `update` may have moved the cursor,
+        // which moves a pad line between the rows it left and entered.
+        let cursor = self.cursor_snapshot;
+        // `update` built every mask with the lines as they stood, so only a
+        // change of lines can flip one.
+        let concealed_before: Vec<bool> = if dense == self.image_lines {
+            Vec::new()
+        } else {
+            (0..rows).map(|row| self.conceals(row)).collect()
+        };
+        self.image_lines = dense;
+        let reserves: Vec<usize> = self
+            .image_lines
+            .iter()
+            .enumerate()
+            .map(|(row, image)| match *image {
+                Some(n) if row == cursor.0 => n,
+                Some(n) => n.saturating_sub(1),
+                None => 0,
+            })
+            .collect();
+        // The rows whose mask flips between drawn and hidden: their mask is
+        // rebuilt here, as `update` builds it, and their wrap is redone.
+        let text = self.text_snapshot.clone();
+        let mut flipped = vec![false; concealed_before.len()];
+        if self.rendered_cache.len() == rows {
+            for (row, was) in concealed_before.into_iter().enumerate() {
+                if was == self.conceals(row) {
+                    continue;
+                }
+                flipped[row] = true;
+                let line = text.line(row).unwrap_or_default();
+                self.rendered_cache[row] = self.row_mask(row, &line, cursor);
+            }
+        }
+        if reserves == self.image_reserves && !flipped.contains(&true) {
+            return;
+        }
+        self.image_reserves = reserves;
+        self.relayout_reserved_rows(&text, &flipped);
+    }
+
+    /// Whether `row` is an inline image's embed row drawn as nothing: it
+    /// embeds an image and is not the cursor row.
+    fn conceals(&self, row: usize) -> bool {
+        row != self.cursor_snapshot.0 && self.image_lines.get(row).is_some_and(Option::is_some)
+    }
+
+    /// The rendered mask of `row` (its text `line`): which chars draw, by the
+    /// markdown reveal rules, or none at all on a concealed image row.
+    fn row_mask(&self, row: usize, line: &str, cursor: (usize, usize)) -> Vec<bool> {
+        if self.conceals(row) {
+            return vec![false; line.chars().count()];
+        }
+        let cursor_col = (row == cursor.0).then_some(cursor.1);
+        reveal::visible_positions_with(
+            line,
+            &self.parse_state.buf().lines[row],
+            cursor_col,
+            self.is_force_raw(row),
+        )
     }
 
     /// Declare that the edit just performed was a *bulk* one — it changed rows
@@ -1087,16 +1193,7 @@ impl EditorDisplay {
                     self.rendered_cache = text
                         .lines()
                         .enumerate()
-                        .map(|(i, l)| {
-                            let force_raw = self.is_force_raw(i);
-                            let cursor_col = if i == cursor.0 { Some(cursor.1) } else { None };
-                            reveal::visible_positions_with(
-                                &l,
-                                &self.parse_state.buf().lines[i],
-                                cursor_col,
-                                force_raw,
-                            )
-                        })
+                        .map(|(i, l)| self.row_mask(i, &l, cursor))
                         .collect();
                 }
                 RenderedCacheRebuild::Rows(rows) => {
@@ -1104,18 +1201,8 @@ impl EditorDisplay {
                         if row >= row_count {
                             continue; // defensive
                         }
-                        let force_raw = self.is_force_raw(row);
-                        let cursor_col = if row == cursor.0 {
-                            Some(cursor.1)
-                        } else {
-                            None
-                        };
-                        let new_entry = reveal::visible_positions_with(
-                            &text.line(row).unwrap_or_default(),
-                            &self.parse_state.buf().lines[row],
-                            cursor_col,
-                            force_raw,
-                        );
+                        let new_entry =
+                            self.row_mask(row, &text.line(row).unwrap_or_default(), cursor);
                         if let Some(entry) = self.rendered_cache.get_mut(row) {
                             *entry = new_entry;
                         }
@@ -1695,6 +1782,15 @@ impl EditorDisplay {
             .take(height)
             .zip(window.iter())
             .map(|(vl, row_text)| {
+                // An inline image's embed row off the cursor draws nothing:
+                // the frontend paints the image (or its note) there.
+                if self.conceals(vl.logical_row) {
+                    return FrameRow {
+                        logical_row: vl.logical_row,
+                        first: vl.first,
+                        runs: Vec::new(),
+                    };
+                }
                 let cursor_col = if vl.logical_row == cursor.0 {
                     Some(cursor.1)
                 } else {
@@ -1929,14 +2025,15 @@ impl EditorDisplay {
         }
     }
 
-    /// Re-lay every row whose pad lines differ from `image_reserves`, leaving
-    /// every other row alone. Like [`Self::relayout_frontmatter`], a view
+    /// Re-lay every row whose pad lines differ from `image_reserves`, and
+    /// every row `flipped` marks (its rendered mask changed), leaving every
+    /// other row alone. Like [`Self::relayout_frontmatter`], a view
     /// scrolled below a changed row moves by the difference and keeps showing
     /// the same text.
     ///
     /// Skipped while a `Layout::unwrapped` stub is installed: the background
     /// job captured the reserves, and `install_full_layout` comes back here.
-    fn relayout_reserved_rows(&mut self, text: &crate::ropetext::Text) {
+    fn relayout_reserved_rows(&mut self, text: &crate::ropetext::Text, flipped: &[bool]) {
         // Never handed reserves (the TUI): no row can hold a pad.
         if self.image_reserves.is_empty()
             || self.layout_pending.is_some()
@@ -1964,15 +2061,17 @@ impl EditorDisplay {
                 .filter(|h| !h.hidden)
                 .map_or(0, |h| h.reserve)
         };
+        let stale =
+            |row: usize| laid[row] != wanted(row) || flipped.get(row).copied().unwrap_or(false);
         let mut changed = false;
         let mut row = 0;
         while row < rows {
-            if laid[row] == wanted(row) {
+            if !stale(row) {
                 row += 1;
                 continue;
             }
             let start = row;
-            while row < rows && laid[row] != wanted(row) {
+            while row < rows && stale(row) {
                 row += 1;
             }
             let top = self.viewport.top();
@@ -4945,6 +5044,114 @@ mod image_reserve_tests {
         assert_eq!(v.cursor_vrow, 5, "row 2's visual line, after the pads");
         assert!(!v.layout.visual_lines()[v.cursor_vrow].pad);
         assert_eq!(v.frame(40, true).cursor, Some((3, 5)));
+    }
+
+    /// `frame` text of each visual line, top to bottom.
+    fn drawn(v: &EditorDisplay) -> Vec<String> {
+        v.frame(40, true)
+            .rows
+            .iter()
+            .map(super::tests::frame_row_text)
+            .collect()
+    }
+
+    /// One frame of `text` with the cursor at `cursor`, then the image
+    /// lines, as a frontend hands them over. The same `Text` for every frame
+    /// of one revision, as an editor's buffer gives it.
+    fn show(
+        v: &mut EditorDisplay,
+        text: &Text,
+        cursor: (usize, usize),
+        rev: u64,
+        lines: &[ImageLine],
+    ) {
+        let snap = EditorSnapshot::of_buffer(text.clone(), cursor, NonZeroU64::new(rev).unwrap());
+        v.update_sized(&snap, 40, 10);
+        v.set_image_lines(lines);
+    }
+
+    fn note_text() -> Text {
+        Text::from(note().join("\n").as_str())
+    }
+
+    const IMAGE: [ImageLine; 1] = [ImageLine { row: 1, rows: 3 }];
+
+    #[test]
+    fn an_image_line_off_the_cursor_draws_nothing_and_takes_its_row() {
+        let mut v = EditorDisplay::new();
+        show(&mut v, &note_text(), (0, 0), 1, &IMAGE);
+        assert_eq!(
+            shape(&v),
+            [(0, false), (1, false), (1, true), (1, true), (2, false)]
+        );
+        assert_eq!(drawn(&v)[1], "", "the embed text is hidden");
+        assert!(v.rendered_cache[1].iter().all(|shown| !shown));
+        assert_eq!(drawn(&v)[4], "after");
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+    }
+
+    #[test]
+    fn the_cursor_on_an_image_line_shows_the_markdown_and_one_pad_more() {
+        let mut v = EditorDisplay::new();
+        let text = note_text();
+        show(&mut v, &text, (0, 0), 1, &IMAGE);
+        show(&mut v, &text, (1, 0), 1, &IMAGE);
+        assert_eq!(shape(&v), PADDED);
+        assert_eq!(drawn(&v)[1], "![a](x.png)");
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+        // And back off it.
+        show(&mut v, &text, (2, 0), 1, &IMAGE);
+        assert_eq!(drawn(&v)[1], "");
+        assert_eq!(shape(&v).len(), 5);
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+    }
+
+    #[test]
+    fn an_image_that_cannot_draw_hides_its_text_and_reserves_nothing() {
+        let mut v = EditorDisplay::new();
+        let text = note_text();
+        let failed = [ImageLine { row: 1, rows: 0 }];
+        show(&mut v, &text, (0, 0), 1, &failed);
+        assert_eq!(shape(&v), [(0, false), (1, false), (2, false)]);
+        assert_eq!(drawn(&v)[1], "");
+        show(&mut v, &text, (1, 0), 1, &failed);
+        assert_eq!(shape(&v), [(0, false), (1, false), (2, false)]);
+        assert_eq!(drawn(&v)[1], "![a](x.png)");
+    }
+
+    #[test]
+    fn dropping_the_image_lines_draws_the_text_again() {
+        let mut v = EditorDisplay::new();
+        let text = note_text();
+        show(&mut v, &text, (0, 0), 1, &IMAGE);
+        show(&mut v, &text, (0, 0), 1, &[]);
+        assert_eq!(shape(&v), [(0, false), (1, false), (2, false)]);
+        assert_ne!(drawn(&v)[1], "", "styled, as any image link");
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+    }
+
+    #[test]
+    fn an_edit_that_moves_the_image_line_moves_its_room() {
+        let mut v = EditorDisplay::new();
+        show(&mut v, &note_text(), (0, 0), 1, &IMAGE);
+        // The update still holds the old row numbering; the frontend's lines
+        // right after it put the room under the moved row.
+        let edited = Text::from(format!("new\n{}", note().join("\n")).as_str());
+        show(&mut v, &edited, (0, 3), 2, &[ImageLine { row: 2, rows: 3 }]);
+        assert_eq!(
+            shape(&v),
+            [
+                (0, false),
+                (1, false),
+                (2, false),
+                (2, true),
+                (2, true),
+                (3, false)
+            ]
+        );
+        let rows = drawn(&v);
+        assert_eq!((rows[1].as_str(), rows[2].as_str()), ("intro", ""));
+        assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
     }
 
     #[test]

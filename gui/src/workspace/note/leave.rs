@@ -179,6 +179,7 @@ impl Workspace {
             view.editor.mark_saved(String::new());
             view.preedit = None;
             view.input_blocked = false;
+            view.set_image_vault(None, cx);
             cx.notify();
         });
         if group == self.layout.active_group() {

@@ -168,11 +168,14 @@ impl Workspace {
             return;
         };
         let previous = host.note.clone();
+        let vault = host.session.vault().clone();
         let outcome = editor.update(cx, |view, cx| {
             let outcome = host.session.finish_open(read, Some(&mut view.editor), &tx);
             if matches!(outcome, OpenOutcome::Opened(_)) {
                 // A composition in progress belonged to the old text.
                 view.preedit = None;
+                // Its inline images, from a fresh list of the attachments.
+                view.set_image_vault(Some(vault), cx);
                 // After the load, so the new text's revision owns them.
                 if let Some(needles) = emphasis {
                     view.editor.set_search_needles(needles);

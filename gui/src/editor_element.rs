@@ -32,7 +32,7 @@ use kimun_notes::settings::themes::Theme;
 
 use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_size};
 use crate::editor_font;
-use crate::editor_view::{CaretShape, EditorView, Painted};
+use crate::editor_view::{CaretShape, EditorView, ImagePane, Painted};
 use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
@@ -461,6 +461,15 @@ impl Element for EditorElement {
                     view.prepare_counted(cols, rows, self.view.entity_id());
                 }
             } else {
+                // Device pixels, the unit an image's natural size is in.
+                view.prepare_images(
+                    ImagePane {
+                        column_px: f32::from(cols) * cells.width() * scale,
+                        pane_px: f32::from(bounds.size.height) * scale,
+                        row_px: f32::from(line_height) * scale,
+                    },
+                    view_cx,
+                );
                 view.editor.prepare_frame(cols, rows);
             }
             // The bar has the keyboard while open: no caret in the text.

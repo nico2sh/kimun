@@ -72,6 +72,7 @@ use crate::input::ScrollAccumulator;
 use crate::theme;
 
 mod faces;
+mod images;
 mod ime;
 mod keys;
 mod measure;
@@ -80,6 +81,7 @@ mod pointer;
 mod popup;
 mod read_only;
 
+pub(crate) use self::images::ImagePane;
 #[cfg(test)]
 pub(crate) use self::measure::probe as measure_probe;
 pub(crate) use self::measure::{EditStamp, SLACK, line_height, measure_width};
@@ -224,6 +226,10 @@ pub struct EditorView {
     /// The content revision the autocomplete last reconciled with. A buffer
     /// that moved on without us (a note loaded, a reload) closes the popup.
     ac_revision: NonZeroU64,
+    /// The vault the editor draws **Inline image**s from, once its owner
+    /// hands it one ([`Self::set_image_vault`]). `None` in a read-only
+    /// editor, which never draws them.
+    images: Option<images::Images>,
     /// Drains the editor's own channel, when it has one (the tests'
     /// stand-alone `EditorView::new`).
     _messages: Option<Task<()>>,
@@ -359,6 +365,9 @@ impl EditorView {
         self.preedit = None;
         self.painted = None;
         self.row_cache = ShapedRows::default();
+        if let Some(images) = self.images.as_mut() {
+            images.forget_lines();
+        }
     }
 
     fn build(
@@ -401,6 +410,7 @@ impl EditorView {
             row_cache: ShapedRows::default(),
             autocomplete: None,
             ac_revision,
+            images: None,
             _messages: messages,
         }
     }
