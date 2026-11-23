@@ -76,7 +76,7 @@ fn file_lock(path: &Path) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
     let map = LOCKS.get_or_init(Default::default);
     map.lock()
-        .unwrap()
+        .expect("pinned notes lock map poisoned")
         .entry(path.to_path_buf())
         .or_default()
         .clone()
