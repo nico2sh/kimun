@@ -81,12 +81,14 @@ mod pointer;
 mod popup;
 mod read_only;
 
-pub(crate) use self::images::ImagePane;
+pub(crate) use self::images::{ImageDraw, ImageLook, ImagePane};
 #[cfg(test)]
 pub(crate) use self::measure::probe as measure_probe;
 pub(crate) use self::measure::{EditStamp, SLACK, line_height, measure_width};
 #[cfg(test)]
 pub use self::painted::ModeLine;
+#[cfg(test)]
+pub use self::painted::PaintedImage;
 pub use self::painted::{CaretShape, Painted};
 use self::pointer::ClickRun;
 #[cfg(test)]

@@ -55,6 +55,23 @@ pub struct ImageLine {
     pub rows: usize,
 }
 
+/// Where an **Inline image** draws on screen, as
+/// [`EditorDisplay::image_spots`] reports it to the frontend that paints it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageSpot {
+    /// The logical row of the embed line.
+    pub row: usize,
+    /// The first line it takes, counted from the pane's top line: negative
+    /// when it starts above the pane.
+    pub top: isize,
+    /// How many lines it takes: off the cursor row the embed line and its
+    /// pads, on the cursor row the pads under the markdown.
+    pub lines: usize,
+    /// An image that cannot be drawn, off the cursor row: its one-line note
+    /// takes the embed line.
+    pub note: bool,
+}
+
 enum RenderedCacheRebuild {
     Full,
     Rows(Vec<usize>),
@@ -746,6 +763,56 @@ impl EditorDisplay {
     /// embeds an image and is not the cursor row.
     fn conceals(&self, row: usize) -> bool {
         row != self.cursor_snapshot.0 && self.image_lines.get(row).is_some_and(Option::is_some)
+    }
+
+    /// The image lines that draw something in the pane, top to bottom, and
+    /// the lines each one takes. A row the layout hides draws nothing, and
+    /// neither does an image that cannot be drawn on the cursor row (its
+    /// markdown shows, no note).
+    pub fn image_spots(&self) -> Vec<ImageSpot> {
+        let lines = self.layout.visual_lines();
+        let scroll = self.viewport.top();
+        let bottom = scroll + self.viewport.height();
+        let mut spots = Vec::new();
+        for (row, image) in self.image_lines.iter().enumerate() {
+            let Some(rows) = *image else { continue };
+            let Some(start) = self.layout.row_start(row) else {
+                continue;
+            };
+            let own: Vec<(usize, bool)> = lines
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take_while(|(_, l)| l.logical_row == row)
+                .map(|(i, l)| (i, l.pad))
+                .collect();
+            let Some(&(first, _)) = own.first() else {
+                continue;
+            };
+            let concealed = self.conceals(row);
+            let (top, count, note) = if rows == 0 {
+                (first, usize::from(concealed), concealed)
+            } else if concealed {
+                (first, own.len(), false)
+            } else {
+                let pads: Vec<usize> = own
+                    .iter()
+                    .filter(|(_, pad)| *pad)
+                    .map(|(i, _)| *i)
+                    .collect();
+                (pads.first().copied().unwrap_or(first), pads.len(), false)
+            };
+            if count == 0 || top + count <= scroll || top >= bottom {
+                continue;
+            }
+            spots.push(ImageSpot {
+                row,
+                top: top as isize - scroll as isize,
+                lines: count,
+                note,
+            });
+        }
+        spots
     }
 
     /// The rendered mask of `row` (its text `line`): which chars draw, by the
@@ -1783,8 +1850,10 @@ impl EditorDisplay {
             .zip(window.iter())
             .map(|(vl, row_text)| {
                 // An inline image's embed row off the cursor draws nothing:
-                // the frontend paints the image (or its note) there.
-                if self.conceals(vl.logical_row) {
+                // the frontend paints the image (or its note) there. A pad
+                // line draws nothing of its own either (no quote bar, box
+                // fill or highlight): the image covers it.
+                if vl.pad || self.conceals(vl.logical_row) {
                     return FrameRow {
                         logical_row: vl.logical_row,
                         first: vl.first,
@@ -5152,6 +5221,123 @@ mod image_reserve_tests {
         let rows = drawn(&v);
         assert_eq!((rows[1].as_str(), rows[2].as_str()), ("intro", ""));
         assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+    }
+
+    /// A pad line under an embed row on the cursor row (in a blockquote,
+    /// a list item, a code box), with a selection and a zero-width replace
+    /// preview at the row's end: no quote bar, no box fill, no highlight of
+    /// its own.
+    #[test]
+    fn a_pad_line_draws_nothing_of_its_own() {
+        for (src, cursor) in [
+            ("> quote\n> ![a](x.png)\nafter", (1, 3)),
+            ("> quote\n![a](x.png)\nafter", (1, 0)),
+            ("- item\n  ![a](x.png)\nafter", (1, 2)),
+            ("```\n![a](x.png)\n```", (1, 0)),
+        ] {
+            let mut v = EditorDisplay::new();
+            show(&mut v, &Text::from(src), cursor, 1, &IMAGE);
+            let end = src.lines().nth(1).unwrap().chars().count();
+            v.set_overlays(vec![
+                Overlay::new(1, 0, end, OverlayKind::Selection),
+                Overlay::new(1, end, end, OverlayKind::PreviewCurrent),
+            ]);
+            let frame = v.frame(40, true);
+            let pads: Vec<usize> = (0..frame.rows.len())
+                .filter(|&r| v.layout.visual_lines()[r].pad)
+                .collect();
+            assert_eq!(pads, [2, 3, 4], "{src:?}");
+            assert!(!frame.rows[1].runs.is_empty(), "the embed row draws");
+            for r in pads {
+                assert!(
+                    frame.rows[r].runs.is_empty(),
+                    "{src:?}: pad line {r} draws {:?}",
+                    frame.rows[r].runs
+                );
+            }
+        }
+    }
+
+    fn spots(v: &EditorDisplay) -> Vec<ImageSpot> {
+        v.image_spots()
+    }
+
+    #[test]
+    fn an_image_off_the_cursor_takes_its_row_and_its_pads() {
+        let mut v = EditorDisplay::new();
+        show(&mut v, &note_text(), (0, 0), 1, &IMAGE);
+        assert_eq!(
+            spots(&v),
+            [ImageSpot {
+                row: 1,
+                top: 1,
+                lines: 3,
+                note: false
+            }]
+        );
+    }
+
+    #[test]
+    fn an_image_on_the_cursor_takes_the_pads_under_its_markdown() {
+        let mut v = EditorDisplay::new();
+        show(&mut v, &note_text(), (1, 0), 1, &IMAGE);
+        assert_eq!(
+            spots(&v),
+            [ImageSpot {
+                row: 1,
+                top: 2,
+                lines: 3,
+                note: false
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failed_image_has_a_note_off_the_cursor_only() {
+        let mut v = EditorDisplay::new();
+        let failed = [ImageLine { row: 1, rows: 0 }];
+        show(&mut v, &note_text(), (0, 0), 1, &failed);
+        assert_eq!(
+            spots(&v),
+            [ImageSpot {
+                row: 1,
+                top: 1,
+                lines: 1,
+                note: true
+            }]
+        );
+        show(&mut v, &note_text(), (1, 0), 1, &failed);
+        assert_eq!(spots(&v), []);
+    }
+
+    #[test]
+    fn image_spots_are_the_ones_on_screen_relative_to_its_top() {
+        let mut lines: Vec<String> = (0..40).map(|i| format!("row {i}")).collect();
+        lines[2] = "![a](x.png)".to_string();
+        lines[30] = "![b](y.png)".to_string();
+        let text = Text::from(lines.join("\n").as_str());
+        let images = [
+            ImageLine { row: 2, rows: 3 },
+            ImageLine { row: 30, rows: 3 },
+        ];
+        let mut v = EditorDisplay::new();
+        show(&mut v, &text, (0, 0), 1, &images);
+        // A 10-line pane at the top: only `a`.
+        assert_eq!(spots(&v).iter().map(|s| s.row).collect::<Vec<_>>(), [2]);
+        // Scrolled three lines: `a` starts above the pane, still in view.
+        v.viewport.scroll_by(&v.layout, 3);
+        assert_eq!(
+            spots(&v),
+            [ImageSpot {
+                row: 2,
+                top: -1,
+                lines: 3,
+                note: false
+            }]
+        );
+        // Scrolled past it: nothing.
+        v.viewport.scroll_by(&v.layout, 2);
+        assert_eq!(spots(&v), []);
     }
 
     #[test]

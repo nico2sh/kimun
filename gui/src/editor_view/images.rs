@@ -2,7 +2,9 @@
 //! image, which file each one draws, and how many lines it takes. The lines
 //! go to the editor session ([`EditorSession::set_image_lines`]), whose
 //! display reserves the room and hides the embed text off the cursor row.
-//! This module paints nothing.
+//! After the frame is laid out, [`EditorView::image_draws`] says what each
+//! image on screen draws (its pixels, an empty box while they decode, or a
+//! failed image's note); the editor element paints it.
 //!
 //! Only an editor that edits draws images, once its owner hands it the vault
 //! ([`EditorView::set_image_vault`]); a read-only editor (a facet view's
@@ -11,21 +13,26 @@
 //! revision, the note, the pane, the images' states) and finds the embeds
 //! again only when it changed. The cursor row is the display's concern.
 //!
+//! Pixels are decoded only for the images on screen, each time the set of
+//! images on screen changes (a note opens, a scroll or a resize brings one
+//! in). A decode that lands never asks for another, so two images over the
+//! cache budget cannot evict each other forever.
+//!
 //! [`EditorSession::set_image_lines`]: kimun_notes::logic::editor::session::EditorSession::set_image_lines
 
-use std::collections::HashSet;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::{App, AppContext as _, Context, Task, WeakEntity};
+use gpui_kit::{App, AppContext as _, Context, RenderImage, SharedString, Task, WeakEntity};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::{image_embeds, resolve_image_embed};
+use kimun_core::note::scan::link_target_filename;
+use kimun_core::note::{ImageEmbed, image_embeds, resolve_image_embed};
 use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
-use crate::inline_image::{ImageState, ImageStore, fit, rows_for};
+use crate::inline_image::{Failure, ImageState, ImageStore, fit, rows_for};
 
 /// The room an image is fitted to, in device pixels (the unit of
 /// [`fit`]): the text column's width, the pane's height (`fit` takes 60% of
@@ -35,6 +42,66 @@ pub(crate) struct ImagePane {
     pub(crate) column_px: f32,
     pub(crate) pane_px: f32,
     pub(crate) row_px: f32,
+}
+
+/// One embed line, as found with the lines: what it draws and how it is
+/// named.
+#[derive(Clone, Debug)]
+struct Embed {
+    row: usize,
+    /// The file it draws, when it resolved to one.
+    file: Option<PathBuf>,
+    /// The file name as written (the embed target's last part).
+    name: String,
+    /// The alt text of `![alt](path)`; empty for `![[name]]`.
+    alt: String,
+}
+
+impl Embed {
+    fn of(embed: &ImageEmbed, file: Option<PathBuf>) -> Self {
+        let target = embed.target.trim_start_matches('<').trim_end_matches('>');
+        Self {
+            row: embed.row,
+            file,
+            name: link_target_filename(target).to_string(),
+            alt: embed.alt.clone(),
+        }
+    }
+
+    /// The hover text: the alt text, or the file name without one.
+    fn tip(&self) -> SharedString {
+        if self.alt.is_empty() {
+            self.name.clone().into()
+        } else {
+            self.alt.clone().into()
+        }
+    }
+}
+
+/// What one image on screen draws, in the lines the display gave it.
+#[derive(Clone)]
+pub(crate) struct ImageDraw {
+    /// The embed's logical row.
+    pub(crate) row: usize,
+    /// The first line it takes, from the pane's top line (negative above
+    /// it), and how many.
+    pub(crate) top: isize,
+    pub(crate) lines: usize,
+    pub(crate) look: ImageLook,
+    /// What the pointer over it shows: the alt text, else the file name.
+    pub(crate) tip: SharedString,
+}
+
+/// How an image on screen looks.
+#[derive(Clone)]
+pub(crate) enum ImageLook {
+    /// Its pixels, at the fitted size (device pixels).
+    Ready(Arc<RenderImage>, (f32, f32)),
+    /// An empty box of the fitted size: the pixels are not decoded (yet, or
+    /// any more).
+    Pending((f32, f32)),
+    /// A one-line note in the embed line: the image cannot be drawn.
+    Note(String),
 }
 
 /// What a set of image lines was found for. The same key again finds the
@@ -60,11 +127,14 @@ pub(super) struct Images {
     _listing: Option<Task<()>>,
     key: Option<Key>,
     epoch: u64,
-    /// The files this editor asked to decode, since the vault was handed in
-    /// (a note opened). Each is asked once: an image the cache later drops
-    /// to stay under its budget is not decoded again, or two images over
-    /// the budget would evict each other and decode forever.
-    requested: HashSet<PathBuf>,
+    /// The embeds the lines were found from, by row.
+    embeds: Vec<Embed>,
+    /// The image files on screen at the last frame. Their decodes are asked
+    /// for when this set changes, never when a decode lands: an image the
+    /// cache drops to stay under its budget is decoded again only when the
+    /// screen changes, so two images over the budget cannot evict each other
+    /// forever.
+    visible: Vec<PathBuf>,
 }
 
 impl Images {
@@ -76,7 +146,8 @@ impl Images {
             _listing: None,
             key: None,
             epoch: 0,
-            requested: HashSet::new(),
+            embeds: Vec::new(),
+            visible: Vec::new(),
         }
     }
 
@@ -152,24 +223,80 @@ impl EditorView {
             return;
         }
         images.key = Some(key);
-        let lines = match (&note, &images.attachments) {
+        images.embeds = match (&note, &images.attachments) {
             (Some(note), Some(attachments)) => {
-                let attachments = attachments.clone();
-                image_lines(
-                    &self.editor.get_text(),
-                    note,
-                    &attachments,
-                    images,
-                    pane,
-                    cx.weak_entity(),
-                    cx,
-                )
+                embeds(&self.editor.get_text(), note, attachments, &images.vault)
             }
             // Until the attachments are listed no embed resolves: the lines
             // stay text rather than flash "not found".
             _ => Vec::new(),
         };
+        let lines = image_lines(&images.embeds, pane, cx);
         self.editor.session_mut().set_image_lines(lines);
+    }
+
+    /// After the frame is laid out: what each image on screen draws, sized
+    /// for `pane`. When the set of images on screen changed since the last
+    /// frame, the decode of each one not decoded is asked for.
+    pub(crate) fn image_draws(
+        &mut self,
+        pane: ImagePane,
+        cx: &mut Context<Self>,
+    ) -> Vec<ImageDraw> {
+        let Some(images) = self.images.as_mut() else {
+            return Vec::new();
+        };
+        let spots = self.editor.session().display.image_spots();
+        let mut store = cx.default_global::<ImageStore>().clone();
+        let mut visible = Vec::new();
+        let mut draws = Vec::new();
+        for spot in spots {
+            let Some(embed) = images.embeds.iter().find(|e| e.row == spot.row) else {
+                continue;
+            };
+            let state = embed.file.as_ref().map(|file| store.size_of(file));
+            let fitted = |natural| fit(natural, pane.column_px, pane.pane_px);
+            let look = match state {
+                _ if spot.note => {
+                    let failure = match state {
+                        Some(ImageState::Failed(failure)) => failure,
+                        _ => Failure::Missing,
+                    };
+                    ImageLook::Note(failure.note(&embed.name, &embed.alt))
+                }
+                Some(ImageState::Ready(image, width, height)) => {
+                    ImageLook::Ready(image, fitted((width, height)))
+                }
+                Some(ImageState::Sized { width, height }) => {
+                    ImageLook::Pending(fitted((width, height)))
+                }
+                // It failed since the lines were found: they are found again
+                // at the next frame.
+                Some(ImageState::Failed(_)) | None => continue,
+            };
+            if let (ImageLook::Ready(..) | ImageLook::Pending(_), Some(file)) = (&look, &embed.file)
+                && !visible.contains(file)
+            {
+                visible.push(file.clone());
+            }
+            draws.push(ImageDraw {
+                row: spot.row,
+                top: spot.top,
+                lines: spot.lines,
+                look,
+                tip: embed.tip(),
+            });
+        }
+        if visible != images.visible {
+            let view = cx.weak_entity();
+            for file in &visible {
+                if matches!(store.size_of(file), ImageState::Sized { .. }) {
+                    store.request(file, cx, on_decoded(view.clone(), file.clone()));
+                }
+            }
+            images.visible = visible;
+        }
+        draws
     }
 }
 
@@ -190,41 +317,42 @@ fn on_decoded(view: WeakEntity<EditorView>, file: PathBuf) -> impl FnOnce(&mut A
     }
 }
 
-/// The image lines of `text`, the note at `note`: each whole-line embed,
-/// resolved against `attachments` and sized from its file's header. An
-/// image not decoded yet, and never asked for by this editor
-/// (`images.requested`), is asked for now. `view` redraws when its pixels
-/// land.
-fn image_lines(
+/// The whole-line embeds of `text`, the note at `note`, each resolved
+/// against `attachments`.
+fn embeds(
     text: &str,
     note: &VaultPath,
     attachments: &[VaultPath],
-    images: &mut Images,
-    pane: ImagePane,
-    view: WeakEntity<EditorView>,
-    cx: &mut App,
-) -> Vec<ImageLine> {
+    vault: &NoteVault,
+) -> Vec<Embed> {
     // Most notes embed nothing: skip the scan.
     if !text.contains("![") {
         return Vec::new();
     }
-    let mut store = cx.default_global::<ImageStore>().clone();
     image_embeds(text)
-        .into_iter()
+        .iter()
         .map(|embed| {
-            let file = resolve_image_embed(&embed, note, attachments)
-                .map(|found| images.vault.path_to_pathbuf(&found));
-            let natural = match file.as_ref().map(|file| (file, store.size_of(file))) {
-                Some((file, ImageState::Sized { width, height })) => {
-                    if images.requested.insert(file.clone()) {
-                        store.request(file, cx, on_decoded(view.clone(), file.clone()));
-                    }
+            let file = resolve_image_embed(embed, note, attachments)
+                .map(|found| vault.path_to_pathbuf(&found));
+            Embed::of(embed, file)
+        })
+        .collect()
+}
+
+/// The image line of each embed, sized from its file's header. Nothing is
+/// decoded here: [`EditorView::image_draws`] asks for the images on screen.
+fn image_lines(embeds: &[Embed], pane: ImagePane, cx: &mut App) -> Vec<ImageLine> {
+    let mut store = cx.default_global::<ImageStore>().clone();
+    embeds
+        .iter()
+        .map(|embed| {
+            let natural = match embed.file.as_ref().map(|file| store.size_of(file)) {
+                Some(ImageState::Sized { width, height } | ImageState::Ready(_, width, height)) => {
                     Some((width, height))
                 }
-                Some((_, ImageState::Ready(_, width, height))) => Some((width, height)),
                 // Missing, not an image, undecodable, too large: no room,
                 // the note takes the embed line.
-                Some((_, ImageState::Failed(_))) | None => None,
+                Some(ImageState::Failed(_)) | None => None,
             };
             let rows = natural.map_or(0, |natural| {
                 let (_, height) = fit(natural, pane.column_px, pane.pane_px);

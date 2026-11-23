@@ -200,6 +200,22 @@ pub fn muted(theme: &Theme) -> Rgba {
         .unwrap_or(text)
 }
 
+/// The note that stands in for an inline image that cannot be drawn: muted
+/// text, secondary to the note's own text.
+pub fn image_note(theme: &Theme) -> Rgba {
+    muted(theme)
+}
+
+/// How far the text is mixed into the page for an image's empty box.
+const IMAGE_PLACEHOLDER_MIX: f32 = 0.08;
+
+/// The empty box an inline image takes while its pixels decode: the text
+/// faintly over the editor's page, so the room shows without a border or a
+/// glyph, in every theme.
+pub fn image_placeholder(theme: &Theme) -> Rgba {
+    mix_rgba(background(theme), foreground(theme), IMAGE_PLACEHOLDER_MIX)
+}
+
 /// A problem the user has to act on (no match, an invalid regex, the armed
 /// replace-all confirm): the TUI find bar's `red`.
 pub fn error(theme: &Theme) -> Rgba {
@@ -825,6 +841,23 @@ mod tests {
                 "{}: {ratio:.2} under {target:.2}",
                 t.name
             );
+        }
+    }
+
+    /// An image's empty box shows against the editor's page in every theme,
+    /// yet stays quieter than the text; a failed image's note is muted text.
+    #[test]
+    fn the_image_placeholder_shows_on_the_page_in_every_builtin_theme() {
+        for t in Theme::builtins() {
+            let page = background(&t);
+            let fill = image_placeholder(&t);
+            assert_ne!(fill, page, "{}", t.name);
+            assert!(
+                contrast(fill, page) < contrast(foreground(&t), page),
+                "{}",
+                t.name
+            );
+            assert_eq!(image_note(&t), muted(&t));
         }
     }
 

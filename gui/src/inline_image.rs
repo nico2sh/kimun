@@ -42,10 +42,6 @@ pub enum Failure {
 
 impl Failure {
     /// The one-line note that stands in for the image.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the inline image painter writes it (next step)")
-    )]
     pub fn note(&self, name: &str, alt: &str) -> String {
         let head = match self {
             Failure::Missing => "image not found",
@@ -63,13 +59,6 @@ impl Failure {
 
 /// What we know about an image right now.
 #[derive(Clone)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the inline image painter reads the image and the failure (next step)"
-    )
-)]
 pub enum ImageState {
     /// The natural size is known; the pixels are not decoded yet.
     Sized {
