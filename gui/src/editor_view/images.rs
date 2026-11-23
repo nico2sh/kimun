@@ -47,6 +47,7 @@ use super::EditorView;
 use crate::attachment_index::AttachmentIndex;
 use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, natural_of};
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
+use crate::remote_image::RemoteImages;
 
 /// Fills a kit menu with the **Entry menu** of the attachment at a path:
 /// what a right press on an inline image opens. The editor's owner builds
@@ -382,13 +383,19 @@ impl EditorView {
         }
         let limit = images.source.as_ref().map(|_| READ_ONLY_EMBEDS);
         images.embeds = match (&note, &images.attachments) {
-            (Some(note), Some(attachments)) => embeds_of(
-                &self.editor.get_text(),
-                note,
-                attachments,
-                &images.vault,
-                limit,
-            ),
+            (Some(note), Some(attachments)) => {
+                let mut embeds = embeds_of(
+                    &self.editor.get_text(),
+                    note,
+                    attachments,
+                    &images.vault,
+                    limit,
+                );
+                // The editor does not draw remote embeds yet: their lines
+                // stay text.
+                embeds.retain(|embed| embed.remote.is_none());
+                embeds
+            }
             // Until the attachments are listed no embed resolves: the lines
             // stay text rather than flash "not found".
             _ => Vec::new(),
@@ -561,10 +568,11 @@ fn on_decoded(view: WeakEntity<EditorView>, file: PathBuf) -> impl FnOnce(&mut A
 /// decoded here: [`EditorView::image_draws`] asks for the images on screen.
 fn image_lines(embeds: &[Embed], pane: ImagePane, cx: &mut App) -> Vec<ImageLine> {
     let mut store = cx.default_global::<ImageStore>().clone();
+    let remote = cx.default_global::<RemoteImages>().clone();
     embeds
         .iter()
         .map(|embed| {
-            let natural = natural_of(embed, &mut store);
+            let natural = natural_of(embed, &mut store, &remote);
             let rows = natural.map_or(0, |natural| {
                 let (_, height) = fit(natural, pane.column_px, pane.pane_px);
                 rows_for(height, pane.row_px)
