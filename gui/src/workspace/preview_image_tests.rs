@@ -1185,3 +1185,63 @@ fn a_refresh_does_not_reload_the_preview_every_frame(cx: &mut TestAppContext) {
     assert!(cx.read(|cx| !view.read(cx).is_pending()));
     until_ready(&s, &view, &rt, cx);
 }
+
+#[gpui_kit::test]
+fn a_new_selection_during_a_reread_lands_at_its_own_first_match(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    // `m.md` holds its match far down, so a place taken from `n.md` shows.
+    let filler: String = (0..150).map(|i| format!("line {i}\n")).collect();
+    let far = format!("{filler}the needle\n{filler}");
+    let (_v, s) = started_with(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("n.md", SLICED), ("m.md", &far)],
+        &[("pic.png", png(10, 60))],
+    );
+    search(&s, &rt, "needle", cx);
+    let view = preview(&s, cx);
+    // Select `n.md`, the note with an image, whichever row it is.
+    for _ in 0..3 {
+        settle(&s, &rt, cx);
+        let on_n = cx
+            .read(|cx| view.read(cx).shown())
+            .is_some_and(|(p, _)| p.is_like(&path("n.md")));
+        if on_n {
+            break;
+        }
+        press(&s, "down", cx);
+    }
+    settle(&s, &rt, cx);
+    let shown = cx.read(|cx| view.read(cx).shown());
+    assert!(shown.is_some_and(|(p, _)| p.is_like(&path("n.md"))));
+    // The refresh starts a re-read of `n.md`; the selection moves on before
+    // it lands.
+    let before = reads(&view, cx);
+    reactivate(&s, cx);
+    frame(&s, cx);
+    assert!(cx.read(|cx| view.read(cx).is_pending()), "the re-read runs");
+    assert_eq!(reads(&view, cx), before + 1);
+    press(&s, "down", cx);
+    settle(&s, &rt, cx);
+    let shown = cx.read(|cx| view.read(cx).shown());
+    if !shown.is_some_and(|(p, _)| p.is_like(&path("m.md"))) {
+        press(&s, "up", cx);
+        settle(&s, &rt, cx);
+    }
+    let shown = cx.read(|cx| view.read(cx).shown());
+    assert!(
+        shown
+            .as_ref()
+            .is_some_and(|(p, current)| p.is_like(&path("m.md")) && *current),
+        "{shown:?}"
+    );
+    let (first_hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+    assert_eq!(first_hit, Some(150));
+    let rows = cx.read(|cx| view.read(cx).row_lines()).len();
+    let top = top_row(&s, rows, cx);
+    assert!(
+        top > 100 && top <= 150,
+        "its own first match in view, not n.md's place: top row {top}"
+    );
+}
