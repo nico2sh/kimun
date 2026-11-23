@@ -6,7 +6,7 @@
 //! loader reads the format from the file name.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use twox_hash::XxHash64;
 
@@ -25,6 +25,10 @@ const EXTENSIONS: [&str; 4] = ["png", "jpg", "gif", "webp"];
 
 /// The seed of the address hash. Fixed, so a name is stable across runs.
 const HASH_SEED: u64 = 42;
+
+/// How old a temporary file must be before eviction removes it. A younger one
+/// can belong to a save that is between its write and its rename.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// The extension of an image format, read from the first bytes: `png`, `jpg`,
 /// `gif` or `webp`. `None` for any other data.
@@ -142,7 +146,7 @@ impl ImageCache {
             return Ok(());
         }
         for entry in read_dir(&self.root)? {
-            if is_temporary(entry.as_path()) {
+            if is_temporary(entry.as_path()) && is_stale(entry.as_path()) {
                 remove_file(entry.as_path())?;
             }
         }
@@ -190,6 +194,15 @@ struct Copy {
 
 fn is_temporary(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "tmp")
+}
+
+/// Whether a temporary file is old enough that no save can still own it.
+fn is_stale(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age >= STALE_TEMP_AGE)
 }
 
 #[cfg(test)]
@@ -296,8 +309,34 @@ mod tests {
         std::fs::write(&stray, png(b"half")).unwrap();
         assert!(c.find("https://a.com/x.png").is_none());
         assert_eq!(c.size(), 0);
+        age(&stray, 2 * 60 * 60);
         c.evict_to(u64::MAX, Path::new("")).unwrap();
         assert!(!stray.exists());
+    }
+
+    #[test]
+    fn eviction_keeps_a_fresh_temporary_file_and_removes_an_old_one() {
+        let (_d, c) = cache();
+        c.save("https://a.com/x.png", &png(b"1")).unwrap();
+        let fresh = c.root().join("aaaa.png.1.0.tmp").into_path_buf();
+        let old = c.root().join("bbbb.png.1.1.tmp").into_path_buf();
+        std::fs::write(&fresh, b"in flight").unwrap();
+        std::fs::write(&old, b"abandoned").unwrap();
+        age(&old, 2 * 60 * 60);
+        c.evict_to(u64::MAX, Path::new("")).unwrap();
+        assert!(fresh.exists());
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_new_format_for_one_address_replaces_the_old_copy() {
+        let (_d, c) = cache();
+        c.save("https://a.com/x", &png(b"1")).unwrap();
+        let jpg = c
+            .save("https://a.com/x", &[0xFF, 0xD8, 0xFF, 0xE0])
+            .unwrap();
+        assert_eq!(names(&c).len(), 1);
+        assert_eq!(c.find("https://a.com/x").unwrap(), jpg);
     }
 
     #[test]
