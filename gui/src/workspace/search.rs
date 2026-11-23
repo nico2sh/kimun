@@ -24,6 +24,13 @@
 //! for no selection. The preview is a cached view: typing or
 //! moving the selection does not rebuild it until its own state changes.
 //!
+//! **Images.** An embed line (an **Inline image**, CONTEXT.md) is followed
+//! by fixed-height image rows, so the list stays uniform; it keeps its raw
+//! text above them only when it holds a match (the Source reader: when it
+//! lies in the marked section). The read waits for the vault's shared
+//! attachment list ([`AttachmentIndex`]) and reads each image's header with
+//! the note; a re-wrap at another width or height reads no file.
+//!
 //! **Opening.** Enter (or a double-click: a click only selects, the
 //! preview follows) on a note opens it with the
 //! query's needles emphasised in the editor (cleared by the first edit).
@@ -46,6 +53,7 @@
 //! note` if it cannot be read (the TUI's words).
 
 use std::ops::Range;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -74,7 +82,10 @@ use super::attachment::expand_tabs;
 use super::files::ellipsis;
 use super::modal::{self, ModalKind, Slot};
 use super::note::{Closing, flush_problem};
+use crate::attachment_index::AttachmentIndex;
 use crate::grid::CellMetrics;
+use crate::image_core::{Embed, ImagePane, embeds_of, natural_of};
+use crate::inline_image::{Failure, ImageState, ImageStore, fit, rows_for};
 use crate::theme;
 
 /// Element ids, for tests.
@@ -95,6 +106,13 @@ const LINE_REMS: f32 = 1.375;
 /// The columns a note is wrapped to before the pane has been measured (the
 /// first frame); the measured width re-wraps it.
 const FALLBACK_COLUMNS: usize = 80;
+/// The room images are fitted to before the pane has been measured; the
+/// measured one re-wraps a note with images.
+const FALLBACK_PANE: ImagePane = ImagePane {
+    column_px: 640.0,
+    pane_px: 600.0,
+    row_px: 22.0,
+};
 /// What the Source reader says while its note is read, and when it cannot
 /// be (the TUI's words).
 pub(crate) const READER_LOADING: &str = "loading…";
@@ -125,49 +143,203 @@ pub(crate) struct SectionMark {
 struct NoteLine {
     text: String,
     hits: Vec<(usize, usize)>,
+    /// The line's bytes in the note as read (before the tabs widen).
+    span: Range<usize>,
 }
 
-/// One wrapped row as the preview draws it: a piece of a note line.
+/// What a preview row shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RowKind {
+    /// A piece of the note line's text.
+    Text,
+    /// Slice `index` (one row high) of image `image` of [`Wrapped::images`].
+    Image { image: usize, index: usize },
+    /// The one-line note of image `image`, which cannot be drawn.
+    Note { image: usize },
+}
+
+/// One wrapped row as the preview draws it: a piece of a note line, or one
+/// row of an image under its embed line.
 struct PreviewRow {
     /// The note line it is a piece of, and the piece's first byte there.
+    /// An image row sorts after its line's text: its `start` is the line's
+    /// length plus its index plus one.
     line: usize,
     start: usize,
+    /// Empty for an image row or a note row.
     text: SharedString,
     /// The needle matches in this piece (a match across a row edge is cut).
     hits: Vec<Range<usize>>,
+    kind: RowKind,
+}
+
+/// An image the rows draw (an **Inline image**, CONTEXT.md).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PreviewImage {
+    /// The attachment's file, when the embed resolved.
+    pub(crate) file: Option<PathBuf>,
+    /// The file name as written, and the alt text.
+    pub(crate) name: String,
+    pub(crate) alt: String,
+    /// The size it is drawn at, in device pixels.
+    pub(crate) fitted: (f32, f32),
+    /// Its image rows (0 for one that cannot be drawn), the first of them.
+    pub(crate) rows: usize,
+    pub(crate) first_row: usize,
+    /// Why it cannot be drawn: its one row is a [`RowKind::Note`].
+    pub(crate) failed: Option<Failure>,
+}
+
+/// Which embed lines keep their raw text above their image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RawRule {
+    /// A line holding a needle match (the Preview pane).
+    Hits,
+    /// A line inside this byte range of the note: the marked section (the
+    /// Source reader).
+    Section(Range<usize>),
+}
+
+impl RawRule {
+    fn shows_raw(&self, line: &NoteLine) -> bool {
+        match self {
+            RawRule::Hits => !line.hits.is_empty(),
+            RawRule::Section(range) => line.span.start < range.end && range.start < line.span.end,
+        }
+    }
+}
+
+/// What a wrap needs to lay out a note's images, found once as the note is
+/// read: a re-wrap at another width or height reads no file.
+#[derive(Clone, Debug)]
+pub(crate) struct ImagePlan {
+    /// The embeds of the (capped) text, at most [`PREVIEW_EMBEDS`].
+    pub(crate) embeds: Vec<Embed>,
+    /// Each embed's natural size from its file's header; `None` when it
+    /// cannot be drawn, and then why in `failures`.
+    pub(crate) naturals: Vec<Option<(u32, u32)>>,
+    pub(crate) failures: Vec<Option<Failure>>,
+    /// The room the images are fitted to.
+    pub(crate) pane: ImagePane,
+    pub(crate) raw: RawRule,
+}
+
+impl ImagePlan {
+    /// No images: the rows are the text's alone.
+    fn none(pane: ImagePane) -> Self {
+        Self {
+            embeds: Vec::new(),
+            naturals: Vec::new(),
+            failures: Vec::new(),
+            pane,
+            raw: RawRule::Hits,
+        }
+    }
 }
 
 /// The note's lines wrapped to a column count.
 struct Wrapped {
     columns: usize,
+    /// The room its images are fitted to.
+    pane: ImagePane,
     rows: Vec<PreviewRow>,
     /// The row holding the first match, scrolled to when the preview lands.
     first_hit: Option<usize>,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the image rows are painted from the next task")
+    )]
+    images: Vec<PreviewImage>,
 }
 
-/// `lines` wrapped to `columns`, the row of `first_match` (line, byte)
-/// found. Pure; runs on tokio.
-fn wrap_lines(lines: &[NoteLine], columns: usize, first_match: Option<(usize, usize)>) -> Wrapped {
+/// `lines` wrapped to `columns`, each embed line of `images` followed by
+/// its image's rows (or the one note row of an image that cannot be drawn)
+/// and keeping its own text rows only where `images.raw` says; the row of
+/// `first_match` (line, byte) found. Pure; runs on tokio.
+fn wrap_lines(
+    lines: &[NoteLine],
+    columns: usize,
+    first_match: Option<(usize, usize)>,
+    images: &ImagePlan,
+) -> Wrapped {
     let mut rows = Vec::with_capacity(lines.len());
+    let mut drawn = Vec::new();
+    // The embeds come in line order.
+    let mut embeds = images.embeds.iter().enumerate().peekable();
     for (i, line) in lines.iter().enumerate() {
-        for range in wrap_ranges(&line.text, columns) {
-            let hits = split_ranges(&line.hits, range.clone())
-                .into_iter()
-                .map(|(start, end)| start..end)
-                .collect();
-            rows.push(PreviewRow {
-                line: i,
-                start: range.start,
-                text: line.text[range].to_string().into(),
-                hits,
-            });
+        while embeds.next_if(|(_, embed)| embed.row < i).is_some() {}
+        let Some((e, embed)) = embeds.next_if(|(_, embed)| embed.row == i) else {
+            push_text_rows(&mut rows, i, line, columns);
+            continue;
+        };
+        let raw = images.raw.shows_raw(line);
+        if raw {
+            push_text_rows(&mut rows, i, line, columns);
         }
+        let image = drawn.len();
+        let mut drawn_image = PreviewImage {
+            file: embed.file.clone(),
+            name: embed.name.clone(),
+            alt: embed.alt.clone(),
+            fitted: (0.0, 0.0),
+            rows: 0,
+            first_row: rows.len(),
+            failed: None,
+        };
+        match images.naturals.get(e).copied().flatten() {
+            Some(natural) => {
+                let pane = images.pane;
+                drawn_image.fitted = fit(natural, pane.column_px, pane.pane_px);
+                drawn_image.rows = rows_for(drawn_image.fitted.1, pane.row_px);
+                let end = line.text.len();
+                rows.extend((0..drawn_image.rows).map(|index| PreviewRow {
+                    line: i,
+                    start: end + index + 1,
+                    text: SharedString::default(),
+                    hits: Vec::new(),
+                    kind: RowKind::Image { image, index },
+                }));
+            }
+            // The raw text says it all: nothing is added.
+            None if raw => continue,
+            None => {
+                let failure = images.failures.get(e).copied().flatten();
+                drawn_image.failed = Some(failure.unwrap_or(Failure::Missing));
+                rows.push(PreviewRow {
+                    line: i,
+                    start: 0,
+                    text: SharedString::default(),
+                    hits: Vec::new(),
+                    kind: RowKind::Note { image },
+                });
+            }
+        }
+        drawn.push(drawn_image);
     }
     let first_hit = first_match.map(|(line, at)| row_of(&rows, line, at));
     Wrapped {
         columns,
+        pane: images.pane,
         rows,
         first_hit,
+        images: drawn,
+    }
+}
+
+/// The text rows of note line `i`, wrapped to `columns`.
+fn push_text_rows(rows: &mut Vec<PreviewRow>, i: usize, line: &NoteLine, columns: usize) {
+    for range in wrap_ranges(&line.text, columns) {
+        let hits = split_ranges(&line.hits, range.clone())
+            .into_iter()
+            .map(|(start, end)| start..end)
+            .collect();
+        rows.push(PreviewRow {
+            line: i,
+            start: range.start,
+            text: line.text[range].to_string().into(),
+            hits,
+            kind: RowKind::Text,
+        });
     }
 }
 
@@ -184,6 +356,9 @@ pub(crate) struct PreviewText {
     name: SharedString,
     /// Kept to re-wrap when the pane's width changes (no re-read).
     lines: Arc<[NoteLine]>,
+    /// Kept to re-wrap the images when the pane's width or height changes
+    /// (no file read).
+    plan: ImagePlan,
     wrapped: Wrapped,
     /// How many needle matches the lines hold.
     matches: usize,
@@ -197,6 +372,15 @@ pub(crate) struct PreviewText {
     #[cfg(test)]
     section: Option<Range<usize>>,
     source: Option<Arc<str>>,
+}
+
+impl PreviewText {
+    /// Whether the rows are wrapped to `columns` and, for a note with
+    /// images, fitted to `pane` (a note without any ignores the height).
+    fn wrapped_for(&self, columns: usize, pane: ImagePane) -> bool {
+        self.wrapped.columns == columns
+            && (self.plan.embeds.is_empty() || self.wrapped.pane == pane)
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +411,98 @@ impl PreviewText {
     pub(crate) fn section(&self) -> Option<Range<usize>> {
         self.section.clone()
     }
+
+    /// What each wrapped row shows.
+    pub(crate) fn kinds(&self) -> Vec<RowKind> {
+        self.wrapped.rows.iter().map(|r| r.kind).collect()
+    }
+
+    /// The note line each wrapped row belongs to.
+    pub(crate) fn row_lines(&self) -> Vec<usize> {
+        self.wrapped.rows.iter().map(|r| r.line).collect()
+    }
+
+    /// The images the rows draw.
+    pub(crate) fn images(&self) -> &[PreviewImage] {
+        &self.wrapped.images
+    }
+
+    /// The row showing byte `at` of note line `line`.
+    pub(crate) fn row_at(&self, line: usize, at: usize) -> usize {
+        row_of(&self.wrapped.rows, line, at)
+    }
+
+    /// Wrap again to `columns` and `pane`, as the preview's re-wrap does.
+    pub(crate) fn rewrap_at(&mut self, columns: usize, pane: ImagePane) {
+        let mut plan = self.plan.clone();
+        plan.pane = pane;
+        self.wrapped = wrap_lines(&self.lines, columns, self.first_match, &plan);
+        self.plan = plan;
+    }
+}
+
+/// The most embeds of one note the preview draws.
+const PREVIEW_EMBEDS: usize = 100;
+
+#[cfg(test)]
+thread_local! {
+    /// Image headers read on this thread (tests: a re-wrap reads none).
+    static HEADER_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Image headers read on this thread so far (tests).
+#[cfg(test)]
+pub(crate) fn header_reads() -> usize {
+    HEADER_READS.with(std::cell::Cell::get)
+}
+
+/// The images of `text` (the capped note at `note`) for the preview: its
+/// first [`PREVIEW_EMBEDS`] embeds resolved against `found` (the vault and
+/// its attachments; `None`: no images), and each one's header read. Runs
+/// on tokio, as the note is read.
+fn plan_images(
+    text: &str,
+    note: &VaultPath,
+    found: Option<(&NoteVault, &[VaultPath])>,
+    pane: ImagePane,
+) -> ImagePlan {
+    let Some((vault, attachments)) = found else {
+        return ImagePlan::none(pane);
+    };
+    let embeds = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
+    if embeds.is_empty() {
+        return ImagePlan::none(pane);
+    }
+    // A store of this read's own: the headers only, nothing decoded (the
+    // app's store is the UI thread's).
+    let mut store = ImageStore::default();
+    let (naturals, failures) = embeds
+        .iter()
+        .map(|embed| header_of(embed, &mut store))
+        .unzip();
+    ImagePlan {
+        embeds,
+        naturals,
+        failures,
+        pane,
+        raw: RawRule::Hits,
+    }
+}
+
+/// The natural size of the embed's image from its file's header, or why it
+/// cannot be drawn.
+fn header_of(embed: &Embed, store: &mut ImageStore) -> (Option<(u32, u32)>, Option<Failure>) {
+    #[cfg(test)]
+    HEADER_READS.with(|reads| reads.set(reads.get() + 1));
+    if let Some(natural) = natural_of(embed, store) {
+        return (Some(natural), None);
+    }
+    let failure = match embed.file.as_ref().map(|file| store.size_of(file)) {
+        Some(ImageState::Failed(failure)) => failure,
+        // Not resolved to an attachment.
+        _ => Failure::Missing,
+    };
+    (None, Some(failure))
 }
 
 /// `text` cut to at most `max` bytes on a character boundary, and whether
@@ -253,31 +529,40 @@ pub(crate) fn preview_text(
     needles: &[String],
     columns: usize,
 ) -> PreviewText {
-    marked_text(path, text, &Mark::Needles(needles.into()), columns)
+    let mark = Mark::Needles(needles.into());
+    marked_text(path, text, &mark, columns, FALLBACK_PANE, None)
 }
 
 /// Lay out `text` for the preview with any [`Mark`]: capped, split into
 /// lines, the needles or the reader's section (resolved in the capped
-/// text) marked, wrapped to `columns`. Pure; runs on tokio.
+/// text) marked, its images found (from `found`, the vault and its
+/// attachments; `None`: none) and fitted to `pane`, wrapped to `columns`.
+/// Reads the images' headers; runs on tokio.
 pub(crate) fn marked_text(
     path: VaultPath,
     text: String,
     mark: &Mark,
     columns: usize,
+    pane: ImagePane,
+    found: Option<(&NoteVault, &[VaultPath])>,
 ) -> PreviewText {
     let (text, truncated) = cap_text(text, PREVIEW_BYTES);
-    lay_out(path, text.into(), mark, truncated, columns)
+    let plan = plan_images(&text, &path, found, pane);
+    lay_out(path, text.into(), mark, truncated, columns, plan)
 }
 
 /// `text` split into lines (tabs widened) with `mark`'s hits, wrapped to
-/// `columns`. A section marks each line it overlaps whole (the TUI's
-/// range highlight); its first line is the one scrolled to. Pure.
+/// `columns` with the images of `plan`. A section marks each line it
+/// overlaps whole (the TUI's range highlight); its first line is the one
+/// scrolled to. The mark sets which embed lines keep their raw text: one
+/// with a needle match, or one in the section. Pure.
 fn lay_out(
     path: VaultPath,
     text: Arc<str>,
     mark: &Mark,
     truncated: bool,
     columns: usize,
+    mut plan: ImagePlan,
 ) -> PreviewText {
     let (needles, section): (&[String], _) = match mark {
         Mark::Needles(needles) => (needles, None),
@@ -310,15 +595,22 @@ fn lay_out(
                 matches += hits.len();
                 first_match.get_or_insert((i, start));
             }
-            NoteLine { text, hits }
+            NoteLine { text, hits, span }
         })
         .collect();
-    let wrapped = wrap_lines(&lines, columns, first_match);
+    plan.raw = match (mark, &section) {
+        (Mark::Needles(_), _) => RawRule::Hits,
+        (Mark::Section(_), Some(range)) => RawRule::Section(range.clone()),
+        // No section resolved: no line is in it.
+        (Mark::Section(_), None) => RawRule::Section(0..0),
+    };
+    let wrapped = wrap_lines(&lines, columns, first_match, &plan);
     let reader = matches!(mark, Mark::Section(_));
     PreviewText {
         name: path.get_parent_path().1.into(),
         path,
         lines,
+        plan,
         wrapped,
         matches,
         first_match,
@@ -329,18 +621,25 @@ fn lay_out(
     }
 }
 
-/// Read and lay out the note at `path` for the preview (on tokio).
+/// Read and lay out the note at `path` for the preview (on tokio), its
+/// images resolved against `attachments` (the vault's shared list, taken
+/// before the read started; `None`: no images).
 async fn load_preview(
     vault: Arc<NoteVault>,
     path: VaultPath,
     mark: Mark,
     columns: usize,
+    pane: ImagePane,
+    attachments: Option<Arc<Vec<VaultPath>>>,
 ) -> Result<PreviewText, String> {
     let text = vault
         .get_note_text(&path)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(marked_text(path, text, &mark, columns))
+    let found = attachments
+        .as_deref()
+        .map(|list| (&*vault, list.as_slice()));
+    Ok(marked_text(path, text, &mark, columns, pane, found))
 }
 
 /// Where a note that landed is scrolled to: the first match centred, the
@@ -384,8 +683,15 @@ pub(crate) struct SearchPreview {
     /// The pane's width in monospace cells, measured each layout; 0 until
     /// the first.
     columns: usize,
-    /// The shown note being wrapped again to a new width; replaced by a
-    /// newer one.
+    /// The room the pane gives an image (its width and height in device
+    /// pixels, a row's height), measured with `columns`; `None` until the
+    /// first layout.
+    pane: Option<ImagePane>,
+    /// Bumped by every new `wanted`: a read started for an older one (the
+    /// attachment list landing late) is not started.
+    generation: u64,
+    /// The shown note being wrapped again to a new width or height;
+    /// replaced by a newer one.
     rewrap: Option<Task<()>>,
     scroll: UniformListScrollHandle,
     /// The reader scrolled the shown note: a re-wrap keeps their place
@@ -409,6 +715,8 @@ impl SearchPreview {
             error: None,
             load: None,
             columns: 0,
+            pane: None,
+            generation: 0,
             rewrap: None,
             scroll: UniformListScrollHandle::new(),
             scrolled: false,
@@ -485,8 +793,33 @@ impl SearchPreview {
     pub(crate) fn row_lines(&self) -> Vec<usize> {
         self.shown
             .as_ref()
-            .map(|s| s.wrapped.rows.iter().map(|r| r.line).collect())
+            .map(PreviewText::row_lines)
             .unwrap_or_default()
+    }
+
+    /// What each shown row shows (tests).
+    #[cfg(test)]
+    pub(crate) fn shown_kinds(&self) -> Vec<RowKind> {
+        self.shown
+            .as_ref()
+            .map(PreviewText::kinds)
+            .unwrap_or_default()
+    }
+
+    /// The shown note's images (tests).
+    #[cfg(test)]
+    pub(crate) fn shown_images(&self) -> Vec<PreviewImage> {
+        self.shown
+            .as_ref()
+            .map(|s| s.images().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// The room the shown rows' images are fitted to, and the one the pane
+    /// measured (tests).
+    #[cfg(test)]
+    pub(crate) fn panes(&self) -> (Option<ImagePane>, Option<ImagePane>) {
+        (self.shown.as_ref().map(|s| s.wrapped.pane), self.pane)
     }
 
     /// The shown note's first matching row, the columns it is wrapped to
@@ -522,6 +855,11 @@ impl SearchPreview {
         }
     }
 
+    /// The room to fit images to: the measured one, or a guess before it.
+    fn wrap_pane(&self) -> ImagePane {
+        self.pane.unwrap_or(FALLBACK_PANE)
+    }
+
     /// Show `path` (the selected note; `None`: nothing) with `needles`
     /// marked. The same note and needles again change nothing; anything else
     /// waits [`PREVIEW_DEBOUNCE`], then reads off the UI thread, replacing
@@ -551,6 +889,7 @@ impl SearchPreview {
         }
         self.wanted = wanted.clone();
         self.error = None;
+        self.generation += 1;
         let Some((path, mark)) = wanted else {
             self.load = None;
             self.rewrap = None;
@@ -563,15 +902,19 @@ impl SearchPreview {
                 .shown
                 .as_ref()
                 .filter(|shown| shown.path == path)
-                .and_then(|shown| Some((shown.source.clone()?, shown.truncated)));
-            if let Some((text, truncated)) = cached {
+                .and_then(|shown| {
+                    Some((shown.source.clone()?, shown.truncated, shown.plan.clone()))
+                });
+            if let Some((text, truncated, mut plan)) = cached {
                 let columns = self.wrap_columns();
+                // The same note's images: their headers are not read again.
+                plan.pane = self.wrap_pane();
                 self.load = Some(cx.spawn(async move |this, cx| {
                     let job = {
                         let (path, mark) = (path.clone(), mark.clone());
-                        tokio::spawn(
-                            async move { Ok(lay_out(path, text, &mark, truncated, columns)) },
-                        )
+                        tokio::spawn(async move {
+                            Ok(lay_out(path, text, &mark, truncated, columns, plan))
+                        })
                     };
                     let mut job = AbortOnDrop(job);
                     let laid_out = (&mut job.0).await;
@@ -585,26 +928,63 @@ impl SearchPreview {
             self.shown = None;
             self.rewrap = None;
         }
-        let vault = self.vault.clone();
+        let generation = self.generation;
         self.load = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(PREVIEW_DEBOUNCE).await;
-            #[cfg(test)]
-            this.update(cx, |preview, _| preview.reads += 1).ok();
-            // The width as of now: a later change re-wraps what lands.
-            let Ok(columns) = this.update(cx, |preview, _| preview.wrap_columns()) else {
-                return;
-            };
+            this.update(cx, |preview, cx| preview.read_when_listed(generation, cx))
+                .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The debounce ran out: read the wanted note once the vault's
+    /// attachment list is there (at once when it is), so its images resolve
+    /// without the read walking the vault.
+    fn read_when_listed(&mut self, generation: u64, cx: &mut Context<Self>) {
+        #[cfg(test)]
+        {
+            self.reads += 1;
+        }
+        let mut index = cx.default_global::<AttachmentIndex>().clone();
+        if index.get(&self.vault).is_some() {
+            self.read(generation, cx);
+            return;
+        }
+        let preview = cx.weak_entity();
+        let vault = self.vault.clone();
+        index.request(&vault, cx, move |cx| {
+            preview
+                .update(cx, |preview, cx| preview.read(generation, cx))
+                .ok();
+        });
+    }
+
+    /// Read the wanted note on tokio, unless another one is wanted since
+    /// `generation`.
+    fn read(&mut self, generation: u64, cx: &mut Context<Self>) {
+        if generation != self.generation {
+            return;
+        }
+        let Some((path, mark)) = self.wanted.clone() else {
+            return;
+        };
+        let attachments = cx.default_global::<AttachmentIndex>().get(&self.vault);
+        // The width and height as of now: a later change re-wraps what lands.
+        let (columns, pane) = (self.wrap_columns(), self.wrap_pane());
+        let vault = self.vault.clone();
+        self.load = Some(cx.spawn(async move |this, cx| {
             let mut read = AbortOnDrop(tokio::spawn(load_preview(
                 vault,
                 path.clone(),
                 mark.clone(),
                 columns,
+                pane,
+                attachments,
             )));
             let loaded = (&mut read.0).await;
             this.update(cx, |preview, cx| preview.loaded((path, mark), loaded, cx))
                 .ok();
         }));
-        cx.notify();
     }
 
     /// Whether the preview marks a source's section (the Source reader).
@@ -660,31 +1040,39 @@ impl SearchPreview {
         cx.notify();
     }
 
-    /// The pane measured `columns` cells wide: re-wrap the shown note when
-    /// that differs from what it is wrapped to.
-    fn set_columns(&mut self, columns: usize, cx: &mut Context<Self>) {
-        if columns == self.columns {
+    /// The pane measured `columns` cells wide with room `pane` for images:
+    /// re-wrap the shown note when that differs from what it is wrapped to.
+    fn set_measure(&mut self, columns: usize, pane: ImagePane, cx: &mut Context<Self>) {
+        if columns == self.columns && Some(pane) == self.pane {
             return;
         }
         self.columns = columns;
+        self.pane = Some(pane);
         self.rewrap(cx);
         cx.notify();
     }
 
-    /// Wrap the shown note's lines again to the pane's width, on tokio (the
-    /// note is not read again). The latest width wins.
+    /// Wrap the shown note's lines again to the pane's width and height, on
+    /// tokio (the note and its images' files are not read again). The latest
+    /// size wins.
     fn rewrap(&mut self, cx: &mut Context<Self>) {
-        let columns = self.wrap_columns();
-        let Some(shown) = self.shown.as_ref().filter(|s| s.wrapped.columns != columns) else {
+        let (columns, pane) = (self.wrap_columns(), self.wrap_pane());
+        let Some(shown) = self
+            .shown
+            .as_ref()
+            .filter(|s| !s.wrapped_for(columns, pane))
+        else {
             self.rewrap = None;
             return;
         };
         let lines = shown.lines.clone();
         let first_match = shown.first_match;
+        let mut plan = shown.plan.clone();
+        plan.pane = pane;
         self.rewrap = Some(cx.spawn(async move |this, cx| {
             let job = {
                 let lines = lines.clone();
-                tokio::spawn(async move { wrap_lines(&lines, columns, first_match) })
+                tokio::spawn(async move { wrap_lines(&lines, columns, first_match, &plan) })
             };
             let mut job = AbortOnDrop(job);
             let wrapped = (&mut job.0).await;
@@ -708,14 +1096,24 @@ impl SearchPreview {
             .shown
             .as_ref()
             .is_some_and(|s| Arc::ptr_eq(&s.lines, lines));
-        if !current || wrapped.columns != self.wrap_columns() {
+        let images = self
+            .shown
+            .as_ref()
+            .is_some_and(|s| !s.plan.embeds.is_empty());
+        if !current
+            || wrapped.columns != self.wrap_columns()
+            || (images && wrapped.pane != self.wrap_pane())
+        {
             return;
         }
         self.rewrap = None;
+        // Taken from the old rows: the top row's note position, which the
+        // new rows (however many images above it grew or shrank) find again.
         let anchor = self.view_anchor();
         let Some(shown) = self.shown.as_mut() else {
             return;
         };
+        shown.plan.pane = wrapped.pane;
         shown.wrapped = wrapped;
         if let Some((line, at, strategy)) = anchor {
             self.scroll
@@ -797,18 +1195,26 @@ impl SearchPreview {
     }
 
     /// An invisible element over the rows' area that measures its width in
-    /// monospace cells after layout and re-wraps on a change (a narrow or wide
-    /// layout, a window resize). Nothing happens while the width holds.
+    /// monospace cells after layout, and the room it gives an image (its
+    /// width and height and a row's height, in device pixels), and re-wraps
+    /// on a change (a narrow or wide layout, the pane's expand state, a
+    /// window resize). Nothing happens while the size holds.
     fn measure(&self, cell_width: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let measured = self.columns;
+        let measured = (self.columns, self.pane);
         let preview = cx.entity().downgrade();
         canvas(
-            move |bounds, _, cx| {
+            move |bounds, window, cx| {
                 let columns = (f32::from(bounds.size.width) / cell_width).floor().max(1.) as usize;
-                if columns != measured {
+                let scale = window.scale_factor();
+                let pane = ImagePane {
+                    column_px: columns as f32 * cell_width * scale,
+                    pane_px: f32::from(bounds.size.height) * scale,
+                    row_px: LINE_REMS * f32::from(window.rem_size()) * scale,
+                };
+                if (columns, Some(pane)) != measured {
                     cx.defer(move |cx| {
                         preview
-                            .update(cx, |preview, cx| preview.set_columns(columns, cx))
+                            .update(cx, |preview, cx| preview.set_measure(columns, pane, cx))
                             .ok();
                     });
                 }
@@ -866,9 +1272,13 @@ impl Render for SearchPreview {
                         range
                             .filter_map(|ix| Some((ix, shown.wrapped.rows.get(ix)?)))
                             .map(|(ix, row)| {
-                                let text = StyledText::new(row.text.clone()).with_highlights(
-                                    row.hits.iter().map(|hit| (hit.clone(), mark)),
-                                );
+                                // An image row or a note row is blank for
+                                // now: it keeps the row height.
+                                let text = (row.kind == RowKind::Text).then(|| {
+                                    StyledText::new(row.text.clone()).with_highlights(
+                                        row.hits.iter().map(|hit| (hit.clone(), mark)),
+                                    )
+                                });
                                 // Already wrapped to the pane: never wrapped
                                 // again, never cut with an ellipsis.
                                 div()
@@ -880,7 +1290,7 @@ impl Render for SearchPreview {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .whitespace_nowrap()
-                                    .child(text)
+                                    .children(text)
                             })
                             .collect::<Vec<_>>()
                     }),
