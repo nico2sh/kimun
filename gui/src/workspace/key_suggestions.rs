@@ -195,7 +195,10 @@ impl KeySuggestions {
     /// taken; a press (not a click: it must act before the field loses the
     /// keyboard) calls `pick` with its position, and the wheel calls `step`
     /// with whether it turned down.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     pub(crate) fn render_floating<V: 'static>(
         &self,
         field: Bounds<Pixels>,

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Incremental-parse machinery: line-construct classification cache,
 //! damage-diff against the previous buffer snapshot, safe-boundary
 //! widening, and fence-range derivation. Pure functions only — no

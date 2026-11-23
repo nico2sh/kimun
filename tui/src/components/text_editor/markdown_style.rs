@@ -106,7 +106,8 @@ mod tests {
     }
     #[test]
     fn strikethrough_renders_with_crossed_out_modifier() {
-        let s = MarkdownSpanner::render("~~gone~~", "~~gone~~", 0, None, true, false, 40, &t());
+        let s =
+            MarkdownSpanner::render("~~gone~~", "~~gone~~", VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "gone");
         assert!(
             s.iter()
@@ -135,7 +136,7 @@ mod tests {
         let line = "before ![alt](pic.gif) after";
         let parsed = ParsedLine::parse(line);
         let spans =
-            MarkdownSpanner::render_with(line, line, &parsed, 0, None, true, false, 80, &t());
+            MarkdownSpanner::render_with(line, line, &parsed, VisualSlice::first(), None, 80, &t());
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(
             rendered.contains("[pic.gif]"),
@@ -152,7 +153,7 @@ mod tests {
         let line = "![](image.png)";
         let parsed = ParsedLine::parse(line);
         let spans =
-            MarkdownSpanner::render_with(line, line, &parsed, 0, None, true, false, 40, &t());
+            MarkdownSpanner::render_with(line, line, &parsed, VisualSlice::first(), None, 40, &t());
         let rendered: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(rendered, "[image.png]");
     }
@@ -199,7 +200,8 @@ mod tests {
     }
     #[test]
     fn force_raw_no_styling() {
-        let s = MarkdownSpanner::render("**x**", "**x**", 0, None, true, true, 40, &t());
+        let s =
+            MarkdownSpanner::render("**x**", "**x**", VisualSlice::first().raw(), None, 40, &t());
         assert_eq!(text(&s), "**x**");
         assert!(
             !s.iter()
@@ -208,12 +210,13 @@ mod tests {
     }
     #[test]
     fn plain_text_passthrough() {
-        let s = MarkdownSpanner::render("hi", "hi", 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render("hi", "hi", VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "hi");
     }
     #[test]
     fn bold_without_cursor_hides_markers() {
-        let s = MarkdownSpanner::render("**bold**", "**bold**", 0, None, true, false, 40, &t());
+        let s =
+            MarkdownSpanner::render("**bold**", "**bold**", VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "bold");
         assert!(
             s.iter()
@@ -222,51 +225,66 @@ mod tests {
     }
     #[test]
     fn bold_cursor_inside_shows_raw() {
-        let s = MarkdownSpanner::render("**bold**", "**bold**", 0, Some(3), true, false, 40, &t());
+        let s = MarkdownSpanner::render(
+            "**bold**",
+            "**bold**",
+            VisualSlice::first(),
+            Some(3),
+            40,
+            &t(),
+        );
         assert_eq!(text(&s), "**bold**");
     }
     #[test]
     fn bold_cursor_outside_stays_rendered() {
         let line = "hello **bold** world";
-        let s = MarkdownSpanner::render(line, line, 0, Some(1), true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), Some(1), 40, &t());
         assert!(!text(&s).contains("**"));
     }
     #[test]
     fn italic_cursor_inside_shows_raw() {
-        let s = MarkdownSpanner::render("*hi*", "*hi*", 0, Some(1), true, false, 40, &t());
+        let s = MarkdownSpanner::render("*hi*", "*hi*", VisualSlice::first(), Some(1), 40, &t());
         assert_eq!(text(&s), "*hi*");
     }
     #[test]
     fn inline_code_hides_backticks() {
-        let s = MarkdownSpanner::render("`x`", "`x`", 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render("`x`", "`x`", VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "x");
     }
     #[test]
     fn h1_first_line_contains_hash() {
-        let s = MarkdownSpanner::render("# T", "# T", 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render("# T", "# T", VisualSlice::first(), None, 40, &t());
         assert!(text(&s).contains('#'));
         assert!(text(&s).contains('T'));
     }
     #[test]
     fn continuation_line_no_hash() {
-        let s = MarkdownSpanner::render("cont", "# T cont", 2, None, false, false, 40, &t());
+        let s = MarkdownSpanner::render(
+            "cont",
+            "# T cont",
+            VisualSlice::continuation(2),
+            None,
+            40,
+            &t(),
+        );
         assert!(!text(&s).contains('#'));
     }
     #[test]
     fn unordered_list_shows_bullet() {
-        let s = MarkdownSpanner::render("- item", "- item", 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render("- item", "- item", VisualSlice::first(), None, 40, &t());
         assert!(
             text(&s).starts_with("• "),
             "expected '• item', got '{}'",
             text(&s)
         );
-        let raw = MarkdownSpanner::render("- item", "- item", 0, Some(2), true, false, 40, &t());
+        let raw =
+            MarkdownSpanner::render("- item", "- item", VisualSlice::first(), Some(2), 40, &t());
         assert!(text(&raw).starts_with("- "), "caret line stays raw");
         assert!(text(&s).contains("item"));
     }
     #[test]
     fn ordered_list_shows_marker() {
-        let s = MarkdownSpanner::render("1. item", "1. item", 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render("1. item", "1. item", VisualSlice::first(), None, 40, &t());
         assert!(
             text(&s).starts_with("1. "),
             "expected '1. item', got '{}'",
@@ -277,7 +295,7 @@ mod tests {
     fn nested_list_4space_link_rendered() {
         // 4-space indent + list marker + markdown link.
         let line = "    - [my link](url)";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 80, &t());
         // Link styling must appear (UNDERLINED modifier) and the raw "](url)" sigils
         // must be hidden.
         assert!(
@@ -301,7 +319,7 @@ mod tests {
     #[test]
     fn nested_list_tab_bold_rendered() {
         let line = "\t- **bold nested**";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 80, &t());
         assert!(
             s.iter()
                 .any(|sp| sp.style.add_modifier.contains(Modifier::BOLD)),
@@ -318,7 +336,7 @@ mod tests {
     #[test]
     fn nested_list_4space_wikilink_rendered() {
         let line = "    - [[Target Note]]";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 80, &t());
         let rendered: String = s.iter().map(|sp| sp.content.as_ref()).collect();
         assert!(
             !rendered.contains("[["),
@@ -336,7 +354,7 @@ mod tests {
     fn nested_list_2space_still_renders_link() {
         // Existing 2-space case — must not regress.
         let line = "  - [link](url)";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 80, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 80, &t());
         assert!(
             s.iter()
                 .any(|sp| sp.style.add_modifier.contains(Modifier::UNDERLINED))
@@ -346,7 +364,7 @@ mod tests {
     #[test]
     fn empty_heading_shows_hash_sigil() {
         let line = "# ";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert!(
             text(&s).contains('#'),
             "hash sigil should render in empty heading"
@@ -357,7 +375,7 @@ mod tests {
     #[test]
     fn empty_heading_hash_only_shows() {
         let line = "#";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert!(text(&s).contains('#'));
         let col = MarkdownSpanner::rendered_cursor_col(line, 0, 1, true, false);
         assert_eq!(col, 1);
@@ -365,7 +383,7 @@ mod tests {
     #[test]
     fn heading_trailing_spaces_are_rendered() {
         let line = "# Hello   ";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(
             text(&s),
             "# Hello   ",
@@ -385,7 +403,7 @@ mod tests {
     #[test]
     fn trailing_spaces_are_rendered() {
         let line = "hello   ";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "hello   ");
     }
     #[test]
@@ -396,15 +414,23 @@ mod tests {
     }
     #[test]
     fn list_marker_on_continuation_line_hidden() {
-        let s = MarkdownSpanner::render("cont", "- cont", 2, None, false, false, 40, &t());
+        let s = MarkdownSpanner::render(
+            "cont",
+            "- cont",
+            VisualSlice::continuation(2),
+            None,
+            40,
+            &t(),
+        );
         assert!(!text(&s).starts_with("- "));
     }
     #[test]
     fn parsed_line_reuse_matches_individual() {
         let line = "**hello** world";
         let parsed = ParsedLine::parse(line);
-        let s1 = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
-        let s2 = MarkdownSpanner::render_with(line, line, &parsed, 0, None, true, false, 40, &t());
+        let s1 = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
+        let s2 =
+            MarkdownSpanner::render_with(line, line, &parsed, VisualSlice::first(), None, 40, &t());
         assert_eq!(
             s1.iter().map(|s| s.content.as_ref()).collect::<String>(),
             s2.iter().map(|s| s.content.as_ref()).collect::<String>(),
@@ -423,7 +449,7 @@ mod tests {
     #[test]
     fn wikilink_without_cursor_hides_brackets() {
         let line = "[[My Note]]";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "My Note");
         assert!(
             s.iter()
@@ -435,14 +461,14 @@ mod tests {
     fn wikilink_cursor_inside_shows_brackets() {
         let line = "[[My Note]]";
         // cursor at pos 4 (inside "My Note")
-        let s = MarkdownSpanner::render(line, line, 0, Some(4), true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), Some(4), 40, &t());
         assert_eq!(text(&s), "[[My Note]]");
     }
 
     #[test]
     fn wikilink_cursor_outside_hides_brackets() {
         let line = "hello [[My Note]] world";
-        let s = MarkdownSpanner::render(line, line, 0, Some(1), true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), Some(1), 40, &t());
         assert!(!text(&s).contains("[["));
         assert!(!text(&s).contains("]]"));
     }
@@ -455,14 +481,14 @@ mod tests {
             e.iter().any(|x| x.kind == ElementKind::WikiLink),
             "wikilink inside heading should produce a WikiLink element"
         );
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "# See Topic", "wikilink brackets hidden, # kept");
     }
 
     #[test]
     fn heading_with_link_does_not_leak_bracket() {
         let line = "# [text](http://x)";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         // `# ` sigil stays visible (heading marker); link sigils incl. the
         // leading `[` are hidden, leaving just the display text.
         assert_eq!(text(&s), "# text");
@@ -471,7 +497,7 @@ mod tests {
     #[test]
     fn heading_with_bold_does_not_leak_asterisk() {
         let line = "# **bold**";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(
             text(&s),
             "# bold",
@@ -482,7 +508,7 @@ mod tests {
     #[test]
     fn bold_wikilink_is_bold() {
         let line = "**[[Topic]]**";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "Topic");
         assert!(
             s.iter()
@@ -495,7 +521,7 @@ mod tests {
     #[test]
     fn italic_link_is_italic() {
         let line = "*[text](http://x)*";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "text");
         assert!(
             s.iter()
@@ -508,7 +534,7 @@ mod tests {
     #[test]
     fn bold_italic_wikilink_is_bold_and_italic() {
         let line = "***[[Topic]]***";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "Topic");
         assert!(
             s.iter().any(|sp| {
@@ -523,7 +549,7 @@ mod tests {
     #[test]
     fn bold_italic_plain_text() {
         let line = "***text***";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "text");
         assert!(
             s.iter().any(|sp| {
@@ -538,7 +564,7 @@ mod tests {
     #[test]
     fn wikilink_mid_sentence() {
         let line = "See [[Topic]] for details";
-        let s = MarkdownSpanner::render(line, line, 0, None, true, false, 40, &t());
+        let s = MarkdownSpanner::render(line, line, VisualSlice::first(), None, 40, &t());
         assert_eq!(text(&s), "See Topic for details");
     }
 

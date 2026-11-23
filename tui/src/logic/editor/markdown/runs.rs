@@ -7,8 +7,8 @@
 
 use super::reveal::row_reveals_whole;
 use super::{
-    ElementKind, ParsedLine, blockquote_gutter, cluster_display_width, cluster_width_at,
-    string_display_width, tab_width_at,
+    ElementKind, ParsedLine, VisualSlice, blockquote_gutter, cluster_display_width,
+    cluster_width_at, string_display_width, tab_width_at,
 };
 use crate::logic::editor::overlay::{OverlayKind, OverlaySet};
 use unicode_segmentation::UnicodeSegmentation;
@@ -88,17 +88,19 @@ impl Run {
 }
 
 /// Semantic runs for one visual line. See the module docs.
-#[allow(clippy::too_many_arguments)]
 pub fn render_runs(
     content: &str,
     logical_line: &str,
     parsed: &ParsedLine,
-    visual_start_col: usize,
+    slice: VisualSlice,
     cursor_col: Option<usize>,
-    is_first_visual_line: bool,
-    force_raw: bool,
     available_width: u16,
 ) -> Vec<Run> {
+    let VisualSlice {
+        start_col: visual_start_col,
+        is_first: is_first_visual_line,
+        force_raw,
+    } = slice;
     // HR
     let trimmed = logical_line.trim();
     if is_first_visual_line && matches!(trimmed, "---" | "***" | "___") {
@@ -574,7 +576,11 @@ mod tests {
 
     fn runs(line: &str, cursor: Option<usize>, force_raw: bool, width: u16) -> Vec<Run> {
         let parsed = ParsedLine::parse(line);
-        render_runs(line, line, &parsed, 0, cursor, true, force_raw, width)
+        let slice = VisualSlice {
+            force_raw,
+            ..VisualSlice::first()
+        };
+        render_runs(line, line, &parsed, slice, cursor, width)
     }
     fn joined(rs: &[Run]) -> String {
         rs.iter().map(|r| r.text.as_str()).collect()

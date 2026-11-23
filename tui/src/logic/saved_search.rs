@@ -141,7 +141,11 @@ impl RowSource<SearchItem> for SavedSearchSource {
     async fn load(&self, _query: &str, emit: Emit<SearchItem>) {
         // Drain any pending delete BEFORE listing, so the list read below is
         // ordered strictly after the delete completes.
-        let to_delete = self.pending_delete.lock().unwrap().take();
+        let to_delete = self
+            .pending_delete
+            .lock()
+            .expect("pending-delete lock poisoned")
+            .take();
         if let Some(name) = to_delete {
             self.vault.delete_saved_search(&name).await.ok();
         }

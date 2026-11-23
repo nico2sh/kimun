@@ -141,7 +141,10 @@ impl Overlay for SavedSearchesModal {
                         // Hand the name to the source and re-run the load: the
                         // source deletes-then-lists in one ordered async step, so
                         // the new rows can never reflect pre-delete state.
-                        *self.pending_delete.lock().unwrap() = Some(item.name.clone());
+                        *self
+                            .pending_delete
+                            .lock()
+                            .expect("pending-delete lock poisoned") = Some(item.name.clone());
                         self.list.reload();
                     }
                     EventState::Consumed

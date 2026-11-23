@@ -1144,8 +1144,11 @@ fn a_press_on_a_suggestion_takes_it_in_the_browser(cx: &mut TestAppContext) {
     assert!(suggested(&started, cx).is_empty());
 }
 
+/// The finder is a free-text fuzzy search: `#r` there is plain text, and no
+/// query-syntax suggestions appear. The vault has a `#rust` tag, so the browser
+/// would offer it for the same input.
 #[gpui_kit::test]
-fn the_finder_completes_too_but_only_the_finder_and_the_browser(cx: &mut TestAppContext) {
+fn the_finder_does_not_complete_only_the_browser_does(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_v, started) = started_on(cx, &rt, NOTES, &[], "a.md");
@@ -1158,6 +1161,8 @@ fn the_finder_completes_too_but_only_the_finder_and_the_browser(cx: &mut TestApp
     cx.run_until_parked();
     assert_eq!(started.shown_modal(cx), Some(ModalKind::Finder));
     type_in(&started, "#r", cx);
-    drive(&rt, cx, |cx| !suggested(&started, cx).is_empty());
-    assert_eq!(suggested(&started, cx), ["rust"]);
+    // Long enough for a suggestion load to land, had one been started.
+    rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(300)));
+    cx.run_until_parked();
+    assert!(suggested(&started, cx).is_empty());
 }

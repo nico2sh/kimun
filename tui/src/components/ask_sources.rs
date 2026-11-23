@@ -41,9 +41,9 @@ use crate::ask::{AskSource, locate};
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
 use crate::components::expand_chevron::{ExpandControl, ExpandDir};
-use crate::components::note_reader::{NoteAnchor, NoteReader};
+use crate::components::note_reader::{NoteAnchor, NoteReader, ReaderMode};
 use crate::components::panel::panel_block;
-use crate::components::preview_pane::Step;
+use crate::components::preview_pane::{PreviewHeader, Step};
 use crate::components::rich_row::RichRow;
 use crate::components::search_list::{
     Filter, Focus, KeyReaction, ListRow, SearchList, SearchMouse, SearchRow, StaticRowSource,
@@ -729,8 +729,15 @@ impl SourcesPanel {
             ),
             None => (None, "Source".to_string(), String::new()),
         };
-        self.reader
-            .render(f, area, full, selected.as_ref(), &title, &filename, theme);
+        let mode = if full {
+            ReaderMode::Full(PreviewHeader {
+                title: &title,
+                filename: &filename,
+            })
+        } else {
+            ReaderMode::Context
+        };
+        self.reader.render(f, area, mode, selected.as_ref(), theme);
     }
 
     #[cfg(test)]

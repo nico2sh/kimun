@@ -742,7 +742,7 @@ impl AskView {
         let t = &*theme;
         let id = turn.id;
         let body: AnyElement = match &turn.status {
-            TurnStatus::Thinking | TurnStatus::Streaming => div()
+            TurnStatus::Thinking => div()
                 .id(turn_status_id(id))
                 .test_support()
                 .role(Role::Status)
@@ -1115,7 +1115,7 @@ impl AskView {
 
 /// Whether `turn` waits for its answer.
 fn is_pending(turn: &Turn) -> bool {
-    matches!(turn.status, TurnStatus::Thinking | TurnStatus::Streaming)
+    matches!(turn.status, TurnStatus::Thinking)
 }
 
 /// Whether `turn` is answered with sources to list.

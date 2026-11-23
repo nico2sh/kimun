@@ -677,7 +677,7 @@ impl<R: SearchRow> SearchList<R> {
         if self.highlight_query {
             let line =
                 crate::components::query_highlight::highlight_line(self.input.value(), theme, base);
-            self.input.render_line(f, area, line, base, 0, focused);
+            self.input.render_line(f, area, line, base, focused);
         } else {
             self.input.render(f, area, base, 0, focused);
         }
@@ -766,6 +766,12 @@ impl<R: SearchRow> SearchList<R> {
         if let Some(ac) = &mut self.autocomplete {
             ac.close();
         }
+    }
+
+    /// Whether an autocomplete controller is attached at all (open or not).
+    #[cfg(test)]
+    pub(crate) fn has_autocomplete(&self) -> bool {
+        self.autocomplete.is_some()
     }
 
     /// Test-only: true when the autocomplete popup is open, so host tests

@@ -75,8 +75,8 @@ impl FieldView {
 
     /// Like [`Self::render`], but with a pre-styled line (e.g. the query
     /// highlighter's output). The line must render the same text as the
-    /// field's value, so caret math stays valid.
-    #[allow(clippy::too_many_arguments)]
+    /// field's value, so caret math stays valid. The line fills the whole
+    /// `rect`: a caller that draws a label first passes the narrower rect.
     pub fn render_line(
         &mut self,
         f: &mut Frame,
@@ -84,20 +84,14 @@ impl FieldView {
         rect: Rect,
         line: ratatui::text::Line<'static>,
         base_style: Style,
-        value_offset_x: u16,
         focused: bool,
     ) {
-        let inner = Rect {
-            x: rect.x.saturating_add(value_offset_x),
-            width: rect.width.saturating_sub(value_offset_x),
-            ..rect
-        };
-        let scroll_x = self.scroll_into_view(field, inner.width);
+        let scroll_x = self.scroll_into_view(field, rect.width);
         f.render_widget(
             Paragraph::new(line).style(base_style).scroll((0, scroll_x)),
-            inner,
+            rect,
         );
-        self.place_caret(f, field, inner, focused);
+        self.place_caret(f, field, rect, focused);
     }
 
     /// Adjust the horizontal scroll so the caret falls inside a window of
@@ -255,18 +249,10 @@ impl SingleLineInput {
         rect: Rect,
         line: ratatui::text::Line<'static>,
         base_style: Style,
-        value_offset_x: u16,
         focused: bool,
     ) {
-        self.view.render_line(
-            f,
-            &self.field,
-            rect,
-            line,
-            base_style,
-            value_offset_x,
-            focused,
-        );
+        self.view
+            .render_line(f, &self.field, rect, line, base_style, focused);
     }
 }
 

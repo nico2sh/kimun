@@ -491,6 +491,7 @@ fn snap_blockquote_html_wraps_under_the_caret() {
 fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
     use kimun_notes::components::text_editor::markdown::MarkdownSpanner;
     use kimun_notes::logic::editor::markdown::ParsedBuffer;
+    use kimun_notes::logic::editor::markdown::VisualSlice;
 
     let line = "see [docs](url) here";
     let buf = ParsedBuffer::parse(&kimun_notes::ropetext::Text::from(line));
@@ -499,11 +500,13 @@ fn a_click_on_the_revealed_row_lands_where_it_was_clicked() {
 
     // With the row revealed every char draws, so the mapping is the identity.
     for col in 0..=line.chars().count() {
-        let cell =
-            MarkdownSpanner::rendered_col_with_reveal(line, parsed, 0, col, caret, true, false);
-        let back = MarkdownSpanner::rendered_col_to_logical_with(
-            line, parsed, 0, cell, caret, true, false,
-        );
+        let slice = VisualSlice {
+            start_col: 0,
+            is_first: true,
+            force_raw: false,
+        };
+        let cell = MarkdownSpanner::rendered_col_with_reveal(line, parsed, slice, col, caret);
+        let back = MarkdownSpanner::rendered_col_to_logical_with(line, parsed, slice, cell, caret);
         assert_eq!(
             back, col,
             "logical {col} drew at cell {cell}, which mapped back to {back}"

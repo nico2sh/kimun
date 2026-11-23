@@ -66,7 +66,7 @@ impl NoteListVisitor {
         let cached_option = self
             .notes_to_delete
             .lock()
-            .unwrap()
+            .expect("notes_to_delete lock poisoned")
             .remove(&data.path.canonical());
 
         match cached_option {
@@ -89,7 +89,7 @@ impl NoteListVisitor {
                         }
                         self.notes_to_modify
                             .lock()
-                            .unwrap()
+                            .expect("notes_to_modify lock poisoned")
                             .push((data.to_owned(), details.raw_text));
                         Some(new_content)
                     }
@@ -112,7 +112,7 @@ impl NoteListVisitor {
                     let content = details.get_content_data();
                     self.notes_to_add
                         .lock()
-                        .unwrap()
+                        .expect("notes_to_add lock poisoned")
                         .push((data.to_owned(), details.raw_text));
                     Some(content)
                 }

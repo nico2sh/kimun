@@ -3,7 +3,7 @@
 //! concealed, and the inverse. The renderer and the layout mask share these so
 //! they cannot disagree. See ADR-0049.
 
-use super::{ParsedLine, cluster_width_at};
+use super::{ParsedLine, VisualSlice, cluster_width_at};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Rendered screen column for `cursor_col`, treating that same column as
@@ -26,11 +26,13 @@ pub fn rendered_cursor_col_with(
     rendered_col_with_reveal(
         logical_line,
         parsed,
-        visual_start_col,
+        VisualSlice {
+            start_col: visual_start_col,
+            is_first: is_first_visual_line,
+            force_raw,
+        },
         cursor_col,
         Some(cursor_col),
-        is_first_visual_line,
-        force_raw,
     )
 }
 
@@ -41,16 +43,18 @@ pub fn rendered_cursor_col_with(
 /// The split matters because `render_runs` reveals only the element under
 /// the *caret*. Any mapping that assumed the measured column was the caret
 /// would disagree with what was actually drawn.
-#[allow(clippy::too_many_arguments)]
 pub fn rendered_col_with_reveal(
     logical_line: &str,
     parsed: &ParsedLine,
-    visual_start_col: usize,
+    slice: VisualSlice,
     cursor_col: usize,
     reveal_col: Option<usize>,
-    is_first_visual_line: bool,
-    force_raw: bool,
 ) -> usize {
+    let VisualSlice {
+        start_col: visual_start_col,
+        is_first: is_first_visual_line,
+        force_raw,
+    } = slice;
     if force_raw {
         // Tab-aware: code is rendered with tabs expanded to TAB_STOP, so the
         // rendered cursor column must sum expanded widths, not char counts.
@@ -249,16 +253,18 @@ fn visible_positions_raw(
 /// under the caret, and a revealed element's sigils occupy cells: measuring
 /// the row as if nothing were revealed put every column past the first
 /// revealed sigil out by the width of what was wrongly skipped.
-#[allow(clippy::too_many_arguments)]
 pub fn rendered_col_to_logical_with(
     logical_line: &str,
     parsed: &ParsedLine,
-    visual_start_col: usize,
+    slice: VisualSlice,
     rendered_col: usize,
     reveal_col: Option<usize>,
-    is_first_visual_line: bool,
-    force_raw: bool,
 ) -> usize {
+    let VisualSlice {
+        start_col: visual_start_col,
+        is_first: is_first_visual_line,
+        force_raw,
+    } = slice;
     if force_raw {
         // Tab-aware inverse of `rendered_cursor_col_with`'s force-raw branch:
         // walk expanded widths to find the logical char at `rendered_col`.

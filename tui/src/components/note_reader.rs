@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
-use crate::components::preview_pane::{Highlight, PreviewPane};
+use crate::components::preview_pane::{Highlight, PreviewHeader, PreviewPane};
 use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::themes::Theme;
 
@@ -64,6 +64,15 @@ pub struct NoteReader {
     vault: Arc<NoteVault>,
     locate: Locate,
     deliver: Deliver,
+}
+
+/// How [`NoteReader::render`] draws the loaded note.
+#[derive(Debug, Clone, Copy)]
+pub enum ReaderMode<'a> {
+    /// Full-area preview under a fixed title header.
+    Full(PreviewHeader<'a>),
+    /// Half-height preview scrolled to the hot line.
+    Context,
 }
 
 impl NoteReader {
@@ -131,18 +140,15 @@ impl NoteReader {
         };
     }
 
-    /// Draw the preview (Full with `title`/`filename` in its header, or
-    /// Context) into `area`, or the load's placeholder. Only `selected`'s
-    /// text is painted: another note's shows as still loading.
-    #[allow(clippy::too_many_arguments)]
+    /// Draw the preview (Full with its header, or Context, per `mode`) into
+    /// `area`, or the load's placeholder. Only `selected`'s text is painted:
+    /// another note's shows as still loading.
     pub fn render(
         &mut self,
         f: &mut Frame,
         area: Rect,
-        full: bool,
+        mode: ReaderMode,
         selected: Option<&VaultPath>,
-        title: &str,
-        filename: &str,
         theme: &Theme,
     ) {
         let content = self
@@ -153,11 +159,13 @@ impl NoteReader {
         match content {
             Some(Content::Loaded { text, highlight }) => {
                 let highlight = Highlight::Range(highlight.as_ref());
-                if full {
-                    self.preview
-                        .render_full(f, area, title, filename, text, highlight, theme);
-                } else {
-                    self.preview.render_context(f, area, text, highlight, theme);
+                match mode {
+                    ReaderMode::Full(header) => self
+                        .preview
+                        .render_full(f, area, header, text, highlight, theme),
+                    ReaderMode::Context => {
+                        self.preview.render_context(f, area, text, highlight, theme)
+                    }
                 }
             }
             Some(Content::Failed) => {

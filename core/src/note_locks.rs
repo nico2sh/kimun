@@ -27,7 +27,7 @@ impl NoteLocks {
     pub(crate) async fn lock_note(&self, path: &VaultPath) -> OwnedMutexGuard<()> {
         let key = path.flatten();
         let lock = {
-            let mut map = self.map.lock().unwrap();
+            let mut map = self.map.lock().expect("note lock map poisoned");
             map.entry(key)
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
