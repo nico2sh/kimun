@@ -147,6 +147,9 @@ pub struct RowPaint {
     /// Cells that draw a follow target (link, wikilink, image, label): the
     /// pointer is a hand over them.
     pub targets: Vec<(u16, u16)>,
+    /// Cells that draw a task checkbox. A host that ticks it on a click
+    /// ([`OverlayKind::TaskBox`]) shows a hand over them.
+    pub boxes: Vec<(u16, u16)>,
 }
 
 impl RowPaint {
@@ -191,6 +194,12 @@ impl RowPaint {
             }
             // The logic marks the whole drawn link, emphasis in its label
             // included (`OverlayKind::FollowTarget`).
+            if run.overlays.contains(OverlayKind::TaskBox) {
+                match out.boxes.last_mut() {
+                    Some((c, n)) if *c + *n == col => *n += cells,
+                    _ => out.boxes.push((col, cells)),
+                }
+            }
             if run.overlays.contains(OverlayKind::FollowTarget) {
                 match out.targets.last_mut() {
                     Some((c, n)) if *c + *n == col => *n += cells,
@@ -447,6 +456,16 @@ mod tests {
         // The text starts after the gutter; no bar glyph is drawn.
         assert_eq!(row.text(), "   quote");
         assert_eq!(row.pieces.len(), 1);
+    }
+
+    #[test]
+    fn task_boxes_come_from_the_overlay() {
+        let t = theme();
+        let mut boxed = Run::new("[ ]", Role::Plain, 0);
+        boxed.overlays.insert(OverlayKind::TaskBox);
+        let row = RowPaint::new(&[plain("- "), boxed, plain(" text")], &t);
+        assert_eq!(row.boxes, vec![(2, 3)]);
+        assert!(row.targets.is_empty());
     }
 
     #[test]
