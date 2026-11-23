@@ -99,6 +99,19 @@ To read all the results as one document, click `Open as collection` in the tool 
 - Double-click a link to open it. You can also hold `Ctrl` (`Cmd` on macOS) and click it.
 - Press `Ctrl+F` to find text in the note.
 
+### Images
+
+The desktop app shows an image inside the note. Put the image on a line of its own with `![alt](path)` or with `![[name]]`. The image shows below that line. The terminal app shows no images.
+
+- When the cursor is on the line, the line shows as plain text and the image shows below it. Move the cursor away and the line gives way to the image.
+- The image must be in your vault. A web address does not work. A line with a web address stays a styled line and shows no image.
+- Kimün shows PNG, JPEG, GIF, WebP, and SVG files. A GIF shows its first frame only.
+- An image shows at its natural size. It is never wider than the text. It is never taller than 60% of the height of the pane.
+- If the image is missing or Kimün cannot read it, a short note shows in its place.
+- Point at an image to see its alt text.
+- Click an image to put the cursor on its line. Right-click it to open the same menu as for a link to an attachment.
+- If you rename or move an image, Kimün does not update the notes that use it. Change the path in those notes yourself.
+
 ## Properties
 
 Properties are facts about a note, such as `status` or `due`. The footer shows how many a note has. Click it to open the list. Use `Add`, `Edit`, and `Delete`, or press `A`, `E`, and `D`.
