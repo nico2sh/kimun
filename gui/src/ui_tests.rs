@@ -3072,6 +3072,45 @@ mod inline_images {
         .unwrap();
     }
 
+    /// Two images whose decoded pixels do not fit the cache together: each
+    /// decode evicts the other. The editor asks for each once, so the
+    /// decodes stop.
+    #[gpui_kit::test]
+    fn images_over_the_cache_budget_are_decoded_once(cx: &mut TestAppContext) {
+        use crate::inline_image::ImageStore;
+        // One 10x60 image decodes to 2400 bytes: one fits, two do not.
+        let store = ImageStore::with_test_budget(3000);
+        cx.update(|cx| cx.set_global(store.clone()));
+        let note = "intro\n![a](a.png)\n![b](b.png)\nafter";
+        let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
+        let (handle, view, _vault, _rt) = open_note(cx, note, &files);
+        assert_eq!(store.decodes_started(), 2, "one decode per image");
+        // More frames, cursor moves and an edit start nothing new.
+        settle(cx, handle);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("down", cx);
+            window.press("down", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(cx, handle);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("ctrl-end", cx);
+            window.input("x", cx);
+        })
+        .unwrap();
+        settle(cx, handle);
+        assert_eq!(
+            store.decodes_started(),
+            2,
+            "an eviction decodes nothing again"
+        );
+        cx.update(|cx| {
+            assert!(pads_under(&view, 1, cx) > 0, "the images keep their room");
+            assert!(pads_under(&view, 2, cx) > 0);
+        });
+    }
+
     #[gpui_kit::test]
     fn without_a_vault_an_embed_line_is_text(cx: &mut TestAppContext) {
         let (handle, view) = open(cx, NOTE);

@@ -13,10 +13,12 @@
 //!
 //! [`EditorSession::set_image_lines`]: kimun_notes::logic::editor::session::EditorSession::set_image_lines
 
+use std::collections::HashSet;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::{App, AppContext as _, Context, Task};
+use gpui_kit::{App, AppContext as _, Context, Task, WeakEntity};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{image_embeds, resolve_image_embed};
@@ -42,7 +44,8 @@ struct Key {
     revision: NonZeroU64,
     note: Option<VaultPath>,
     pane: ImagePane,
-    /// Counts the attachment listings and decodes that landed.
+    /// Counts the attachment listings that landed and the decodes that
+    /// failed: the events that change the lines.
     epoch: u64,
 }
 
@@ -57,6 +60,11 @@ pub(super) struct Images {
     _listing: Option<Task<()>>,
     key: Option<Key>,
     epoch: u64,
+    /// The files this editor asked to decode, since the vault was handed in
+    /// (a note opened). Each is asked once: an image the cache later drops
+    /// to stay under its budget is not decoded again, or two images over
+    /// the budget would evict each other and decode forever.
+    requested: HashSet<PathBuf>,
 }
 
 impl Images {
@@ -68,6 +76,7 @@ impl Images {
             _listing: None,
             key: None,
             epoch: 0,
+            requested: HashSet::new(),
         }
     }
 
@@ -145,24 +154,14 @@ impl EditorView {
         images.key = Some(key);
         let lines = match (&note, &images.attachments) {
             (Some(note), Some(attachments)) => {
-                let vault = images.vault.clone();
                 let attachments = attachments.clone();
-                let weak = cx.weak_entity();
-                let redraw = move |cx: &mut App| {
-                    let _ = weak.update(cx, |view, cx| {
-                        if let Some(images) = view.images.as_mut() {
-                            images.epoch += 1;
-                        }
-                        cx.notify();
-                    });
-                };
                 image_lines(
                     &self.editor.get_text(),
                     note,
                     &attachments,
-                    &vault,
+                    images,
                     pane,
-                    redraw,
+                    cx.weak_entity(),
                     cx,
                 )
             }
@@ -174,17 +173,35 @@ impl EditorView {
     }
 }
 
+/// When a decode of `file` lands: redraw `view`. A decode that failed also
+/// changes the lines (the image takes no room any more), so they are found
+/// again. A decoded image takes the room its header gave, so nothing else
+/// is recomputed.
+fn on_decoded(view: WeakEntity<EditorView>, file: PathBuf) -> impl FnOnce(&mut App) + 'static {
+    move |cx: &mut App| {
+        let mut store = cx.default_global::<ImageStore>().clone();
+        let failed = matches!(store.size_of(&file), ImageState::Failed(_));
+        let _ = view.update(cx, |view, cx| {
+            if failed && let Some(images) = view.images.as_mut() {
+                images.epoch += 1;
+            }
+            cx.notify();
+        });
+    }
+}
+
 /// The image lines of `text`, the note at `note`: each whole-line embed,
 /// resolved against `attachments` and sized from its file's header. An
-/// image whose pixels are not decoded yet asks for them, and `redraw` runs
-/// when they land.
+/// image not decoded yet, and never asked for by this editor
+/// (`images.requested`), is asked for now. `view` redraws when its pixels
+/// land.
 fn image_lines(
     text: &str,
     note: &VaultPath,
     attachments: &[VaultPath],
-    vault: &NoteVault,
+    images: &mut Images,
     pane: ImagePane,
-    redraw: impl Fn(&mut App) + Clone + 'static,
+    view: WeakEntity<EditorView>,
     cx: &mut App,
 ) -> Vec<ImageLine> {
     // Most notes embed nothing: skip the scan.
@@ -196,10 +213,12 @@ fn image_lines(
         .into_iter()
         .map(|embed| {
             let file = resolve_image_embed(&embed, note, attachments)
-                .map(|found| vault.path_to_pathbuf(&found));
+                .map(|found| images.vault.path_to_pathbuf(&found));
             let natural = match file.as_ref().map(|file| (file, store.size_of(file))) {
                 Some((file, ImageState::Sized { width, height })) => {
-                    store.request(file, cx, redraw.clone());
+                    if images.requested.insert(file.clone()) {
+                        store.request(file, cx, on_decoded(view.clone(), file.clone()));
+                    }
                     Some((width, height))
                 }
                 Some((_, ImageState::Ready(_, width, height))) => Some((width, height)),
