@@ -146,6 +146,14 @@ pub enum FacetEvent {
         at: Point<Pixels>,
         target: FollowTarget,
     },
+    /// A click on the checkbox of the task on source line `line` (0-based)
+    /// of `note`, the piece's own note. `seen` is that line as the piece
+    /// drew it: the vault checks it before it writes.
+    ToggleTask {
+        note: VaultPath,
+        line: usize,
+        seen: String,
+    },
     /// The picks changed; the workspace saves the session.
     PicksChanged,
     /// A collection asks for its query to run again (`r`, `Refresh`).
@@ -429,6 +437,24 @@ impl FacetView {
         if let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) {
             cx.emit(FacetEvent::Follow { from: note, target });
         }
+    }
+
+    /// A click on a task checkbox on row `row` of chunk `i`, whose text
+    /// there is `seen`: ask the host to tick it, by the source line the
+    /// chunk's plan gives that row. A row in a table's header lines is no
+    /// task.
+    fn toggle_task(&mut self, i: usize, row: usize, seen: String, cx: &mut Context<Self>) {
+        let Some(note) = self.members.member_of(i).map(|m| m.path.clone()) else {
+            return;
+        };
+        let Some(plan) = self.members.chunk(i) else {
+            return;
+        };
+        let Some(below_lead) = row.checked_sub(plan.lead_lines) else {
+            return;
+        };
+        let line = plan.first_line + below_lead;
+        cx.emit(FacetEvent::ToggleTask { note, line, seen });
     }
 
     /// Chunk `i` asks for the Link menu on `target` at `at`: the host opens

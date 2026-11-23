@@ -138,6 +138,11 @@ pub enum EditorEvent {
     /// the presses right after a follow emit nothing: they are text presses
     /// (caret, selection).
     ReadOnlyFollow { target: FollowTarget },
+    /// A plain press on a task checkbox in a read-only editor: the owner
+    /// decides whether to toggle it. `row` is the buffer row of the task
+    /// line and `line` its text, which the owner checks against the note
+    /// before it writes. The press places no caret and starts no selection.
+    TaskToggle { row: usize, line: String },
     /// A right-press with no selection on a **follow target** (a link, a
     /// label), in an editor that edits or a read-only one: open the Link
     /// menu for `target` at `at`, the pointer in window coordinates. It
@@ -281,6 +286,12 @@ impl EditorView {
         let mut view = Self::build(Some(text.to_string()), false, tx, messages, cx);
         view.input_blocked = true;
         view.read_only = true;
+        // Nothing is being edited, so no row ever shows as raw source
+        // (ADR-0062).
+        view.editor
+            .session_mut()
+            .display
+            .set_reveal_caret_row(false);
         view
     }
 

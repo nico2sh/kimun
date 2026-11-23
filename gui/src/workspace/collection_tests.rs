@@ -1377,6 +1377,102 @@ mod in_a_group {
         assert_eq!(member_text(&s, group, "b.md", cx).as_deref(), Some(B));
     }
 
+    const TASKS: &str = "# T\n\n- [ ] task #x\n";
+
+    /// Ticks the task on line 2 of `t.md`, as a click in a piece asks.
+    fn toggle_t(s: &Started, seen: &str, cx: &mut TestAppContext) {
+        let seen = seen.to_string();
+        s.workspace.update(cx, |w, cx| {
+            w.toggle_facet_task(path("/t.md"), 2, seen, cx);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ticking_a_task_in_a_piece_writes_the_note_and_redraws_the_piece(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = vault(cx, &rt, &[("t.md", TASKS)], "a.md");
+        let group = new_tab(&s, cx);
+        open_coll(&s, &rt, group, "#x", vec![tag("x")], cx);
+        toggle_t(&s, "- [ ] task #x", cx);
+        let ticked = "# T\n\n- [x] task #x\n";
+        drive(&rt, cx, |cx| {
+            member_text(&s, group, "t.md", cx).as_deref() == Some(ticked)
+        });
+        assert_eq!(s.flash(cx), None, "a tick says nothing");
+        toggle_t(&s, "- [x] task #x", cx);
+        drive(&rt, cx, |cx| {
+            member_text(&s, group, "t.md", cx).as_deref() == Some(TASKS)
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ticking_a_task_reloads_the_clean_editor_that_holds_the_note(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = vault(cx, &rt, &[("t.md", TASKS)], "t.md");
+        let editor_group = active(&s, cx);
+        let group = new_tab(&s, cx);
+        open_coll(&s, &rt, group, "#x", vec![tag("x")], cx);
+        toggle_t(&s, "- [ ] task #x", cx);
+        let ticked = "# T\n\n- [x] task #x\n";
+        let editor = cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .state(editor_group)
+                .unwrap()
+                .editor
+                .clone()
+        });
+        // Else the next edit and save in that editor would write the old
+        // box back over the tick.
+        drive(&rt, cx, |cx| {
+            cx.read(|cx| editor.read(cx).editor.get_text() == ticked)
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ticking_a_task_that_changed_leaves_the_note_and_says_so(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = vault(cx, &rt, &[("t.md", TASKS)], "a.md");
+        let group = new_tab(&s, cx);
+        open_coll(&s, &rt, group, "#x", vec![tag("x")], cx);
+        toggle_t(&s, "- [ ] a task that is gone", cx);
+        drive(&rt, cx, |cx| s.flash(cx).is_some());
+        let said = s.flash(cx).unwrap();
+        assert!(said.contains("changed"), "{said}");
+        assert_eq!(member_text(&s, group, "t.md", cx).as_deref(), Some(TASKS));
+    }
+
+    #[gpui_kit::test]
+    fn ticking_a_task_is_refused_while_an_editor_holds_unsaved_text(cx: &mut TestAppContext) {
+        let rt = super::super::start_tests::runtime();
+        let _guard = rt.enter();
+        let (_v, s) = vault(cx, &rt, &[("t.md", TASKS)], "t.md");
+        let editor_group = active(&s, cx);
+        let editor = cx.read(|cx| {
+            s.workspace
+                .read(cx)
+                .state(editor_group)
+                .unwrap()
+                .editor
+                .clone()
+        });
+        cx.update(|cx| {
+            editor.update(cx, |view, cx| {
+                view.editor.insert_at_cursor("unsaved ");
+                cx.notify();
+            })
+        });
+        let group = new_tab(&s, cx);
+        open_coll(&s, &rt, group, "#x", vec![tag("x")], cx);
+        toggle_t(&s, "- [ ] task #x", cx);
+        let said = s.flash(cx).expect("a refusal");
+        assert!(said.starts_with("Save "), "{said}");
+        assert_eq!(member_text(&s, group, "t.md", cx).as_deref(), Some(TASKS));
+    }
+
     #[gpui_kit::test]
     fn renaming_a_member_rekeys_it_and_rereads(cx: &mut TestAppContext) {
         let rt = super::super::start_tests::runtime();

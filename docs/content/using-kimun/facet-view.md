@@ -5,7 +5,7 @@ weight = 18
 
 # Facet view
 
-A facet view shows one note in read-only form. You pick headings, tags, and note links from a bar, and the view shows only the parts of the note that belong to them. Use it to read one topic out of a long note, such as a journal.
+A facet view shows one note in read-only form. You can still tick the tasks in it. You pick headings, tags, and note links from a bar, and the view shows only the parts of the note that belong to them. Use it to read one topic out of a long note, such as a journal.
 
 The facet view is in the [desktop app](@/using-kimun/desktop-app.md). The terminal app does not have it.
 
@@ -74,6 +74,8 @@ If the note has no text, the view says `This note is empty.`
 - The text of a piece is read-only text. A click in it gives the piece the keyboard. Drag to select text. Double-click plain text to select a word. `Ctrl+C` (`Cmd+C` on macOS) copies the selection of the piece that has the keyboard. A drag across a link copies the link as it is written in the note, for example `[text](note.md)`. When the piece loses the keyboard, for example when you press `Esc` or `Tab` or click somewhere else, its selection is cleared. A click on plain text does not change your picks. To filter, use the chips, the lists, the picked facets, and the breadcrumb buttons.
 - Click a link or a tag to follow it. Kimün follows it when you release the button. A link to a note opens that note in a new tab. A link to an attachment opens it in a new tab. A link to a web address opens in your browser. A tag opens a search for that tag.
 - A drag that leaves the link or the tag, or that moves more than a few pixels, selects text and follows nothing. So you can drag across part of a long link to copy it. A double click on a link or a tag does not select the word, because the first click already followed. `Ctrl+click` (`Cmd+click` on macOS) follows too. The mouse cursor over every tag and link is a pointing hand.
+- Click the box of a task, `[ ]` or `[x]`, to tick it or to clear it. Kimün writes the change to the note at once. The click puts no cursor in the text. This works in a facet view of a note and in a [collection](#collections). A piece never shows the Markdown of a line as written, as the editor does for the line with the cursor. A heading, a link, or bold text keeps its look when you click it.
+- Kimün does not tick a task when the note is open in an editor with unsaved changes. It flashes `Save` and the name of the note `before you tick its tasks here.` If the note changed since the piece was drawn, Kimün changes nothing, redraws the pieces, and says that the note changed. Click the task again.
 - Right-click a link or a tag (also called a label) to open the [link menu](@/using-kimun/desktop-app.md#the-link-menu). In a facet view, it has no plain Open item.
 - In a normal editor, a plain click on a link or a tag only places the cursor.
 - The view shows the note as pieces of text. A piece is one block, or several blocks that are next to each other. For example, a heading section is one piece. A piece has no frame. A slim row above it, a little lighter or darker than the view, holds the breadcrumb and the `Open note` button. The breadcrumb starts at the same left edge as the text of the piece.
@@ -116,7 +118,7 @@ While you type in the `Filter` field of a list, letters go to the field.
 
 ## Limits
 
-- The view is read-only. To change the note, go back with `Edit note`.
+- The view is read-only, with one exception: you can tick a task. To change anything else in the note, go back with `Edit note`. You tick a task with the mouse only.
 - A facet view of a note shows one note. To read many notes at once, open a [collection](#collections).
 - It draws at most 100 pieces of text at a time. If there are more, the last row says `Show N more`, where N is how many pieces the next click shows. Next to it, the row says how many pieces are drawn, for example `100 of 340 pieces shown`. Each click doubles the limit.
 - Kimün finds facets in the text of the note. A tag in a code block or in the front matter is not a facet. Links to web addresses and to attachments are not facets.
