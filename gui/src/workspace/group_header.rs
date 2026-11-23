@@ -267,6 +267,10 @@ impl Workspace {
             .p_0p5()
             .rounded_md()
             .bg(surface)
+            // The surface hides the editor under it, so it also takes the
+            // pointer: an arrow, not the editor's text cursor.
+            .occlude()
+            .cursor_default()
             .children(self.facet_or_refresh(CORNER_FACET_ID, CORNER_REFRESH_ID, group, cx))
             .child(
                 div()
