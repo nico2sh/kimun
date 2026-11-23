@@ -57,6 +57,8 @@ pub(crate) mod sync;
 /// Host-scoped paths and file operations: the machine kimün runs on, its
 /// directories, and the file operations carrying OS-specific knowledge.
 pub mod system;
+mod vault_journal;
+mod vault_note_edits;
 mod vault_pinned_notes;
 mod vault_properties;
 mod vault_saved_searches;
@@ -83,7 +85,6 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::{NaiveDate, Utc};
 use error::{FSError, VaultError};
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
@@ -401,95 +402,6 @@ impl NoteVault {
         nfs::path_exists(self.workspace_path(), path)
             .await
             .unwrap_or(false)
-    }
-
-    /// Directory under which journal entries are created.
-    pub fn journal_path(&self) -> &VaultPath {
-        &self.journal_path
-    }
-
-    /// Directory under which quick-capture notes are created.
-    pub fn inbox_path(&self) -> &VaultPath {
-        &self.inbox_path
-    }
-
-    /// Overrides the inbox directory used by [`Self::quick_note`].
-    pub fn set_inbox_path(&mut self, path: VaultPath) {
-        self.inbox_path = path;
-    }
-
-    /// Creates a timestamped note under the inbox directory. On name collision
-    /// (including TOCTOU between the in-memory probe and the FS create), tries
-    /// the next suffix up to `-99`. The retry loop calls `create_note`
-    /// directly so each iteration's existence check is the atomic
-    /// `O_EXCL` open inside `nfs::create_note_exclusive`.
-    pub async fn quick_note(&self, text: &str) -> Result<NoteDetails, VaultError> {
-        let base_name = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
-        let candidate = |name: &str| {
-            self.inbox_path
-                .append(&VaultPath::note_path_from(name))
-                .absolute()
-        };
-
-        for attempt in 0..=99 {
-            let path = if attempt == 0 {
-                candidate(&base_name)
-            } else if attempt == 1 {
-                continue; // attempts are labelled `name`, `name-2`, … `name-99`
-            } else {
-                candidate(&format!("{}-{}", base_name, attempt))
-            };
-            match self.create_note(&path, text).await {
-                Ok(_) => return Ok(NoteDetails::new(&path, text)),
-                Err(VaultError::NoteExists { .. }) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-
-        let placeholder = candidate(&base_name);
-        Err(VaultError::FSError(FSError::InvalidPath {
-            path: placeholder.to_string(),
-            message: "Could not find a free quick note name".to_string(),
-        }))
-    }
-
-    /// Loads today's journal entry, creating it with a date heading if it does
-    /// not exist yet. Returns the note details, its content, and `true` when the
-    /// entry was freshly created.
-    pub async fn journal_entry(&self) -> Result<(NoteDetails, String, bool), VaultError> {
-        let (title, note_path) = self.get_todays_journal();
-        let (content, created) = self
-            .load_or_create_note(&note_path, Some(format!("# {}\n\n", title)))
-            .await?;
-        let details = NoteDetails::new(&note_path, &content);
-        Ok((details, content, created))
-    }
-
-    fn get_todays_journal(&self) -> (String, VaultPath) {
-        let today_string = crate::dates::format_iso_date(Utc::now().date_naive());
-
-        (
-            today_string.clone(),
-            self.journal_path
-                .append(&VaultPath::note_path_from(&today_string))
-                .absolute(),
-        )
-    }
-
-    /// Parses the date out of a journal note path, or `None` when `note_path`
-    /// is not a `YYYY-MM-DD` note directly under the journal directory.
-    pub fn journal_date(&self, note_path: &VaultPath) -> Option<NaiveDate> {
-        if !note_path.is_note() {
-            return None;
-        }
-
-        let (parent, _) = note_path.get_parent_path();
-        if parent.eq(&self.journal_path) {
-            let name = note_path.get_clean_name();
-            crate::dates::parse_iso_date(&name)
-        } else {
-            None
-        }
     }
 
     /// Loads the note at `path` if it exists; otherwise creates it with `default_text`
@@ -1088,135 +1000,6 @@ impl NoteVault {
         pinned_notes::on_note_deleted(self.workspace_path(), &path).await;
 
         Ok(())
-    }
-
-    /// Computes the result of replacing `pattern` with `replacement` in `text`.
-    /// Pure — no I/O, no locking.
-    ///
-    /// `pattern` is a literal substring by default. When `regex` is `true` it is
-    /// a regular expression ([`regex`] crate syntax) and `replacement` may
-    /// reference capture groups (`$1`, `${name}`; use `$$` for a literal `$`).
-    /// Use inline flags for line/case behaviour, e.g. `(?m)`, `(?s)`, `(?i)`.
-    ///
-    /// When `all` is `false` the match must be unique: returns
-    /// [`VaultError::ReplaceTextNotFound`] when there is no match and
-    /// [`VaultError::ReplaceTextNotUnique`] when there is more than one. When
-    /// `all` is `true` every match is replaced. An invalid regex yields
-    /// [`VaultError::InvalidRegex`]. `path` is only used to build the errors.
-    /// Returns `(match count, new content)`.
-    fn compute_replacement(
-        text: &str,
-        pattern: &str,
-        replacement: &str,
-        all: bool,
-        regex: bool,
-        path: &VaultPath,
-    ) -> Result<(usize, String), VaultError> {
-        let count;
-        let updated = if regex {
-            let re = regex::Regex::new(pattern).map_err(|e| VaultError::InvalidRegex {
-                pattern: pattern.to_string(),
-                message: e.to_string(),
-            })?;
-            count = re.find_iter(text).count();
-            if count == 0 {
-                return Err(VaultError::ReplaceTextNotFound {
-                    path: path.flatten(),
-                });
-            }
-            if !all && count > 1 {
-                return Err(VaultError::ReplaceTextNotUnique {
-                    path: path.flatten(),
-                });
-            }
-            // regex `replacen` treats a limit of 0 as "replace all".
-            let limit = if all { 0 } else { 1 };
-            re.replacen(text, limit, replacement).into_owned()
-        } else {
-            count = if pattern.is_empty() {
-                0
-            } else {
-                text.matches(pattern).count()
-            };
-            if count == 0 {
-                return Err(VaultError::ReplaceTextNotFound {
-                    path: path.flatten(),
-                });
-            }
-            if !all && count > 1 {
-                return Err(VaultError::ReplaceTextNotUnique {
-                    path: path.flatten(),
-                });
-            }
-            if all {
-                text.replace(pattern, replacement)
-            } else {
-                text.replacen(pattern, replacement, 1)
-            }
-        };
-        Ok((count, updated))
-    }
-
-    /// Replaces occurrences of `pattern` with `replacement` in the note at
-    /// `path`, writing the result. See `compute_replacement` for the matching
-    /// rules (literal vs `regex`, unique-unless-`all`, capture references).
-    /// Returns the number of replacements made.
-    pub async fn replace_in_note(
-        &self,
-        path: &VaultPath,
-        pattern: &str,
-        replacement: &str,
-        all: bool,
-        regex: bool,
-    ) -> Result<usize, VaultError> {
-        // Hold the per-note lock across the read and the write so a concurrent
-        // in-process writer can't change the note between them (lost update).
-        let _guard = self.lock_note(path).await;
-        let text = self.get_note_text(path).await?;
-        let (count, updated) =
-            Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
-        // Already holding the per-note lock; use the unlocked save so we don't
-        // re-acquire it (the tokio Mutex is not reentrant).
-        self.save_note_unlocked(path, updated).await?;
-        Ok(count)
-    }
-
-    /// Flips the checkbox of the task on source line `line` (0-based) of the
-    /// note at `path`, writing the result. `seen` is the line as the caller
-    /// read it; the note is left alone and [`VaultError::TaskChanged`] is
-    /// returned when that line is no longer that task (see [`note::toggle_task`]).
-    pub async fn toggle_task(
-        &self,
-        path: &VaultPath,
-        line: usize,
-        seen: &str,
-    ) -> Result<(), VaultError> {
-        // The per-note lock spans the read and the write, as in
-        // `replace_in_note`.
-        let _guard = self.lock_note(path).await;
-        let text = self.get_note_text(path).await?;
-        let updated = note::toggle_task(&text, line, seen)
-            .ok_or_else(|| VaultError::TaskChanged { path: path.clone() })?;
-        self.save_note_unlocked(path, updated).await?;
-        Ok(())
-    }
-
-    /// Dry-run of [`Self::replace_in_note`]: computes what the note would contain after
-    /// the replacement **without writing** (and without taking the write lock —
-    /// the result is advisory). Returns the same errors the real replace would
-    /// (not found / not unique / invalid regex).
-    pub async fn preview_replace(
-        &self,
-        path: &VaultPath,
-        pattern: &str,
-        replacement: &str,
-        all: bool,
-        regex: bool,
-    ) -> Result<ReplacePreview, VaultError> {
-        let text = self.get_note_text(path).await?;
-        let (count, content) =
-            Self::compute_replacement(&text, pattern, replacement, all, regex, path)?;
-        Ok(ReplacePreview { count, content })
     }
 
     /// The note's labels: inline `#hashtags` and frontmatter `tags:` together,
