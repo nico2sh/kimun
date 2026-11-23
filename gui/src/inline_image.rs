@@ -401,7 +401,7 @@ fn frame_zero<'a>(decoder: impl AnimationDecoder<'a>) -> Result<RenderImage, Fai
         .next()
         .ok_or(Failure::Undecodable)?
         .map_err(|_| Failure::Undecodable)?;
-    for pixel in frame.buffer_mut().chunks_exact_mut(4) {
+    for pixel in frame.buffer_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Ok(RenderImage::new(vec![frame]))
