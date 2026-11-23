@@ -20,12 +20,17 @@
 //! back; the owner hands it to [`Workspace::run_row_pick`]. A right-click
 //! never activates the row.
 //!
+//! An **Inline image** in a note's editor has the same menu, for its
+//! attachment, as a row drawn outside FILES ([`Workspace::image_entry_menu`]).
+//!
 //! A pick runs a moment after the menu opened: an open or a reveal of an
 //! entry that was moved or deleted since flashes an error and does nothing.
 
-use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
+use std::rc::Rc;
+
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::{
-    AnyElement, ClipboardItem, Context, EventEmitter, Global, InteractiveElement, IntoElement,
+    AnyElement, App, ClipboardItem, Context, EventEmitter, Global, InteractiveElement, IntoElement,
     ParentElement, Styled, WeakEntity, Window,
 };
 use kimun_core::error::{FSError, VaultError};
@@ -39,6 +44,7 @@ use kimun_notes::logic::layout_tree::Axis as TreeAxis;
 use super::Workspace;
 use super::file_dialogs::FileOpKind;
 use super::note::OpenAt;
+use crate::editor_view::EntryMenu;
 
 /// The flash after `Copy path`.
 pub(crate) const PATH_COPIED: &str = "Path copied";
@@ -193,40 +199,92 @@ where
     T: EventEmitter<E>,
     E: 'static,
 {
-    row.context_menu(move |mut menu, _, cx| {
-        // Core's own comparison: its pins are absolute, the row's path may
-        // not be.
-        let pinned = cx
-            .try_global::<PinnedPaths>()
-            .is_some_and(|pins| pinned_notes::position_of(&pins.0, &path).is_some());
-        let ctx = RowMenuContext {
+    row.context_menu(move |menu, _, cx| {
+        let owner = owner.clone();
+        fill_row_menu(
+            menu,
+            &path,
             kind,
             in_files,
-            pinned,
-        };
-        for entry in row_menu_entries(&ctx) {
-            menu = match entry {
-                RowMenuEntry::Separator => menu.separator(),
-                RowMenuEntry::Item(pick) => {
-                    let (owner, path) = (owner.clone(), path.clone());
-                    menu.item(
-                        PopupMenuItem::new(pick.label()).on_click(move |_, window, cx| {
-                            let event = event(pick, path.clone());
-                            let owner = owner.clone();
-                            window.defer(cx, move |_, cx| {
-                                owner.update(cx, |_, cx| cx.emit(event)).ok();
-                            });
-                        }),
-                    )
-                }
-            };
-        }
-        menu
+            cx,
+            move |pick, path, window, cx| {
+                let event = event(pick, path);
+                let owner = owner.clone();
+                window.defer(cx, move |_, cx| {
+                    owner.update(cx, |_, cx| cx.emit(event)).ok();
+                });
+            },
+        )
     })
     .into_any_element()
 }
 
+/// `menu` with the row menu's entries for the entry at `path`, a `kind`
+/// entry drawn in FILES or not. Clicking an item runs `on_pick` with it and
+/// the path.
+fn fill_row_menu(
+    mut menu: PopupMenu,
+    path: &VaultPath,
+    kind: RowKind,
+    in_files: bool,
+    cx: &App,
+    on_pick: impl Fn(RowPick, VaultPath, &mut Window, &mut App) + 'static,
+) -> PopupMenu {
+    // Core's own comparison: its pins are absolute, the row's path may
+    // not be.
+    let pinned = cx
+        .try_global::<PinnedPaths>()
+        .is_some_and(|pins| pinned_notes::position_of(&pins.0, path).is_some());
+    let ctx = RowMenuContext {
+        kind,
+        in_files,
+        pinned,
+    };
+    let on_pick = Rc::new(on_pick);
+    for entry in row_menu_entries(&ctx) {
+        menu = match entry {
+            RowMenuEntry::Separator => menu.separator(),
+            RowMenuEntry::Item(pick) => {
+                let (on_pick, path) = (on_pick.clone(), path.clone());
+                menu.item(
+                    PopupMenuItem::new(pick.label())
+                        .on_click(move |_, window, cx| on_pick(pick, path.clone(), window, cx)),
+                )
+            }
+        };
+    }
+    menu
+}
+
 impl Workspace {
+    /// The **Entry menu** of an inline image's attachment, for a note's
+    /// editor ([`EditorView::set_entry_menu`]): the row menu of an
+    /// attachment drawn outside FILES. A pick runs here once the menu has
+    /// given the keyboard back, as a row's does.
+    ///
+    /// [`EditorView::set_entry_menu`]: crate::editor_view::EditorView::set_entry_menu
+    pub(super) fn image_entry_menu(cx: &Context<Self>) -> EntryMenu {
+        let workspace = cx.weak_entity();
+        Rc::new(move |menu, path, _, cx| {
+            let workspace = workspace.clone();
+            fill_row_menu(
+                menu,
+                &path,
+                RowKind::Attachment,
+                false,
+                cx,
+                move |pick, path, window, cx| {
+                    let workspace = workspace.clone();
+                    window.defer(cx, move |window, cx| {
+                        workspace
+                            .update(cx, |w, cx| w.run_row_pick(pick, path, window, cx))
+                            .ok();
+                    });
+                },
+            )
+        })
+    }
+
     /// Run `pick`, chosen in the row menu of the entry at `path`. A file
     /// operation opens its dialog; `Copy path` puts the vault path, rooted
     /// at the vault, on the clipboard; `Pin note` pins and `Unpin note`

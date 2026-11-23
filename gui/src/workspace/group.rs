@@ -216,10 +216,12 @@ impl Workspace {
         let tx = self.tx.clone()?;
         let vim = self.active_state().editor.read(cx).editor.is_vim();
         let editor = cx.new(|cx| EditorView::on_channel(vim, tx, cx));
+        let entry_menu = Self::image_entry_menu(cx);
         editor.update(cx, |view, _| {
             view.set_suggestions(Some(Arc::new(VaultSuggestions {
                 vault: vault.clone(),
             })));
+            view.set_entry_menu(Some(entry_menu));
         });
         let watch = cx.observe(&editor, Self::editor_changed);
         let mut state = GroupState::new(editor);

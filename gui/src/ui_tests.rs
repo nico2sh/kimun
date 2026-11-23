@@ -3346,6 +3346,113 @@ mod inline_images {
         });
     }
 
+    /// A point inside the painted image of `row`, `from_bottom` above its
+    /// visible bottom edge.
+    fn inside_image(
+        view: &Entity<EditorView>,
+        row: usize,
+        from_bottom: Pixels,
+        cx: &gpui_kit::App,
+    ) -> Point<Pixels> {
+        let image = image_of(view, row, cx).expect("the image is painted");
+        let shown = image.rect.intersect(&image.clip);
+        point(
+            shown.origin.x + px(1.),
+            shown.origin.y + shown.size.height - from_bottom,
+        )
+    }
+
+    /// A click on the image (here its last line, a pad line) puts the
+    /// cursor at the start of its embed line: the markdown shows where the
+    /// image's top was, the image right under it, and the lines above stay.
+    #[gpui_kit::test]
+    fn a_click_on_an_image_puts_the_cursor_on_its_line(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor(), (0, 0));
+            assert!(pads_under(&view, 1, cx) >= 1, "the image has pad lines");
+            let at = inside_image(&view, 1, px(1.), cx);
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor(), (1, 0));
+            assert!(view.read(cx).editor.selection().is_none_or(|(a, b)| a == b));
+            assert_eq!(rows_painting(&view, "intro", cx), [0]);
+            assert_eq!(rows_painting(&view, "![a](pic.png)", cx), [1]);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 1, cx).expect("still drawn");
+            assert_eq!(image.rect.origin.y, row_top(&p, 2), "under the markdown");
+        })
+        .unwrap();
+    }
+
+    /// An image that starts above the pane: a click on its visible part
+    /// brings its embed line into view, the image under it.
+    #[gpui_kit::test]
+    fn a_click_on_an_image_cut_at_the_pane_top_shows_its_line(cx: &mut TestAppContext) {
+        let mut lines: Vec<String> = (0..80).map(|i| format!("line {i}")).collect();
+        lines.insert(40, "![a](pic.png)".to_string());
+        let note = lines.join("\n");
+        let (handle, view, _vault, _rt) = open_note(cx, &note, &[("pic.png", png(10, 400))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Scrolled so the image starts a line above the pane.
+            window.scroll("editor", ScrollDelta::Lines(point(0., -41.)), cx);
+            window.render_frame(cx);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 40, cx).expect("partly in view");
+            assert!(image.rect.origin.y < p.origin.y, "starts above the pane");
+            let at = inside_image(&view, 40, px(1.), cx);
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor(), (40, 0));
+            let raw = rows_painting(&view, "![a](pic.png)", cx);
+            assert_eq!(raw.len(), 1, "the embed line is in view");
+            let p = painted(&view, cx);
+            let image = image_of(&view, 40, cx).expect("still drawn");
+            assert_eq!(image.rect.origin.y, row_top(&p, raw[0] as u16 + 1));
+        })
+        .unwrap();
+    }
+
+    /// A drag across an image selects the raw markdown of its line: the
+    /// copy is text, never the pixels.
+    #[gpui_kit::test]
+    fn selection_across_an_image_line_copies_the_raw_markdown(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = cell_center(&view, 0, 0, cx);
+            window.pointer_down(from, MouseButton::Left, cx);
+            // Through the image, then onto "after", wherever it is drawn now.
+            let through = inside_image(&view, 1, px(1.), cx);
+            window.pointer_move(through, Some(MouseButton::Left), cx);
+            window.render_frame(cx);
+            let after = rows_painting(&view, "after", cx)[0] as u16;
+            let to = cell_center(&view, 2, after, cx);
+            window.pointer_move(to, Some(MouseButton::Left), cx);
+            window.pointer_up(to, MouseButton::Left, cx);
+            window.render_frame(cx);
+            let editor = &view.read(cx).editor;
+            let (start, end) = editor.selection().expect("a selection");
+            let (start, end) = (start.min(end), start.max(end));
+            let text = editor.get_text();
+            // Rows and columns to byte offsets (the note is ASCII).
+            let offset = |(row, col): (usize, usize)| {
+                text.split('\n')
+                    .take(row)
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>()
+                    + col
+            };
+            let selected = &text[offset(start)..offset(end)];
+            assert_eq!(selected, "intro\n![a](pic.png)\naf");
+        })
+        .unwrap();
+    }
+
     #[gpui_kit::test]
     fn without_a_vault_an_embed_line_is_text(cx: &mut TestAppContext) {
         let (handle, view) = open(cx, NOTE);

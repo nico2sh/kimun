@@ -483,6 +483,7 @@ impl Workspace {
         self.files_file_op(&op, cx);
         self.attachment_file_op(&op, cx);
         self.facet_file_op(&op, cx);
+        self.relist_inline_images(cx);
         let active = self.layout.active_group();
         if !touched.contains(&active) {
             self.refresh_note_counts();
@@ -607,6 +608,23 @@ impl Workspace {
             }
         }
         active_gone
+    }
+
+    /// An operation renamed, moved or deleted entries: every open note's
+    /// editor lists the vault's attachments again, so an **Inline image**
+    /// whose file went shows its "not found" note, and one whose file came
+    /// is drawn. The note's text is left alone (an operation never rewrites
+    /// the embeds that name its entry).
+    fn relist_inline_images(&mut self, cx: &mut Context<Self>) {
+        for state in self.groups.values() {
+            let Some(host) = state.notes.as_ref().filter(|h| h.note.is_some()) else {
+                continue;
+            };
+            let vault = host.session.vault().clone();
+            state
+                .editor
+                .update(cx, |view, cx| view.set_image_vault(Some(vault), cx));
+        }
     }
 
     /// The followed notes were read at their new paths: each loads clean

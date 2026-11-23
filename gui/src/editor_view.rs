@@ -25,7 +25,9 @@
 //! bar open a press never follows, as in the TUI.
 //!
 //! **Right-click.** With a selection a right press copies it and asks for
-//! nothing. Without one, a right press on a link or a label asks the owner
+//! nothing. Without one, a right press on a drawn **Inline image** opens its
+//! attachment's **Entry menu** (built by the owner, [`EditorView::set_entry_menu`]),
+//! on a link or a label it asks the owner
 //! for the Link menu ([`EditorEvent::LinkMenu`]), and anywhere else for the
 //! note menu ([`EditorEvent::ContextMenu`]). Neither moves the caret: the
 //! target is read from the cell under the pointer
@@ -81,7 +83,7 @@ mod pointer;
 mod popup;
 mod read_only;
 
-pub(crate) use self::images::{ImageDraw, ImageLook, ImagePane};
+pub(crate) use self::images::{EntryMenu, ImageDraw, ImageLook, ImagePane};
 #[cfg(test)]
 pub(crate) use self::measure::probe as measure_probe;
 pub(crate) use self::measure::{EditStamp, SLACK, line_height, measure_width};
@@ -232,6 +234,9 @@ pub struct EditorView {
     /// hands it one ([`Self::set_image_vault`]). `None` in a read-only
     /// editor, which never draws them.
     images: Option<images::Images>,
+    /// Builds the **Entry menu** a right press on an inline image opens,
+    /// once its owner hands one ([`Self::set_entry_menu`]).
+    entry_menu: Option<EntryMenu>,
     /// Drains the editor's own channel, when it has one (the tests'
     /// stand-alone `EditorView::new`).
     _messages: Option<Task<()>>,
@@ -413,6 +418,7 @@ impl EditorView {
             autocomplete: None,
             ac_revision,
             images: None,
+            entry_menu: None,
             _messages: messages,
         }
     }

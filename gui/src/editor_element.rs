@@ -24,12 +24,16 @@
 //! their fitted size, one image pixel to one device pixel, or an empty box
 //! while they decode, clipped to the text rows. A failed image's note is
 //! muted text in its embed line. Over each image a hover target shows its
-//! alt text (the file name without one) as a tooltip.
+//! alt text (the file name without one) as a tooltip. A right press on that
+//! target opens the attachment's **Entry menu**, which the editor's owner
+//! builds ([`EditorView::set_entry_menu`]); a left press goes to the text,
+//! as on any other line.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Corners, CursorStyle, Element, ElementId,
@@ -39,11 +43,14 @@ use gpui_kit::{
     StatefulInteractiveElement as _, StrikethroughStyle, Style, Styled as _, TextAlign, TextRun,
     UnderlineStyle, Window, WindowTextSystem, div, fill, point, px, relative, size,
 };
+use kimun_core::nfs::VaultPath;
 use kimun_notes::settings::themes::Theme;
 
 use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_size};
 use crate::editor_font;
-use crate::editor_view::{CaretShape, EditorView, ImageDraw, ImageLook, ImagePane, Painted};
+use crate::editor_view::{
+    CaretShape, EditorView, EntryMenu, ImageDraw, ImageLook, ImagePane, Painted,
+};
 use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
@@ -235,6 +242,8 @@ pub(crate) struct ImagePaint {
     pub(crate) rect: Bounds<Pixels>,
     pub(crate) clip: Bounds<Pixels>,
     pub(crate) image: Option<Arc<RenderImage>>,
+    /// The attachment it draws.
+    pub(crate) path: Option<VaultPath>,
 }
 
 /// Where each image in `draws` paints, for the text rows `text_rows`
@@ -270,6 +279,7 @@ fn place_images(
                 rect,
                 clip,
                 image,
+                path: draw.path.clone(),
             })
         })
         .collect()
@@ -379,9 +389,15 @@ thread_local! {
 
 /// The hover target over an inline image: as big as its visible part, it
 /// paints nothing and shows `tip` as a tooltip. Its accessible name is the
-/// same text, the image's alternative text.
-fn image_hover(row: usize, tip: SharedString, at: gpui_kit::Size<Pixels>) -> AnyElement {
-    div()
+/// same text, the image's alternative text. With a `menu` (the builder and
+/// the image's attachment) a right press on it opens that **Entry menu**.
+fn image_hover(
+    row: usize,
+    tip: SharedString,
+    at: gpui_kit::Size<Pixels>,
+    menu: Option<(EntryMenu, VaultPath)>,
+) -> AnyElement {
+    let hover = div()
         .id(image_hover_id(row))
         .role(Role::Image)
         .aria_label(tip.clone())
@@ -392,8 +408,13 @@ fn image_hover(row: usize, tip: SharedString, at: gpui_kit::Size<Pixels>) -> Any
             BUILT_TIPS.with(|built| built.borrow_mut().push(tip.clone()));
             Tooltip::new(tip.clone()).build(window, cx)
         })
-        .test_support()
-        .into_any_element()
+        .test_support();
+    match menu {
+        Some((menu, path)) => hover
+            .context_menu(move |popup, window, cx| menu(popup, path.clone(), window, cx))
+            .into_any_element(),
+        None => hover.into_any_element(),
+    }
 }
 
 impl IntoElement for EditorElement {
@@ -448,6 +469,9 @@ pub struct EditorPrepaint {
     placeholder: Rgba,
     /// A hover target over each image, carrying its tooltip.
     image_hovers: Vec<AnyElement>,
+    /// What a right press on an image opens, when it opens anything
+    /// ([`EditorView::image_menu`]).
+    image_menu: Option<EntryMenu>,
 }
 
 /// An open autocomplete popup waiting to be handed to the window: its size in
@@ -701,6 +725,7 @@ impl Element for EditorElement {
                 image_notes.push((r, note.clone()));
             }
 
+            let image_menu = view.image_menu();
             let caret_at = frame.cursor.filter(|&(_, r)| r < rows);
             let caret_cell = caret_at.map(|(c, r)| cell_bounds(c, r, 1));
             let preedit = view.preedit.as_deref().zip(caret_cell).map(|(text, at)| {
@@ -908,6 +933,7 @@ impl Element for EditorElement {
                 placeholder: theme::image_placeholder(theme),
                 images,
                 image_hovers: Vec::new(),
+                image_menu,
                 text_hitbox: None,
                 target_hitboxes: Vec::new(),
                 target_areas,
@@ -942,7 +968,8 @@ impl Element for EditorElement {
             .iter()
             .map(|paint| {
                 let at = paint.rect.intersect(&paint.clip);
-                let mut hover = image_hover(paint.row, paint.tip.clone(), at.size);
+                let menu = prepaint.image_menu.clone().zip(paint.path.clone());
+                let mut hover = image_hover(paint.row, paint.tip.clone(), at.size, menu);
                 hover.prepaint_as_root(
                     at.origin,
                     at.size.map(AvailableSpace::Definite),
@@ -1050,10 +1077,6 @@ impl Element for EditorElement {
             }
         });
 
-        for hover in &mut prepaint.image_hovers {
-            hover.paint(window, cx);
-        }
-
         let origin = bounds.origin;
         let cells = prepaint.cells;
         window.on_mouse_event({
@@ -1103,6 +1126,13 @@ impl Element for EditorElement {
                 }
             }
         });
+        // After the pane's own listeners: a press bubbles to the last one
+        // registered first, so an image's menu takes its right press before
+        // the pane would ask for the note menu. A left press goes on to the
+        // pane.
+        for hover in &mut prepaint.image_hovers {
+            hover.paint(window, cx);
+        }
     }
 }
 
