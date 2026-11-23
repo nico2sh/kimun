@@ -3,6 +3,7 @@
 // `#![cfg(test)]`, and these TempDir fixtures call `std::fs` directly.
 #![cfg(test)]
 
+use crate::nfs::pinned_notes;
 use crate::*;
 use chrono::{NaiveDate, Utc};
 use std::time::Duration;
