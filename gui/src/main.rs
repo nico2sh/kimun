@@ -46,6 +46,7 @@ mod measure_tests;
 mod mono_families;
 mod motion;
 mod remote_image;
+mod remote_placeholder;
 mod row_cache;
 mod row_paint;
 mod shell_layout;

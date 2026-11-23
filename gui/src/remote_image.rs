@@ -13,10 +13,6 @@
 //! when it is built, and the real fetcher reuses it for each fetch and each
 //! redirect hop. No other module names `ureq`.
 
-// The surfaces that call the store come in later steps of the remote images
-// work. Until then the release build does not use it.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::Read;
@@ -79,6 +75,12 @@ impl FetchFailure {
             FetchFailure::Other(text) => text.clone(),
         };
         format!("Load failed: {reason}")
+    }
+
+    /// Whether "Retry" can help. An address that is not a web address
+    /// never loads, so it offers no retry.
+    pub(crate) fn can_retry(&self) -> bool {
+        *self != not_a_web_address()
     }
 }
 
@@ -477,6 +479,8 @@ impl RemoteImages {
 
     /// Keeps a copy of the allowed hosts. The workspace calls it when the
     /// settings load and after each change of the list.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_allowed_hosts(&mut self, hosts: &[String]) {
         self.inner.borrow_mut().allowed = hosts.to_vec();
     }
@@ -528,6 +532,8 @@ impl RemoteImages {
     /// that is loading, it adds `on_done` and starts nothing. It forgets a
     /// failure of the session. It does nothing for a saved copy and for an
     /// address that is not `https`.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn load(
         &mut self,
         url: &str,
@@ -619,6 +625,8 @@ impl RemoteImages {
     /// host, and the hosts added before stay, so a chain through several
     /// hosts loads after one call for each. It does nothing when the
     /// redirect of `url` is not blocked.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn allow_redirect_once(&mut self, url: &str) {
         let key = key_of(url);
         let mut inner = self.inner.borrow_mut();
@@ -633,6 +641,8 @@ impl RemoteImages {
 
     /// Forgets the failure and the redirect permission of `url`, so it can
     /// load again.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn retry(&mut self, url: &str) {
         let key = key_of(url);
         let mut inner = self.inner.borrow_mut();
@@ -641,6 +651,8 @@ impl RemoteImages {
     }
 
     /// Removes the saved copy of `url` and loads it again.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reload(
         &mut self,
         url: &str,
@@ -653,6 +665,8 @@ impl RemoteImages {
 
     /// Removes the saved copy of `url` and its session state. The address
     /// shows its placeholder again.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn clear_copy(&mut self, url: &str) {
         self.remove_copy(url);
         self.retry(url);
@@ -673,6 +687,8 @@ impl RemoteImages {
     /// of the session. The host check uses the host the store reads from the
     /// address. It starts nothing else. `on_done` runs once for each fetch
     /// that ends.
+    // Called by the surfaces from the next step of the remote images work.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn auto_load(
         &mut self,
         urls: &[(String, String)],
@@ -706,6 +722,28 @@ pub(crate) fn set_fetcher(cx: &mut App, fetcher: Arc<dyn Fetcher>) {
 #[cfg(test)]
 pub(crate) fn set_cache(cx: &mut App, cache: ImageCache) {
     cx.default_global::<RemoteImages>().inner.borrow_mut().cache = Some(cache);
+}
+
+impl RemoteImages {
+    /// Puts `url` in `state` with no fetch: `Failed`, `RedirectBlocked`,
+    /// or `Loading`. Other states come from the cache and the scheme.
+    #[cfg(test)]
+    pub(crate) fn set_state_for_test(&self, url: &str, state: RemoteState) {
+        let key = key_of(url);
+        let mut inner = self.inner.borrow_mut();
+        match state {
+            RemoteState::Failed(f) => {
+                inner.sessions.insert(key, Session::Failed(f));
+            }
+            RemoteState::RedirectBlocked { host } => {
+                inner.sessions.insert(key, Session::RedirectBlocked(host));
+            }
+            RemoteState::Loading => {
+                inner.in_flight.insert(key, Vec::new());
+            }
+            other => panic!("cannot set {other:?} for a test"),
+        }
+    }
 }
 
 /// The calls of [`Fetcher::get`] so far.

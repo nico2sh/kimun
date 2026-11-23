@@ -95,8 +95,9 @@ use super::note::{Closing, flush_problem};
 use crate::attachment_index::AttachmentIndex;
 use crate::editor_element::image_tooltip;
 use crate::grid::CellMetrics;
-use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, look_of, natural_of, paint_look};
+use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, look_of, paint_look};
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
+use crate::remote_image::RemoteImages;
 use crate::theme;
 
 /// Element ids, for tests.
@@ -489,7 +490,9 @@ fn plan_images(
     let Some((vault, attachments)) = found else {
         return ImagePlan::none(pane);
     };
-    let embeds = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
+    let mut embeds = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
+    // The preview does not draw remote embeds yet: their lines stay text.
+    embeds.retain(|embed| embed.remote.is_none());
     if embeds.is_empty() {
         return ImagePlan::none(pane);
     }
@@ -515,15 +518,14 @@ fn plan_images(
 fn header_of(embed: &Embed, store: &mut ImageStore) -> (Option<(u32, u32)>, Option<Failure>) {
     #[cfg(test)]
     HEADER_READS.with(|reads| reads.set(reads.get() + 1));
-    if let Some(natural) = natural_of(embed, store) {
-        return (Some(natural), None);
-    }
-    let failure = match embed.file.as_ref().map(|file| store.size_of(file)) {
-        Some(ImageState::Failed(failure)) => failure,
+    match embed.file.as_ref().map(|file| store.size_of(file)) {
+        Some(ImageState::Sized { width, height } | ImageState::Ready(_, width, height)) => {
+            (Some((width, height)), None)
+        }
+        Some(ImageState::Failed(failure)) => (None, Some(failure)),
         // Not resolved to an attachment.
-        _ => Failure::Missing,
-    };
-    (None, Some(failure))
+        None => (None, Some(Failure::Missing)),
+    }
 }
 
 /// `text` cut to at most `max` bytes on a character boundary, and whether
@@ -702,12 +704,12 @@ struct RowStyle {
 /// The pixels of each image the rows of one render draw, looked up once
 /// per image. `None` store: the note draws no image.
 struct ImagePixels {
-    store: Option<ImageStore>,
+    store: Option<(ImageStore, RemoteImages)>,
     found: Vec<(usize, Option<Arc<RenderImage>>)>,
 }
 
 impl ImagePixels {
-    fn new(store: Option<ImageStore>) -> Self {
+    fn new(store: Option<(ImageStore, RemoteImages)>) -> Self {
         Self {
             store,
             found: Vec::new(),
@@ -721,16 +723,16 @@ impl ImagePixels {
         if let Some((_, pixels)) = self.found.iter().find(|(i, _)| *i == image) {
             return pixels.clone();
         }
-        let store = self.store.as_mut()?;
+        let (store, remote) = self.store.as_mut()?;
         let embed = shown
             .wrapped
             .images
             .get(image)
             .and_then(|i| shown.plan.embeds.get(i.embed))?;
         // The look's state only: the size is the model's own `fitted`.
-        let pixels = match look_of(embed, store, shown.wrapped.pane) {
+        let pixels = match look_of(embed, store, remote, shown.wrapped.pane) {
             ImageLook::Ready(pixels, _) => Some(pixels),
-            ImageLook::Pending(_) | ImageLook::Note(_) => None,
+            ImageLook::Pending(_) | ImageLook::Note(_) | ImageLook::Remote(_) => None,
         };
         self.found.push((image, pixels.clone()));
         pixels
@@ -1689,9 +1691,12 @@ impl Render for SearchPreview {
                         };
                         // Most notes embed nothing: no image work at all.
                         let images = !shown.wrapped.images.is_empty();
-                        let mut pixels = ImagePixels::new(
-                            images.then(|| cx.default_global::<ImageStore>().clone()),
-                        );
+                        let mut pixels = ImagePixels::new(images.then(|| {
+                            (
+                                cx.default_global::<ImageStore>().clone(),
+                                cx.default_global::<RemoteImages>().clone(),
+                            )
+                        }));
                         let rows = range
                             .clone()
                             .filter_map(|ix| Some((ix, shown.wrapped.rows.get(ix)?)))

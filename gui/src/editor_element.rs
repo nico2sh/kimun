@@ -263,7 +263,7 @@ fn place_images(
             let (image, (w, h)) = match &draw.look {
                 ImageLook::Ready(image, fitted) => (Some(image.clone()), *fitted),
                 ImageLook::Pending(fitted) => (None, *fitted),
-                ImageLook::Note(_) => return None,
+                ImageLook::Note(_) | ImageLook::Remote(_) => return None,
             };
             let top = text_rows.origin.y + line_height * draw.top as f32;
             let region = Bounds::new(
