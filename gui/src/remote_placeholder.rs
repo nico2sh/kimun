@@ -76,8 +76,17 @@ fn text_of(look: &RemoteLook) -> String {
         RemoteLook::RedirectBlocked { host, .. } => format!("Remote image redirects to {host}"),
         RemoteLook::Loading { host } => format!("Loading image from {host}"),
         RemoteLook::Insecure => "Not loaded: http is not secure".to_string(),
-        RemoteLook::Failed { note, .. } => note.clone(),
+        RemoteLook::Failed { note, .. } => one_line(note),
     }
+}
+
+/// `text` with each control character (a newline, a carriage return, a
+/// tab, and the others) as one space. A shaped line must hold no newline,
+/// and a failure note can come from an error text of several lines.
+fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 /// The buttons `look` offers, left to right: each label and its action.
@@ -128,6 +137,7 @@ pub(crate) fn paint_remote_look(
     let pad = style.font_size * PAD_EMS;
     let inset = px(BUTTON_INSET).min(row / 4.);
     let shape = |window: &mut Window, text: String, color: Rgba| {
+        let text = one_line(&text);
         let run = TextRun {
             len: text.len(),
             font: style.font.clone(),
@@ -384,6 +394,38 @@ mod tests {
             assert_eq!(style.fill, theme::image_placeholder(&t), "{}", t.name);
             assert_eq!(style.button, theme::foreground(&t), "{}", t.name);
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_failure_note_with_control_characters_paints_on_one_line(cx: &mut TestAppContext) {
+        for note in [
+            "Load failed: first line\nsecond line\nthird",
+            "Load failed: a\r\nb\tc\u{7}d",
+        ] {
+            let look = RemoteLook::Failed {
+                note: note.into(),
+                retry: true,
+            };
+            let text = text_of(&look);
+            assert!(!text.chars().any(char::is_control), "{text:?}");
+            assert_eq!(text.chars().count(), note.chars().count());
+            let hits = hits_of(cx, &look, rect(), rect());
+            assert_eq!(
+                hits.iter().map(|(_, a)| *a).collect::<Vec<_>>(),
+                [RemoteAction::Retry]
+            );
+        }
+    }
+
+    #[test]
+    fn action_at_takes_the_left_edge_of_a_button_and_not_its_right_edge() {
+        let load = Bounds::new(point(px(10.), px(40.)), size(px(50.), px(18.)));
+        let hits = vec![(load, RemoteAction::Load)];
+        assert_eq!(
+            action_at(&hits, point(px(10.), px(45.))),
+            Some(RemoteAction::Load)
+        );
+        assert_eq!(action_at(&hits, point(px(60.), px(45.))), None);
     }
 
     #[test]
