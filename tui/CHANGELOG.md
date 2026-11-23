@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.5](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.4...kimun-notes-v0.25.5) - 2026-11-23
+
+### Fixed
+
+- removed autocomplete from open note dialog
+
+### Other
+
+- clean on the tui code
+
 ## [0.25.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.3...kimun-notes-v0.25.4) - 2026-11-23
 
 ### Added
