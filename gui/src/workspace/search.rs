@@ -911,6 +911,12 @@ pub(crate) struct SearchPreview {
     /// the images among them is already deferred to the frame's end.
     seen: Option<Range<usize>>,
     check_deferred: bool,
+    /// The shared attachment list's refresh generation the shown note was
+    /// read with: a refresh since (the window activated, a file operation)
+    /// reads it again once, in place.
+    listed: u64,
+    /// The read under way is such a re-read: it keeps the reader's place.
+    reloading: bool,
     /// The image slices painted at the last render (tests).
     #[cfg(test)]
     painted: Rc<RefCell<Vec<PaintedSlice>>>,
@@ -946,6 +952,8 @@ impl SearchPreview {
             pins: None,
             seen: None,
             check_deferred: false,
+            listed: 0,
+            reloading: false,
             #[cfg(test)]
             painted: Rc::default(),
             #[cfg(test)]
@@ -1218,7 +1226,9 @@ impl SearchPreview {
         };
         #[cfg(test)]
         self.read_paths.push(path.clone());
-        let attachments = cx.default_global::<AttachmentIndex>().get(&self.vault);
+        let index = cx.default_global::<AttachmentIndex>();
+        let attachments = index.get(&self.vault);
+        self.listed = index.generation(&self.vault);
         // The width and height as of now: a later change re-wraps what lands.
         let (columns, pane) = (self.wrap_columns(), self.wrap_pane());
         let vault = self.vault.clone();
@@ -1271,9 +1281,22 @@ impl SearchPreview {
         self.load = None;
         match loaded.map_err(|e| e.to_string()).and_then(|r| r) {
             Ok(text) => {
-                let to = text.wrapped.first_hit.unwrap_or(0);
-                self.scroll.scroll_to_item(to, anchor_strategy(&text));
-                self.scrolled = false;
+                // A re-read of the note shown keeps the reader's place.
+                let kept = if std::mem::take(&mut self.reloading) {
+                    self.view_anchor()
+                } else {
+                    None
+                };
+                match kept {
+                    Some((line, at, strategy)) => self
+                        .scroll
+                        .scroll_to_item(row_of(&text.wrapped.rows, line, at), strategy),
+                    None => {
+                        let to = text.wrapped.first_hit.unwrap_or(0);
+                        self.scroll.scroll_to_item(to, anchor_strategy(&text));
+                        self.scrolled = false;
+                    }
+                }
                 self.shown = Some(text);
                 // The pane changed width during the read.
                 self.rewrap(cx);
@@ -1403,6 +1426,32 @@ impl SearchPreview {
         Some((row.line, row.start, ScrollStrategy::Top))
     }
 
+    /// Read the shown note again, once, when the shared attachment list was
+    /// refreshed since it was read (the window activated, a file
+    /// operation): an image added or removed outside the app is found. The
+    /// same path as a new selection's read, without its wait; the rows on
+    /// screen stay until the new ones land. A note without embeds is not
+    /// read again.
+    fn reread_if_relisted(&mut self, cx: &mut Context<Self>) {
+        let current = cx
+            .default_global::<AttachmentIndex>()
+            .generation(&self.vault);
+        if current == self.listed || self.load.is_some() {
+            return;
+        }
+        let same = matches!(
+            (&self.wanted, &self.shown),
+            (Some((path, _)), Some(shown)) if &shown.path == path && !shown.plan.embeds.is_empty()
+        );
+        if !same {
+            return;
+        }
+        // Once per refresh: the next render does not start another.
+        self.listed = current;
+        self.reloading = true;
+        self.read_when_listed(self.generation, cx);
+    }
+
     /// The list rendered `range` of the shown rows: check the images among
     /// them once the frame is drawn. The list renders a row to measure it
     /// first, so the last range of the frame is the one on screen.
@@ -1461,17 +1510,21 @@ impl SearchPreview {
         if visible != self.visible {
             // Pinned first: a decode that lands never evicts one on screen.
             self.pins.get_or_insert_with(|| store.pins()).set(&visible);
-            let preview = cx.weak_entity();
-            for file in &visible {
-                if matches!(store.size_of(file), ImageState::Sized { .. }) {
-                    let preview = preview.clone();
-                    store.request(file, cx, move |cx| {
-                        preview.update(cx, |_, cx| cx.notify()).ok();
-                    });
-                }
-            }
-            self.visible = visible;
         }
+        // Every check, not only on a new set: a file rewritten on disk is
+        // `Sized` again while it stays in view. The store starts no second
+        // decode of a file already decoding, and one that landed is `Ready`
+        // or `Failed`, so this settles.
+        let preview = cx.weak_entity();
+        for file in &visible {
+            if matches!(store.size_of(file), ImageState::Sized { .. }) {
+                let preview = preview.clone();
+                store.request(file, cx, move |cx| {
+                    preview.update(cx, |_, cx| cx.notify()).ok();
+                });
+            }
+        }
+        self.visible = visible;
         if !failed.is_empty() {
             self.decodes_failed(&failed, cx);
         }
@@ -1580,6 +1633,7 @@ impl SearchPreview {
 
 impl Render for SearchPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reread_if_relisted(cx);
         let theme = theme::current(cx);
         let t = &*theme;
         let (family, size) = {

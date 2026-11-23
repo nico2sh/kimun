@@ -4,7 +4,12 @@
 //! much, so the first one to ask walks (on a background task, through
 //! `NoteVault::list_attachments`) and the rest wait for that one walk.
 //!
-//! The editor keeps its own per-editor listing and does not use this.
+//! The editor keeps its own per-editor listing and does not use this. The
+//! two lists can differ until the next window activation: the editor walks
+//! again for each note it opens, the shared list does not. So a file that
+//! appears while the window stays active (from a sync tool, the MCP server
+//! or the CLI) can draw in the editor while a preview or a facet view still
+//! says "not found".
 //!
 //! A GPUI global with a cheap `clone()` (like `ImageStore`): take a clone
 //! from `cx.default_global` before calling [`AttachmentIndex::request`], so
@@ -120,6 +125,18 @@ impl AttachmentIndex {
         if start {
             self.walk(vault, cx);
         }
+    }
+
+    /// How many times the vault's list was refreshed: a reader that keeps
+    /// the generation it read with knows when to read again. 0 before the
+    /// first request.
+    pub(crate) fn generation(&self, vault: &Arc<NoteVault>) -> u64 {
+        self.inner
+            .borrow()
+            .entries
+            .get(&key(vault))
+            .filter(|e| e.vault.upgrade().is_some())
+            .map_or(0, |e| e.generation)
     }
 
     /// Forget the list: the next `request` walks again. The old list stays
