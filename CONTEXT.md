@@ -515,8 +515,8 @@ A visible vault file that is not a **note** — any entry the walker finds that 
 _Avoid_: asset (the `/assets` directory is one storage location, not the kind), media (too narrow — not every attachment is media), file (every note is also a file).
 
 **Attachment view**:
-The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+U), not edit. The editor area shows the text editor for a **note**, this view for an attachment, or a **facet view** of a note.
-_Avoid_: attachment editor (it never edits), preview pane (names only the text half; binary attachments have none).
+The read-only surface the editor area shows when an **Attachment** is opened, in place of the text editor — metadata (name, vault path, size, modified) plus, for text files, a scrollable preview of the content; for a supported image (PNG, JPEG, GIF, WebP, SVG), the image itself, at natural size and scaled down to fit the whole area; other binary files show metadata only. Never editable: the file's verb is *open externally* (**FollowLink**, default Ctrl+U), not edit. The editor area shows the text editor for a **note**, this view for an attachment, or a **facet view** of a note.
+_Avoid_: attachment editor (it never edits), preview pane (names only the text half; the view also shows images, and other binary attachments have no preview).
 
 **Inline image**:
 An image **Attachment** that the GUI draws in place of the line that embeds it. The embed is written `![alt](path)` or `![[name]]`. Three surfaces draw it: the **editor group**, the **facet view**, and the **Preview pane** with the **Source reader**. The terminal draws none.
