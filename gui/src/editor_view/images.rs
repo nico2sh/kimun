@@ -22,9 +22,13 @@
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::{App, AppContext as _, Context, RenderImage, SharedString, Task, WeakEntity};
+use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::{
+    App, AppContext as _, Context, RenderImage, SharedString, Task, WeakEntity, Window,
+};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::scan::link_target_filename;
@@ -33,6 +37,12 @@ use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
 use crate::inline_image::{Failure, ImageState, ImageStore, fit, rows_for};
+
+/// Fills a kit menu with the **Entry menu** of the attachment at a path:
+/// what a right press on an inline image opens. The editor's owner builds
+/// it, since the menu's picks are the owner's to run.
+pub(crate) type EntryMenu =
+    Rc<dyn Fn(PopupMenu, VaultPath, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
 /// The room an image is fitted to, in device pixels (the unit of
 /// [`fit`]): the text column's width, the pane's height (`fit` takes 60% of
@@ -49,7 +59,8 @@ pub(crate) struct ImagePane {
 #[derive(Clone, Debug)]
 struct Embed {
     row: usize,
-    /// The file it draws, when it resolved to one.
+    /// The attachment it resolved to, and its file.
+    found: Option<VaultPath>,
     file: Option<PathBuf>,
     /// The file name as written (the embed target's last part).
     name: String,
@@ -58,10 +69,11 @@ struct Embed {
 }
 
 impl Embed {
-    fn of(embed: &ImageEmbed, file: Option<PathBuf>) -> Self {
+    fn of(embed: &ImageEmbed, found: Option<VaultPath>, file: Option<PathBuf>) -> Self {
         let target = embed.target.trim_start_matches('<').trim_end_matches('>');
         Self {
             row: embed.row,
+            found,
             file,
             name: link_target_filename(target).to_string(),
             alt: embed.alt.clone(),
@@ -90,6 +102,9 @@ pub(crate) struct ImageDraw {
     pub(crate) look: ImageLook,
     /// What the pointer over it shows: the alt text, else the file name.
     pub(crate) tip: SharedString,
+    /// The attachment it draws: a right-click on it opens its **Entry
+    /// menu**. `None` for a failed image's note.
+    pub(crate) path: Option<VaultPath>,
 }
 
 /// How an image on screen looks.
@@ -189,6 +204,25 @@ impl EditorView {
         cx.notify();
     }
 
+    /// Open `menu` on a right press on a drawn image from now on; `None`
+    /// leaves that press to the text (the note menu).
+    pub(crate) fn set_entry_menu(&mut self, menu: Option<EntryMenu>) {
+        self.entry_menu = menu;
+    }
+
+    /// The menu a right press on an image opens now, as a right press on a
+    /// link asks for the Link menu: only with nothing selected (a right
+    /// press copies a selection) and the find bar shut (it owns the
+    /// pointer while open). `None` in a read-only editor.
+    pub(crate) fn image_menu(&self) -> Option<EntryMenu> {
+        let unselected = self
+            .editor
+            .selection()
+            .is_none_or(|(start, end)| start == end);
+        let free = !self.read_only && unselected && self.editor.find_bar().is_none();
+        self.entry_menu.clone().filter(|_| free)
+    }
+
     /// Before a frame: hand the session the image lines of the text as it is
     /// now, sized for `pane`. Finds them again only when something they
     /// depend on changed. Starts the attachment listing for a note not
@@ -246,6 +280,11 @@ impl EditorView {
         let Some(images) = self.images.as_mut() else {
             return Vec::new();
         };
+        // Most notes embed nothing: no work per frame.
+        if images.embeds.is_empty() {
+            images.visible.clear();
+            return Vec::new();
+        }
         let spots = self.editor.session().display.image_spots();
         let mut store = cx.default_global::<ImageStore>().clone();
         let mut visible = Vec::new();
@@ -279,12 +318,17 @@ impl EditorView {
             {
                 visible.push(file.clone());
             }
+            let path = match look {
+                ImageLook::Note(_) => None,
+                _ => embed.found.clone(),
+            };
             draws.push(ImageDraw {
                 row: spot.row,
                 top: spot.top,
                 lines: spot.lines,
                 look,
                 tip: embed.tip(),
+                path,
             });
         }
         if visible != images.visible {
@@ -332,9 +376,9 @@ fn embeds(
     image_embeds(text)
         .iter()
         .map(|embed| {
-            let file = resolve_image_embed(embed, note, attachments)
-                .map(|found| vault.path_to_pathbuf(&found));
-            Embed::of(embed, file)
+            let found = resolve_image_embed(embed, note, attachments);
+            let file = found.as_ref().map(|found| vault.path_to_pathbuf(found));
+            Embed::of(embed, found, file)
         })
         .collect()
 }

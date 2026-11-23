@@ -814,6 +814,8 @@ impl Workspace {
             .ok();
         });
         let editor_events = cx.subscribe_in(&editor, window, Self::on_editor_event);
+        let entry_menu = Self::image_entry_menu(cx);
+        editor.update(cx, |view, _| view.set_entry_menu(Some(entry_menu)));
         let keymap_watch = keymap::observe(cx, |this: &mut Self, cx| {
             this.chord_labels = ChordLabels::new(cx);
             this.config.update(cx, |_, cx| cx.notify());
@@ -4063,6 +4065,8 @@ mod find_tests;
 mod follow_tests;
 #[cfg(test)]
 mod footer_tests;
+#[cfg(test)]
+mod inline_image_tests;
 #[cfg(test)]
 mod keyboard_help_tests;
 #[cfg(test)]
