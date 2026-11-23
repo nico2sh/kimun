@@ -4,7 +4,7 @@
 #![cfg(test)]
 
 use crate::*;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use std::time::Duration;
 use tempfile::TempDir;
 
