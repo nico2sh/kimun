@@ -1077,3 +1077,111 @@ fn an_image_row_click_behaves_like_a_text_row_of_its_line(cx: &mut TestAppContex
     }
     assert!(!s.shown_modal(cx).is_none(), "the browser stays");
 }
+
+// ---- After the window is activated again ----------------------------------------
+
+/// The user leaves the window and comes back to it: the workspace lists
+/// the vault's attachments again (the app has no file watcher).
+fn reactivate(s: &Started, cx: &mut TestAppContext) {
+    gpui_kit::VisualTestContext::from_window(s.handle, cx).deactivate_window();
+    cx.update_window(s.handle, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// The notes the preview read so far.
+fn reads(view: &Entity<SearchPreview>, cx: &TestAppContext) -> usize {
+    cx.read(|cx| view.read(cx).read_paths.len())
+}
+
+#[gpui_kit::test]
+fn a_preview_resolves_a_file_added_after_an_activation_without_a_new_selection(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let note = "needle\n![a](new.png)\nafter";
+    let (v, s, view) = browse(cx, &rt, note, &[], "needle");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).shown_kinds()),
+        vec![RowKind::Text, RowKind::Note { image: 0 }, RowKind::Text],
+        "not there yet"
+    );
+    let selected = snapshot(&s, cx).1;
+    let before = reads(&view, cx);
+    // Saved from outside the app while the window is inactive.
+    rt.block_on(v.vault.save_attachment(&path("new.png"), &png(10, 60)))
+        .expect("the attachment is saved");
+    reactivate(&s, cx);
+    drive(&rt, cx, |cx| {
+        frame(&s, cx);
+        cx.read(|cx| view.read(cx).shown_kinds())
+            .contains(&RowKind::Image { image: 0, index: 0 })
+    });
+    assert_eq!(reads(&view, cx), before + 1, "read again once");
+    assert_eq!(snapshot(&s, cx).1, selected, "no new selection");
+    until_ready(&s, &view, &rt, cx);
+}
+
+#[gpui_kit::test]
+fn a_file_replaced_on_disk_is_decoded_again_while_the_preview_keeps_showing_it(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, s) = started_with(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("n.md", SLICED)],
+        &[("pic.png", png(10, 60))],
+    );
+    let store = ImageStore::default();
+    cx.update(|cx| cx.set_global(store.clone()));
+    search(&s, &rt, "needle", cx);
+    settle(&s, &rt, cx);
+    let view = preview(&s, cx);
+    until_ready(&s, &view, &rt, cx);
+    assert_eq!(store.decodes_started(), 1);
+    // Rewritten from outside the app: another size, so another file key.
+    rt.block_on(v.vault.save_attachment(&path("pic.png"), &png(12, 60)))
+        .expect("the attachment is saved");
+    // A redraw (a hover, a scroll) while it stays in view.
+    cx.update_window(s.handle, |_, window, cx| {
+        window.refresh();
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    until_ready(&s, &view, &rt, cx);
+    assert_eq!(store.decodes_started(), 2, "decoded again, once");
+    for _ in 0..5 {
+        frame(&s, cx);
+    }
+    assert_eq!(store.decodes_started(), 2, "settled");
+    assert!(
+        slices(&s, &view, cx).iter().all(|p| p.ready),
+        "the picture, not a box"
+    );
+}
+
+#[gpui_kit::test]
+fn a_refresh_does_not_reload_the_preview_every_frame(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s, view) = browse(cx, &rt, SLICED, &[("pic.png", png(10, 60))], "needle");
+    until_ready(&s, &view, &rt, cx);
+    let before = reads(&view, cx);
+    reactivate(&s, cx);
+    for _ in 0..10 {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.refresh();
+            window.render_frame(cx);
+        })
+        .unwrap();
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(5)));
+        cx.run_until_parked();
+    }
+    assert_eq!(reads(&view, cx), before + 1, "one load for one refresh");
+    assert!(cx.read(|cx| !view.read(cx).is_pending()));
+    until_ready(&s, &view, &rt, cx);
+}
