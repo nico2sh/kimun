@@ -15,8 +15,9 @@
 //!
 //! Pixels are decoded only for the images on screen, each time the set of
 //! images on screen changes (a note opens, a scroll or a resize brings one
-//! in). A decode that lands never asks for another, so two images over the
-//! cache budget cannot evict each other forever.
+//! in). The images on screen are pinned in the cache, so none of them is
+//! evicted to make room for another, and a decode that lands never asks for
+//! another.
 //!
 //! [`EditorSession::set_image_lines`]: kimun_notes::logic::editor::session::EditorSession::set_image_lines
 
@@ -36,7 +37,7 @@ use kimun_core::note::{ImageEmbed, image_embeds, resolve_image_embed};
 use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
-use crate::inline_image::{Failure, ImageState, ImageStore, fit, rows_for};
+use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 
 /// Fills a kit menu with the **Entry menu** of the attachment at a path:
 /// what a right press on an inline image opens. The editor's owner builds
@@ -145,11 +146,12 @@ pub(super) struct Images {
     /// The embeds the lines were found from, by row.
     embeds: Vec<Embed>,
     /// The image files on screen at the last frame. Their decodes are asked
-    /// for when this set changes, never when a decode lands: an image the
-    /// cache drops to stay under its budget is decoded again only when the
-    /// screen changes, so two images over the budget cannot evict each other
-    /// forever.
+    /// for when this set changes, never when a decode lands. They are pinned
+    /// in the store, so the cache never drops an image on screen: two
+    /// images over the budget are both drawn, and cannot evict each other.
     visible: Vec<PathBuf>,
+    /// The pins of `visible`, made at the first frame with an image.
+    pins: Option<Pins>,
 }
 
 impl Images {
@@ -163,6 +165,7 @@ impl Images {
             epoch: 0,
             embeds: Vec::new(),
             visible: Vec::new(),
+            pins: None,
         }
     }
 
@@ -282,7 +285,12 @@ impl EditorView {
         };
         // Most notes embed nothing: no work per frame.
         if images.embeds.is_empty() {
-            images.visible.clear();
+            if !images.visible.is_empty() {
+                images.visible.clear();
+                if let Some(pins) = &images.pins {
+                    pins.set(&[]);
+                }
+            }
             return Vec::new();
         }
         let spots = self.editor.session().display.image_spots();
@@ -332,6 +340,12 @@ impl EditorView {
             });
         }
         if visible != images.visible {
+            // Pinned first: a decode that lands never evicts an image on
+            // screen.
+            images
+                .pins
+                .get_or_insert_with(|| store.pins())
+                .set(&visible);
             let view = cx.weak_entity();
             for file in &visible {
                 if matches!(store.size_of(file), ImageState::Sized { .. }) {
@@ -394,7 +408,7 @@ fn image_lines(embeds: &[Embed], pane: ImagePane, cx: &mut App) -> Vec<ImageLine
                 Some(ImageState::Sized { width, height } | ImageState::Ready(_, width, height)) => {
                     Some((width, height))
                 }
-                // Missing, not an image, undecodable, too large: no room,
+                // Missing, unsupported, undecodable, too large: no room,
                 // the note takes the embed line.
                 Some(ImageState::Failed(_)) | None => None,
             };
