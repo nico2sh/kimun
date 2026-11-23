@@ -12,17 +12,21 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui_kit::{App, AppContext as _, Global, ImageFormat, RenderImage};
+use image::codecs::gif::GifDecoder;
+use image::codecs::webp::WebPDecoder;
+use image::metadata::Orientation;
+use image::{AnimationDecoder, ImageDecoder as _};
 
 /// The largest file we read: 20 MB.
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
-/// The decoded bytes (width * height * 4, all frames) we keep, about 64 MB.
+/// The decoded bytes (width * height * 4) we keep, about 64 MB.
 const BUDGET_BYTES: usize = 64 * 1024 * 1024;
 /// An image is never taller than this share of the pane.
 const PANE_HEIGHT_SHARE: f32 = 0.6;
@@ -32,8 +36,8 @@ const PANE_HEIGHT_SHARE: f32 = 0.6;
 pub enum Failure {
     /// The file does not exist (or cannot be read).
     Missing,
-    /// The extension is not one we draw.
-    NotAnImage,
+    /// An image format we do not draw (BMP, TIFF, ICO, AVIF).
+    Unsupported,
     /// The extension is ours but the bytes do not decode.
     Undecodable,
     /// The file is over the size limit.
@@ -45,7 +49,7 @@ impl Failure {
     pub fn note(&self, name: &str, alt: &str) -> String {
         let head = match self {
             Failure::Missing => "image not found",
-            Failure::NotAnImage => "not an image",
+            Failure::Unsupported => "image format not supported",
             Failure::Undecodable => "cannot draw image",
             Failure::TooLarge => "image too large",
         };
@@ -133,11 +137,14 @@ struct Entry {
 }
 
 /// Entries by path, with a monotonic use counter for least-recently-used
-/// eviction over a byte budget.
+/// eviction over a byte budget. A pinned entry (an image on screen) is
+/// never evicted: the budget is soft for them.
 struct Cache {
     entries: HashMap<PathBuf, Entry>,
     tick: u64,
     budget: usize,
+    /// The pinned files, by the [`Pins`] that pinned them.
+    pins: HashMap<u64, Vec<PathBuf>>,
 }
 
 impl Cache {
@@ -146,7 +153,12 @@ impl Cache {
             entries: HashMap::new(),
             tick: 0,
             budget,
+            pins: HashMap::new(),
         }
+    }
+
+    fn pinned(&self, path: &Path) -> bool {
+        self.pins.values().flatten().any(|p| p == path)
     }
 
     /// The state for `path` if it was stored under the same `key`.
@@ -160,7 +172,7 @@ impl Cache {
 
     /// Stores `state` (holding `bytes` decoded bytes), then drops the least
     /// recently used entries until the total fits the budget. The entry just
-    /// stored stays even when it alone is over budget.
+    /// stored and the pinned ones stay, even over budget.
     fn insert(&mut self, path: PathBuf, key: FileKey, state: ImageState, bytes: usize) {
         self.tick += 1;
         self.entries.insert(
@@ -177,7 +189,7 @@ impl Cache {
             let Some(oldest) = self
                 .entries
                 .iter()
-                .filter(|(p, e)| **p != path && e.bytes > 0)
+                .filter(|(p, e)| **p != path && e.bytes > 0 && !self.pinned(p))
                 .min_by_key(|(_, e)| e.used)
                 .map(|(p, _)| p.clone())
             else {
@@ -194,9 +206,14 @@ struct Inner {
     cache: Cache,
     /// Paths with a decode in flight, so a repeated request does nothing.
     pending: HashMap<PathBuf, FileKey>,
+    /// The id of the next [`Pins`].
+    next_pins: u64,
     /// Decodes started so far (tests count them).
     #[cfg(test)]
     decodes_started: usize,
+    /// Decodes are counted but never run, so an image stays pending (tests).
+    #[cfg(test)]
+    hold_decodes: bool,
 }
 
 /// Natural sizes and decoded images for the vault's image files. A clone
@@ -220,8 +237,11 @@ impl ImageStore {
             inner: Rc::new(RefCell::new(Inner {
                 cache: Cache::new(budget),
                 pending: HashMap::new(),
+                next_pins: 0,
                 #[cfg(test)]
                 decodes_started: 0,
+                #[cfg(test)]
+                hold_decodes: false,
             })),
         }
     }
@@ -230,6 +250,12 @@ impl ImageStore {
     #[cfg(test)]
     pub(crate) fn with_test_budget(budget: usize) -> Self {
         Self::with_budget(budget)
+    }
+
+    /// Never run a decode from now on: every image stays pending.
+    #[cfg(test)]
+    pub(crate) fn hold_decodes(&self) {
+        self.inner.borrow_mut().hold_decodes = true;
     }
 
     /// How many decodes this store started.
@@ -241,13 +267,55 @@ impl ImageStore {
 
 impl Global for ImageStore {}
 
+/// One editor's pinned images: the ones on its screen, which the store
+/// never evicts. Dropping it unpins them.
+pub struct Pins {
+    inner: Rc<RefCell<Inner>>,
+    id: u64,
+}
+
+impl ImageStore {
+    /// A new, empty set of pins in this store.
+    pub fn pins(&self) -> Pins {
+        let id = {
+            let mut inner = self.inner.borrow_mut();
+            inner.next_pins += 1;
+            inner.next_pins
+        };
+        Pins {
+            inner: self.inner.clone(),
+            id,
+        }
+    }
+}
+
+impl Pins {
+    /// Pin exactly `files`, unpinning the ones pinned before.
+    pub fn set(&self, files: &[PathBuf]) {
+        let mut inner = self.inner.borrow_mut();
+        if files.is_empty() {
+            inner.cache.pins.remove(&self.id);
+        } else {
+            inner.cache.pins.insert(self.id, files.to_vec());
+        }
+    }
+}
+
+impl Drop for Pins {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.inner.try_borrow_mut() {
+            inner.cache.pins.remove(&self.id);
+        }
+    }
+}
+
 /// Checks the file and returns its kind and key, or why it cannot be drawn.
 fn inspect(path: &Path) -> Result<(Kind, FileKey), Failure> {
     let meta = std::fs::metadata(path).map_err(|_| Failure::Missing)?;
     if !meta.is_file() {
         return Err(Failure::Missing);
     }
-    let kind = Kind::of(path).ok_or(Failure::NotAnImage)?;
+    let kind = Kind::of(path).ok_or(Failure::Unsupported)?;
     if meta.len() > MAX_FILE_BYTES {
         return Err(Failure::TooLarge);
     }
@@ -264,11 +332,25 @@ fn inspect(path: &Path) -> Result<(Kind, FileKey), Failure> {
 fn header_size(path: &Path, kind: Kind) -> Result<(u32, u32), Failure> {
     let file = File::open(path).map_err(|_| Failure::Missing)?;
     let (w, h) = match kind {
-        Kind::Raster(_) => image::ImageReader::new(BufReader::new(file))
-            .with_guessed_format()
-            .map_err(|_| Failure::Undecodable)?
-            .into_dimensions()
-            .map_err(|_| Failure::Undecodable)?,
+        Kind::Raster(_) => {
+            let mut decoder = image::ImageReader::new(BufReader::new(file))
+                .with_guessed_format()
+                .map_err(|_| Failure::Undecodable)?
+                .into_decoder()
+                .map_err(|_| Failure::Undecodable)?;
+            let (w, h) = decoder.dimensions();
+            // GPUI turns the pixels as the EXIF orientation says (a phone's
+            // portrait photo is stored on its side): size them turned too.
+            match decoder.orientation() {
+                Ok(
+                    Orientation::Rotate90
+                    | Orientation::Rotate270
+                    | Orientation::Rotate90FlipH
+                    | Orientation::Rotate270FlipH,
+                ) => (h, w),
+                _ => (w, h),
+            }
+        }
         Kind::Svg => {
             let mut bytes = Vec::new();
             file.take(MAX_FILE_BYTES)
@@ -284,6 +366,45 @@ fn header_size(path: &Path, kind: Kind) -> Result<(u32, u32), Failure> {
         return Err(Failure::Undecodable);
     }
     Ok((w, h))
+}
+
+/// The first frame of an animated GIF or WebP, decoded alone: GPUI's own
+/// decoder takes every frame at full size, while only the first is drawn.
+/// `None` for any other image, which GPUI decodes.
+fn first_frame(kind: Kind, bytes: &[u8]) -> Option<Result<RenderImage, Failure>> {
+    match kind {
+        Kind::Raster(ImageFormat::Gif) => Some(
+            GifDecoder::new(Cursor::new(bytes))
+                .map_err(|_| Failure::Undecodable)
+                .and_then(frame_zero),
+        ),
+        Kind::Raster(ImageFormat::Webp) => {
+            let mut decoder = match WebPDecoder::new(Cursor::new(bytes)) {
+                Ok(decoder) => decoder,
+                Err(_) => return Some(Err(Failure::Undecodable)),
+            };
+            if !decoder.has_animation() {
+                return None;
+            }
+            // As GPUI does: a transparent background behind the frames.
+            let _ = decoder.set_background_color(image::Rgba([0, 0, 0, 0]));
+            Some(frame_zero(decoder))
+        }
+        _ => None,
+    }
+}
+
+/// The first frame of `decoder`, in GPUI's BGRA byte order.
+fn frame_zero<'a>(decoder: impl AnimationDecoder<'a>) -> Result<RenderImage, Failure> {
+    let mut frame = decoder
+        .into_frames()
+        .next()
+        .ok_or(Failure::Undecodable)?
+        .map_err(|_| Failure::Undecodable)?;
+    for pixel in frame.buffer_mut().chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    Ok(RenderImage::new(vec![frame]))
 }
 
 /// Decoded bytes of an image: every frame counts.
@@ -336,6 +457,9 @@ impl ImageStore {
             #[cfg(test)]
             {
                 inner.decodes_started += 1;
+                if inner.hold_decodes {
+                    return;
+                }
             }
         }
         let renderer = cx.svg_renderer();
@@ -344,9 +468,12 @@ impl ImageStore {
         let inner = self.inner.clone();
         let decode = cx.background_spawn(async move {
             let bytes = std::fs::read(&read_path).map_err(|_| Failure::Missing)?;
-            let image = gpui_kit::Image::from_bytes(kind.format(), bytes)
-                .to_image_data(renderer)
-                .map_err(|_| Failure::Undecodable)?;
+            let image = match first_frame(kind, &bytes) {
+                Some(frame) => Arc::new(frame?),
+                None => gpui_kit::Image::from_bytes(kind.format(), bytes)
+                    .to_image_data(renderer)
+                    .map_err(|_| Failure::Undecodable)?,
+            };
             if image.frame_count() == 0 {
                 return Err(Failure::Undecodable);
             }
@@ -406,6 +533,47 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A PNG of `w`x`h` pixels whose EXIF says to turn it a quarter turn
+    /// clockwise (orientation 6), as a phone stores a portrait photo.
+    fn rotated_png(w: u32, h: u32) -> Vec<u8> {
+        use image::ImageEncoder as _;
+        // A big-endian TIFF header, one IFD entry: Orientation (0x0112),
+        // SHORT, count 1, value 6.
+        let exif = vec![
+            b'M', b'M', 0, 42, 0, 0, 0, 8, // header, IFD at 8
+            0, 1, // one entry
+            0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, // orientation 6
+            0, 0, 0, 0, // no next IFD
+        ];
+        let img = image::RgbaImage::from_pixel(w, h, image::Rgba([200, 10, 10, 255]));
+        let mut out = Vec::new();
+        let mut enc = image::codecs::png::PngEncoder::new(&mut out);
+        enc.set_exif_metadata(exif).unwrap();
+        enc.write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        out
+    }
+
+    /// Decode `p` through `store`; the image once it is ready.
+    fn decode(
+        cx: &mut TestAppContext,
+        store: ImageStore,
+        p: &Path,
+    ) -> (Arc<RenderImage>, u32, u32) {
+        let store = std::rc::Rc::new(std::cell::RefCell::new(store));
+        let done = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (s, d) = (store.clone(), done.clone());
+        cx.update(|cx| {
+            s.borrow_mut().request(p, cx, move |_| d.set(true));
+        });
+        cx.run_until_parked();
+        assert!(done.get());
+        match store.borrow_mut().size_of(p) {
+            ImageState::Ready(img, w, h) => (img, w, h),
+            _ => panic!("expected a ready image"),
+        }
     }
 
     fn write(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> PathBuf {
@@ -491,13 +659,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unlisted_extension_is_not_an_image() {
+    fn an_unlisted_image_format_is_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let p = write(&dir, "x.bmp", &png(2, 2));
         let mut store = ImageStore::default();
         assert!(matches!(
             store.size_of(&p),
-            ImageState::Failed(Failure::NotAnImage)
+            ImageState::Failed(Failure::Unsupported)
         ));
     }
 
@@ -540,7 +708,10 @@ mod tests {
             Failure::Missing.note("pic.png", "alt"),
             "image not found: pic.png (alt)"
         );
-        assert_eq!(Failure::NotAnImage.note("a.bmp", ""), "not an image: a.bmp");
+        assert_eq!(
+            Failure::Unsupported.note("a.bmp", ""),
+            "image format not supported: a.bmp"
+        );
         assert_eq!(
             Failure::Undecodable.note("a.png", "x"),
             "cannot draw image: a.png (x)"
@@ -551,6 +722,7 @@ mod tests {
         );
     }
 
+    /// A two-frame GIF decodes its first frame only: the one drawn.
     #[gpui_kit::test]
     fn a_gif_decodes_its_first_frame(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -563,21 +735,34 @@ mod tests {
                 height: 4
             }
         ));
-        let store = std::rc::Rc::new(std::cell::RefCell::new(store));
-        let done = std::rc::Rc::new(std::cell::Cell::new(false));
-        let (s, d) = (store.clone(), done.clone());
-        cx.update(|cx| {
-            s.borrow_mut().request(&p, cx, move |_| d.set(true));
-        });
-        cx.run_until_parked();
-        assert!(done.get());
-        match store.borrow_mut().size_of(&p) {
-            ImageState::Ready(img, 6, 4) => {
-                let first = img.size(0);
-                assert_eq!((first.width.0, first.height.0), (6, 4));
+        let (img, w, h) = decode(cx, store, &p);
+        assert_eq!((w, h), (6, 4));
+        assert_eq!(img.frame_count(), 1, "the other frames are not decoded");
+        let first = img.size(0);
+        assert_eq!((first.width.0, first.height.0), (6, 4));
+        // GPUI draws BGRA: the red shade of frame 0 is in the third byte.
+        let bytes = img.as_bytes(0).unwrap();
+        assert_eq!((bytes[0], bytes[2]), (0, 10));
+    }
+
+    /// A photo stored on its side with an EXIF turn: its size is the turned
+    /// one, the size GPUI decodes it to.
+    #[gpui_kit::test]
+    fn an_exif_turned_image_is_sized_turned(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(&dir, "photo.png", &rotated_png(8, 4));
+        let mut store = ImageStore::default();
+        assert!(matches!(
+            store.size_of(&p),
+            ImageState::Sized {
+                width: 4,
+                height: 8
             }
-            _ => panic!("expected a ready image"),
-        }
+        ));
+        let (img, w, h) = decode(cx, store, &p);
+        assert_eq!((w, h), (4, 8));
+        let decoded = img.size(0);
+        assert_eq!((decoded.width.0, decoded.height.0), (4, 8));
     }
 
     #[test]
@@ -653,5 +838,32 @@ mod tests {
         assert!(cache.get(&b, key).is_none());
         assert!(cache.get(&a, key).is_some());
         assert!(cache.get(&c, key).is_some());
+    }
+
+    #[test]
+    fn a_pinned_entry_is_never_evicted_and_unpinned_ones_go_first() {
+        let key = FileKey {
+            modified: None,
+            len: 1,
+        };
+        let sized = || ImageState::Sized {
+            width: 1,
+            height: 1,
+        };
+        let store = ImageStore::with_test_budget(100);
+        let (a, b, c) = (PathBuf::from("a"), PathBuf::from("b"), PathBuf::from("c"));
+        let pins = store.pins();
+        pins.set(std::slice::from_ref(&a));
+        let mut inner = store.inner.borrow_mut();
+        inner.cache.insert(a.clone(), key, sized(), 60);
+        inner.cache.insert(b.clone(), key, sized(), 30);
+        // Over budget: `b` is newer than `a`, but `a` is pinned.
+        inner.cache.insert(c.clone(), key, sized(), 60);
+        assert!(inner.cache.get(&a, key).is_some(), "pinned");
+        assert!(inner.cache.get(&b, key).is_none(), "unpinned goes");
+        assert!(inner.cache.get(&c, key).is_some(), "just stored");
+        drop(inner);
+        drop(pins);
+        assert!(store.inner.borrow().cache.pins.is_empty(), "dropped unpins");
     }
 }

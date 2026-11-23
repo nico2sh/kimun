@@ -3072,9 +3072,9 @@ mod inline_images {
         .unwrap();
     }
 
-    /// Two images whose decoded pixels do not fit the cache together: each
-    /// decode evicts the other. The editor asks for each once, so the
-    /// decodes stop.
+    /// Two images on screen whose decoded pixels do not fit the cache
+    /// together: an image on screen is never evicted, so both are drawn,
+    /// each decoded once.
     #[gpui_kit::test]
     fn images_over_the_cache_budget_are_decoded_once(cx: &mut TestAppContext) {
         use crate::inline_image::ImageStore;
@@ -3085,6 +3085,10 @@ mod inline_images {
         let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
         let (handle, view, _vault, _rt) = open_note(cx, note, &files);
         assert_eq!(store.decodes_started(), 2, "one decode per image");
+        cx.update(|cx| {
+            assert!(image_of(&view, 1, cx).is_some_and(|i| i.ready), "a drawn");
+            assert!(image_of(&view, 2, cx).is_some_and(|i| i.ready), "b drawn");
+        });
         // More frames, cursor moves and an edit start nothing new.
         settle(cx, handle);
         cx.update_window(handle, |_, window, cx| {
@@ -3108,6 +3112,8 @@ mod inline_images {
         cx.update(|cx| {
             assert!(pads_under(&view, 1, cx) > 0, "the images keep their room");
             assert!(pads_under(&view, 2, cx) > 0);
+            assert!(image_of(&view, 1, cx).is_some_and(|i| i.ready), "a drawn");
+            assert!(image_of(&view, 2, cx).is_some_and(|i| i.ready), "b drawn");
         });
     }
 
@@ -3158,26 +3164,17 @@ mod inline_images {
     #[gpui_kit::test]
     fn a_pending_image_paints_an_empty_box_of_the_reserved_size(cx: &mut TestAppContext) {
         use crate::inline_image::ImageStore;
-        // One 10x60 image decodes to 2400 bytes: the second decode evicts
-        // the first, which is back to its header size only.
-        let store = ImageStore::with_test_budget(3000);
+        // The decode never lands: the image stays at its header size.
+        let store = ImageStore::default();
+        store.hold_decodes();
         cx.update(|cx| cx.set_global(store.clone()));
-        let note = "intro\n![a](a.png)\n![b](b.png)\nafter";
-        let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
-        let (handle, view, _vault, _rt) = open_note(cx, note, &files);
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        assert_eq!(store.decodes_started(), 1);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
             let scale = window.scale_factor();
-            let (a, b) = (
-                image_of(&view, 1, cx).unwrap(),
-                image_of(&view, 2, cx).unwrap(),
-            );
-            assert_eq!(
-                [a.ready, b.ready].iter().filter(|r| **r).count(),
-                1,
-                "one decoded, one evicted"
-            );
-            let pending = if a.ready { b } else { a };
+            let pending = image_of(&view, 1, cx).unwrap();
+            assert!(!pending.ready, "an empty box");
             assert_eq!(pending.rect.size, size(px(10.0 / scale), px(60.0 / scale)));
             let rows = image_rows(&view, (10, 60), window, cx);
             assert_eq!(
