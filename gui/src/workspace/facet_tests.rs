@@ -395,6 +395,15 @@ fn follows(events: &Events) -> Vec<FacetEvent> {
         .collect()
 }
 
+fn toggles(events: &Events) -> Vec<FacetEvent> {
+    events
+        .borrow()
+        .iter()
+        .filter(|e| matches!(e, FacetEvent::ToggleTask { .. }))
+        .cloned()
+        .collect()
+}
+
 /// A plain click on a tag follows it at the release. The filter does not
 /// change: the host decides what a follow does.
 #[gpui_kit::test]
@@ -418,6 +427,82 @@ fn a_click_on_a_tag_in_a_read_only_piece_follows_it(cx: &mut TestAppContext) {
         (4, 6),
         "the press placed the caret, as text"
     );
+}
+
+/// The first row of a piece, a heading, draws styled: the resting caret
+/// reveals no source, before or after a press in the text.
+#[gpui_kit::test]
+fn a_piece_never_shows_its_caret_row_as_source(cx: &mut TestAppContext) {
+    use kimun_notes::logic::editor::markdown::runs::Role;
+    let (view, cx, _events, _sub) = open(cx, "# Title\n\nbody text\n", vec![]);
+    let revealed = |view: &Entity<FacetView>, cx: &mut VisualTestContext| {
+        let editor = chunk(view, 0, cx);
+        cx.update(|_, cx| {
+            editor
+                .read(cx)
+                .editor
+                .session()
+                .display
+                .frame(40, false)
+                .rows[0]
+                .runs
+                .iter()
+                .any(|run| run.role == Role::Revealed)
+        })
+    };
+    assert!(!revealed(&view, cx), "at rest");
+    let at = cell(&view, 0, 3, 0, cx);
+    press(cx, at, false);
+    assert!(!revealed(&view, cx), "after a press on the heading");
+}
+
+/// A plain click on a task's checkbox asks the host to tick it, by the
+/// task's line in the note. The press places no caret.
+#[gpui_kit::test]
+fn a_click_on_a_task_box_in_a_read_only_piece_asks_to_toggle_it(cx: &mut TestAppContext) {
+    // The frontmatter is not in the piece: its first row is source line 4.
+    let text = "---\nt: x\n---\n\nintro\n\n- [ ] one\n- [x] two\n";
+    let (view, cx, events, _sub) = open(cx, text, vec![]);
+    // The piece's rows: intro, blank, `- [ ] one` (2), `- [x] two` (3).
+    let at = cell(&view, 0, 3, 3, cx);
+    press(cx, at, false);
+    assert_eq!(
+        toggles(&events),
+        [FacetEvent::ToggleTask {
+            note: VaultPath::new("/notes/n.md"),
+            line: 7,
+            seen: "- [x] two".into(),
+        }]
+    );
+    let editor = chunk(&view, 0, cx);
+    assert_eq!(
+        cx.update(|_, cx| editor.read(cx).editor.cursor()),
+        (0, 0),
+        "the press placed no caret"
+    );
+}
+
+/// A press beside the box, or on a bullet's text, is a text press.
+#[gpui_kit::test]
+fn a_click_off_a_task_box_asks_for_no_toggle(cx: &mut TestAppContext) {
+    let text = "intro\n\n- [ ] one\n";
+    let (view, cx, events, _sub) = open(cx, text, vec![]);
+    // The `o` of `one`, then the intro.
+    let word = cell(&view, 0, 7, 2, cx);
+    press(cx, word, false);
+    let intro = cell(&view, 0, 1, 0, cx);
+    press(cx, intro, false);
+    assert!(toggles(&events).is_empty(), "{:?}", events.borrow());
+}
+
+/// A task look-alike in a code block is not a task.
+#[gpui_kit::test]
+fn a_click_on_a_task_look_alike_in_code_asks_for_no_toggle(cx: &mut TestAppContext) {
+    let text = "intro\n\n```\n- [ ] code\n```\n";
+    let (view, cx, events, _sub) = open(cx, text, vec![]);
+    let at = cell(&view, 0, 3, 3, cx);
+    press(cx, at, false);
+    assert!(toggles(&events).is_empty(), "{:?}", events.borrow());
 }
 
 /// A plain click on a note link follows it too.

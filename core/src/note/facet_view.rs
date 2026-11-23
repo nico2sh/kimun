@@ -30,6 +30,14 @@ pub struct ChunkPlan {
     /// is put in front when the first block has one and the range does not
     /// start at the table's first row.
     pub text: String,
+    /// Source line (0-based, in the note as given) of the first line of
+    /// `text` after the `lead_lines`. Line `n` of `text`, from `lead_lines`
+    /// on, is source line `first_line + n - lead_lines`: a chunk keeps every
+    /// line of its source, and only drops indent.
+    pub first_line: usize,
+    /// How many lines at the top of `text` are a table's header rows, which
+    /// come from before the chunk's first block.
+    pub lead_lines: usize,
     /// Blocks hidden between this chunk and the one before it (or the note start).
     pub hidden_above: usize,
     /// Blocks hidden between this chunk and the next (or the note end).
@@ -133,13 +141,17 @@ pub fn plan_chunks(
                 chunk.push_str(&text[lead.clone()]);
             }
         }
+        let lead_lines = chunk.matches('\n').count();
         let start = code_line_start(text, first).unwrap_or(first.range.start);
+        let first_line = text[..start].matches('\n').count();
         chunk.push_str(&dedented(text, start..last.range.end));
         let above_from = if at == 0 { 0 } else { shown[at - 1].end };
         let below_to = shown.get(at + 1).map_or(blocks.len(), |next| next.start);
         plans.push(ChunkPlan {
             blocks: range.clone(),
             text: chunk,
+            first_line,
+            lead_lines,
             hidden_above: range.start.saturating_sub(above_from),
             hidden_below: below_to.saturating_sub(range.end),
             crumbs: crumbs_for(facets, range.start),
@@ -216,6 +228,30 @@ mod tests {
     }
 
     const NINE: &str = "p0\n\np1\n\np2\n\np3\n\np4\n\np5\n\np6\n\np7\n\np8\n";
+
+    #[test]
+    fn a_chunk_knows_the_source_line_of_its_text() {
+        let text = "---\nt: x\n---\n\nintro\n\n- [ ] one\n  - [ ] two\n";
+        let f = facets(text);
+        let last = f.blocks.len();
+        let (plans, _) = plan_chunks(&f, text, &[last - 2..last], MAX_RANGES);
+        let plan = &plans[0];
+        assert_eq!(plan.lead_lines, 0);
+        let lines: Vec<&str> = text.lines().collect();
+        for (n, line) in plan.text.lines().enumerate() {
+            let source = lines[plan.first_line + n - plan.lead_lines];
+            assert_eq!(source.trim_start(), line.trim_start());
+        }
+    }
+
+    #[test]
+    fn a_table_chunk_counts_its_lead_lines() {
+        let text = "| h1 | h2 |\n|----|----|\n| a | b |\n| c | d |\n";
+        let f = facets(text);
+        let (plans, _) = plan_chunks(&f, text, &[1..2], MAX_RANGES);
+        assert_eq!(plans[0].lead_lines, 2);
+        assert_eq!(plans[0].first_line, 3);
+    }
 
     #[test]
     fn a_nested_item_loses_its_levels_indent_on_later_lines() {

@@ -996,7 +996,7 @@ impl Workspace {
                 }
             }
             // Only a read-only editor emits this; the note editors are not.
-            EditorEvent::ReadOnlyFollow { .. } => {}
+            EditorEvent::ReadOnlyFollow { .. } | EditorEvent::TaskToggle { .. } => {}
             // Right-click on a link or a label: the Link menu at the
             // pointer, for the group whose editor it is.
             EditorEvent::LinkMenu { at, target } => {
@@ -3944,6 +3944,7 @@ pub(crate) use facet::init_keys as init_facet_keys;
 mod facet_group;
 mod facet_list;
 mod facet_pill;
+mod facet_task;
 mod facet_ui;
 mod file_dialogs;
 mod file_ops;

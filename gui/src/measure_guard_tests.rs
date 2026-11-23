@@ -98,8 +98,10 @@ fn linked() -> String {
     format!("intro\nsee [label]({url}) and more words after it\n")
 }
 
-/// Put the caret on the link's label, on the second row.
+/// Put the caret on the link's label, on the second row, as a press does:
+/// the caret is the user's, so its row shows as written.
 fn caret_on_link(view: &mut EditorView) {
+    view.editor.session_mut().display.set_reveal_caret_row(true);
     let buffer = view.editor.buffer_mut();
     buffer.move_cursor(CursorMove::Down);
     for _ in 0..5 {
