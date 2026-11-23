@@ -623,7 +623,10 @@ fn lay_out(
 
 /// Read and lay out the note at `path` for the preview (on tokio), its
 /// images resolved against `attachments` (the vault's shared list, taken
-/// before the read started; `None`: no images).
+/// before the read started; `None`: no images). Every load reads each
+/// embed's header again with its own store, because the app's store lives
+/// on the UI thread: moving through the results rereads up to 100 headers
+/// per note.
 async fn load_preview(
     vault: Arc<NoteVault>,
     path: VaultPath,
@@ -703,6 +706,9 @@ pub(crate) struct SearchPreview {
     /// Reads started (tests: the debounce reads nothing while arrowing).
     #[cfg(test)]
     pub(crate) reads: usize,
+    /// The notes whose read actually started, in order (tests).
+    #[cfg(test)]
+    pub(crate) read_paths: Vec<VaultPath>,
 }
 
 impl SearchPreview {
@@ -723,6 +729,8 @@ impl SearchPreview {
             _theme: theme::observe(cx),
             #[cfg(test)]
             reads: 0,
+            #[cfg(test)]
+            read_paths: Vec::new(),
         }
     }
 
@@ -938,18 +946,16 @@ impl SearchPreview {
     }
 
     /// The debounce ran out: read the wanted note once the vault's
-    /// attachment list is there (at once when it is), so its images resolve
-    /// without the read walking the vault.
+    /// attachment list is there, so its images resolve without the read
+    /// walking the vault. Always through `request`, never `get` alone: a
+    /// fresh list answers on the next tick, a refreshed (stale) one only
+    /// once it is walked again, so a file added since is found.
     fn read_when_listed(&mut self, generation: u64, cx: &mut Context<Self>) {
         #[cfg(test)]
         {
             self.reads += 1;
         }
         let mut index = cx.default_global::<AttachmentIndex>().clone();
-        if index.get(&self.vault).is_some() {
-            self.read(generation, cx);
-            return;
-        }
         let preview = cx.weak_entity();
         let vault = self.vault.clone();
         index.request(&vault, cx, move |cx| {
@@ -957,6 +963,12 @@ impl SearchPreview {
                 .update(cx, |preview, cx| preview.read(generation, cx))
                 .ok();
         });
+    }
+
+    /// The debounce of the wanted note ran out now (tests: no timer).
+    #[cfg(test)]
+    pub(crate) fn debounce_ended(&mut self, cx: &mut Context<Self>) {
+        self.read_when_listed(self.generation, cx);
     }
 
     /// Read the wanted note on tokio, unless another one is wanted since
@@ -968,6 +980,8 @@ impl SearchPreview {
         let Some((path, mark)) = self.wanted.clone() else {
             return;
         };
+        #[cfg(test)]
+        self.read_paths.push(path.clone());
         let attachments = cx.default_global::<AttachmentIndex>().get(&self.vault);
         // The width and height as of now: a later change re-wraps what lands.
         let (columns, pane) = (self.wrap_columns(), self.wrap_pane());
