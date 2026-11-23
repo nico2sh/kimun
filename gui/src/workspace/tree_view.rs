@@ -810,7 +810,10 @@ impl Workspace {
     /// the survivor is drawn in a split of its own with that ghost beside it:
     /// the one cell stands where it stood, and grows into the room as the
     /// ghost gives it back (ADR-0060).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     fn render_node(
         &self,
         shape: &TreeShape,
@@ -881,7 +884,10 @@ impl Workspace {
     /// slot lays its view out at `fin` and lets the frame clip it. `across`
     /// says whether a horizontal (vertical) split holds it: only along those
     /// does a slot check its view's minimum.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     fn render_node_cell(
         &self,
         shape: &TreeShape,

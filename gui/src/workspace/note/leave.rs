@@ -86,7 +86,10 @@ impl Workspace {
     /// everything is written ([`NoteLeft::Flushed`]) or the note stays (the
     /// flush failed, flashed; or a note was asked for meanwhile, which
     /// opens instead), its tick back.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     pub(super) fn note_left(
         &mut self,
         group: GroupId,

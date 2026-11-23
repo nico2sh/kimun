@@ -34,7 +34,7 @@ use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_s
 use crate::editor_font;
 use crate::editor_view::{CaretShape, EditorView, Painted};
 use crate::find_bar;
-use crate::fonts::EditorFonts;
+use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
 use crate::row_cache::RowCache;
 use crate::row_paint::{RowPaint, cells_of, cluster_at};
@@ -166,7 +166,10 @@ fn shape_row(
             let (color, underline, strikethrough) = decoration(&p.style);
             let run = TextRun {
                 len: p.text.len(),
-                font: fonts.face(p.style.bold, p.style.italic),
+                font: fonts.face(FaceStyle {
+                    bold: p.style.bold,
+                    italic: p.style.italic,
+                }),
                 color,
                 background_color: None,
                 underline,
@@ -230,7 +233,7 @@ impl EditorElement {
             let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
             let cells = CellMetrics::from_text_system(
                 &text_system,
-                &fonts.face(false, false),
+                &fonts.face(FaceStyle::default()),
                 font_size,
                 line_height,
             );
@@ -415,7 +418,7 @@ impl Element for EditorElement {
 
         let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
             let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
-            let base_font = fonts.face(false, false);
+            let base_font = fonts.face(FaceStyle::default());
             let cells =
                 CellMetrics::from_text_system(&text_system, &base_font, font_size, line_height);
             let (fit_cols, pane_rows) =
@@ -601,7 +604,10 @@ impl Element for EditorElement {
                             let ink = caret_bg.unwrap_or_else(|| theme::background(theme));
                             let run = TextRun {
                                 len: text.len(),
-                                font: fonts.face(style.bold, style.italic),
+                                font: fonts.face(FaceStyle {
+                                    bold: style.bold,
+                                    italic: style.italic,
+                                }),
                                 color: ink.into(),
                                 background_color: None,
                                 underline: None,
@@ -678,7 +684,10 @@ impl Element for EditorElement {
                 let mut place = |text: &str, col: u16, color: Rgba, bold: bool| {
                     let run = TextRun {
                         len: text.len(),
-                        font: fonts.face(bold, false),
+                        font: fonts.face(FaceStyle {
+                            bold,
+                            italic: false,
+                        }),
                         color: color.into(),
                         background_color: None,
                         underline: None,
