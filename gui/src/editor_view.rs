@@ -83,7 +83,7 @@ mod pointer;
 mod popup;
 mod read_only;
 
-pub(crate) use self::images::{EntryMenu, ImageDraw, ImageLook, ImagePane};
+pub(crate) use self::images::{EntryMenu, ImageDraw};
 #[cfg(test)]
 pub(crate) use self::measure::probe as measure_probe;
 pub(crate) use self::measure::{EditStamp, SLACK, line_height, measure_width};
@@ -96,6 +96,7 @@ use self::pointer::ClickRun;
 #[cfg(test)]
 pub(crate) use self::pointer::frozen_clock;
 use self::read_only::ReadOnlyClicks;
+pub(crate) use crate::image_core::{ImageLook, ImagePane};
 
 /// The pane's padding at each side of the grid, in rems (`px_4`). A facet
 /// piece's height table reads it too (`workspace::facet::rows`).
