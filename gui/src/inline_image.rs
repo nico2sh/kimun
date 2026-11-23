@@ -77,14 +77,24 @@ pub enum ImageState {
 /// The size to draw `natural` at: capped at the column width and at 60% of
 /// the pane height, aspect kept, never scaled up.
 pub fn fit(natural: (u32, u32), column_px: f32, pane_px: f32) -> (f32, f32) {
+    fit_to(natural, column_px, pane_px * PANE_HEIGHT_SHARE)
+}
+
+/// The size to draw `natural` at within `max_w` by `max_h`: aspect kept,
+/// scaled down to fit both, never scaled up. A zero size is `(0, 0)`.
+pub fn fit_to(natural: (u32, u32), max_w: f32, max_h: f32) -> (f32, f32) {
     let (w, h) = (natural.0 as f32, natural.1 as f32);
     if w <= 0.0 || h <= 0.0 {
         return (0.0, 0.0);
     }
-    let scale = (column_px / w)
-        .min(pane_px * PANE_HEIGHT_SHARE / h)
-        .clamp(0.0, 1.0);
+    let scale = (max_w / w).min(max_h / h).clamp(0.0, 1.0);
     (w * scale, h * scale)
+}
+
+/// Whether `path` names a format this loader draws (PNG, JPEG, GIF, WebP,
+/// SVG; the extension in any case).
+pub(crate) fn can_draw(path: &Path) -> bool {
+    Kind::of(path).is_some()
 }
 
 /// The whole rows an image of `height_px` takes, at least one.
@@ -606,6 +616,65 @@ mod tests {
     fn fit_caps_to_sixty_percent_of_pane_height() {
         // Pane 500 -> max height 300; 400x600 -> 200x300.
         assert_eq!(fit((400, 600), 10_000.0, 500.0), (200.0, 300.0));
+    }
+
+    #[test]
+    fn fit_to_scales_down_to_the_width() {
+        assert_eq!(fit_to((1000, 500), 400.0, 10_000.0), (400.0, 200.0));
+    }
+
+    #[test]
+    fn fit_to_scales_down_to_the_height() {
+        assert_eq!(fit_to((400, 1000), 10_000.0, 500.0), (200.0, 500.0));
+    }
+
+    #[test]
+    fn fit_to_never_scales_up() {
+        assert_eq!(fit_to((100, 50), 800.0, 600.0), (100.0, 50.0));
+    }
+
+    #[test]
+    fn fit_to_keeps_the_aspect() {
+        // Both caps bite: the tighter one (the height, 0.25) wins.
+        let (w, h) = fit_to((1600, 1200), 800.0, 300.0);
+        assert_eq!((w, h), (400.0, 300.0));
+        assert!((w / h - 1600.0_f32 / 1200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fit_to_a_zero_size_is_zero() {
+        assert_eq!(fit_to((0, 50), 800.0, 600.0), (0.0, 0.0));
+        assert_eq!(fit_to((50, 0), 800.0, 600.0), (0.0, 0.0));
+        assert_eq!(fit_to((0, 0), 800.0, 600.0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn fit_still_caps_at_sixty_percent_of_the_pane() {
+        // `fit` is `fit_to` with 60% of the pane: a 900 px tall image in a
+        // 1000 px pane is 600 px, where `fit_to` alone keeps 900.
+        assert_eq!(fit((300, 900), 10_000.0, 1000.0), (200.0, 600.0));
+        assert_eq!(fit_to((300, 900), 10_000.0, 1000.0), (300.0, 900.0));
+        assert_eq!(
+            fit((300, 900), 10_000.0, 1000.0),
+            fit_to((300, 900), 10_000.0, 1000.0 * 0.6)
+        );
+    }
+
+    #[test]
+    fn can_draw_knows_the_five_formats_in_any_case() {
+        for name in [
+            "a.png", "a.PNG", "a.jpg", "a.JpG", "a.jpeg", "a.JPEG", "a.gif", "a.Gif", "a.webp",
+            "a.WEBP", "a.svg", "a.SvG",
+        ] {
+            assert!(can_draw(Path::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn can_draw_rejects_bmp_txt_and_no_extension() {
+        for name in ["a.bmp", "a.txt", "a", "png", "a.png.zip", "a.tiff"] {
+            assert!(!can_draw(Path::new(name)), "{name}");
+        }
     }
 
     #[test]
