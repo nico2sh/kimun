@@ -4985,7 +4985,7 @@ mod image_reserve_tests {
     /// keep revealing the caret row, and a note without images is laid out
     /// as before.
     #[test]
-    fn conceal_all_is_off_by_default_and_changes_nothing_for_notes_without_images() {
+    fn reveal_off_conceals_the_caret_row_embed_and_reveal_on_is_the_default() {
         let image = [ImageLine { row: 1, rows: 3 }];
         // By default the caret row shows its markdown, the image below it.
         let mut v = EditorDisplay::new();

@@ -116,7 +116,7 @@ Images also show in other views. They use the same sizes and formats as in the n
 
 - The facet view shows an image in place of its line. A chunk never shows the raw line.
 - The search preview and the Ask source reader keep the raw text of the note. An image line becomes the picture. If the line holds a search match, the raw line shows first and the picture shows below it. In the source reader, the marked section plays the part of the match.
-- Only the first 100 images of a note show in a preview. A preview reads only the first 256 KB of a note.
+- Only the first 100 images of a note show in a preview. A facet chunk also shows only its first 100 images. A preview reads only the first 256 KB of a note.
 - Point at a picture to see its alt text. There is no click and no menu on a picture in these views.
 
 ## Properties

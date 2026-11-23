@@ -427,3 +427,52 @@ fn a_drag_from_an_image_row_selects(cx: &mut TestAppContext) {
         "{selection:?}"
     );
 }
+
+/// A pick that makes chunk 0 come from the other note reuses chunk 0's
+/// editor: it now resolves a bare name from its new note, so it draws the
+/// other folder's file.
+#[gpui_kit::test]
+fn a_chunk_editor_reused_for_another_note_resolves_from_its_new_note(cx: &mut TestAppContext) {
+    use kimun_core::note::{Facet, FacetKind};
+    let (red, blue) = ("# Red\n![[same.png]]", "# Blue\n![[same.png]]");
+    let v = vault_with(
+        &[("a/n.md", red), ("b/n.md", blue)],
+        &[("a/same.png", png(10, 20)), ("b/same.png", png(10, 40))],
+    );
+    let heading = |key: &str| Facet {
+        kind: FacetKind::Heading,
+        key: key.into(),
+    };
+    let vault = v.vault.clone();
+    let members = [("a/n.md", red), ("b/n.md", blue)]
+        .iter()
+        .map(|(path, text)| MemberInit {
+            path: VaultPath::new(*path),
+            title: path.to_string(),
+            text: text.to_string(),
+        })
+        .collect();
+    let (view, cx, _events, _sub) = open_with(cx, move |cx| {
+        // `a`'s section picked: chunk 0 comes from `a/n.md`.
+        let picks = vec![heading("red")];
+        let mut view = FacetView::new_collection_at("q".into(), members, 2, picks, noon, cx);
+        view.set_image_vault(Some(vault), cx);
+        view
+    });
+    rest(cx);
+    let file = |p: &str| v.vault.path_to_pathbuf(&VaultPath::new(p));
+    assert_eq!(shown_files(&view, 0, cx), [file("a/same.png")]);
+    let editor = chunk(&view, 0, cx);
+    // `b`'s section picked in its place: chunk 0 now comes from
+    // `b/n.md`. One pick before and after, so the column keeps its
+    // height and nothing but the plan hands the chunk its new note.
+    view.update(cx, |view, cx| {
+        view.toggle(heading("blue"), cx);
+        view.toggle(heading("red"), cx);
+    });
+    rest(cx);
+    assert_eq!(view.read_with(cx, |view, _| view.chunks().len()), 1);
+    assert_eq!(chunk(&view, 0, cx), editor, "the same editor, reused");
+    assert_eq!(shown_files(&view, 0, cx), [file("b/same.png")]);
+    assert_eq!(pinned(cx), [file("b/same.png")]);
+}
