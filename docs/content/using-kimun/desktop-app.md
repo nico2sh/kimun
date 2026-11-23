@@ -112,6 +112,13 @@ The desktop app shows an image inside the note. Put the image on a line of its o
 - Click an image to put the cursor on its line. Right-click it to open the row menu of the image file. The menu has the items for an attachment, with Reveal in file browser.
 - If you rename or move an image, Kimün does not update the notes that use it. Change the path in those notes yourself.
 
+Images also show in other views. They use the same sizes and formats as in the note.
+
+- The facet view shows an image in place of its line. A chunk never shows the raw line.
+- The search preview and the Ask source reader keep the raw text of the note. An image line becomes the picture. If the line holds a search match, the raw line shows first and the picture shows below it. In the source reader, the marked section plays the part of the match.
+- Only the first 100 images of a note show in a preview. A preview reads only the first 256 KB of a note.
+- Point at a picture to see its alt text. There is no click and no menu on a picture in these views.
+
 ## Properties
 
 Properties are facts about a note, such as `status` or `due`. The footer shows how many a note has. Click it to open the list. Use `Add`, `Edit`, and `Delete`, or press `A`, `E`, and `D`.
