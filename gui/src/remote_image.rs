@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{App, Global};
 use kimun_core::ImageCache;
@@ -97,6 +97,13 @@ pub(crate) enum Hop {
 pub(crate) trait Fetcher: Send + Sync {
     /// One request for `url`. It never follows a redirect.
     fn get(&self, url: &str) -> Hop;
+
+    /// One request for `url` that ends by `deadline`, the end of the whole
+    /// fetch. A fake can keep the default, which ignores the deadline.
+    fn get_until(&self, url: &str, deadline: Instant) -> Hop {
+        let _ = deadline;
+        self.get(url)
+    }
 }
 
 /// What a surface draws for a remote address now.
@@ -122,31 +129,44 @@ pub(crate) enum RemoteState {
 /// The agent follows no redirect (`redirects(0)`), so the store checks each
 /// hop. It has no cookie store (the `cookies` feature is off), sends no
 /// `Referer` (`ureq` never adds one), and sends the generic `User-Agent`.
+///
+/// The agent has no overall `timeout`: in `ureq` 2 that replaces the wait for
+/// each read. The wait limit applies to the connection and to each read. The
+/// total limit is a deadline that the caller passes for the whole fetch.
 struct RealFetcher {
     agent: ureq::Agent,
     /// The body limit in bytes. Tests set a small one.
     limit: u64,
+    /// The wait for the connection and for each read.
+    wait: Duration,
+    /// The total limit of a call to [`Fetcher::get`].
+    total: Duration,
 }
 
 impl RealFetcher {
     fn new() -> Self {
-        Self::with_limit(MAX_BYTES)
+        Self::with_limits(MAX_BYTES, WAIT_LIMIT, TOTAL_LIMIT)
     }
 
-    fn with_limit(limit: u64) -> Self {
+    /// A fetcher with these limits. Tests set small ones.
+    fn with_limits(limit: u64, wait: Duration, total: Duration) -> Self {
         let agent = ureq::AgentBuilder::new()
-            .timeout_connect(WAIT_LIMIT)
-            .timeout_read(WAIT_LIMIT)
-            .timeout_write(WAIT_LIMIT)
-            .timeout(TOTAL_LIMIT)
+            .timeout_connect(wait)
+            .timeout_read(wait)
+            .timeout_write(wait)
             .redirects(0)
             .user_agent(USER_AGENT)
             .build();
-        Self { agent, limit }
+        Self {
+            agent,
+            limit,
+            wait,
+            total,
+        }
     }
 
     /// The hop for an answer that is not an error status.
-    fn read(&self, response: ureq::Response) -> Hop {
+    fn read(&self, response: ureq::Response, deadline: Instant) -> Hop {
         let status = response.status();
         if (300..400).contains(&status) {
             let location = response.header("location").map(str::to_string);
@@ -171,11 +191,11 @@ impl RealFetcher {
             return Hop::Failed(FetchFailure::TooLarge);
         }
         let mut body = Vec::new();
-        match response
-            .into_reader()
-            .take(self.limit + 1)
-            .read_to_end(&mut body)
-        {
+        let reader = UntilDeadline {
+            inner: response.into_reader(),
+            deadline,
+        };
+        match reader.take(self.limit + 1).read_to_end(&mut body) {
             Ok(_) if body.len() as u64 > self.limit => Hop::Failed(FetchFailure::TooLarge),
             Ok(_) => Hop::Body(body),
             Err(e) if timed_out(&e) => Hop::Failed(FetchFailure::TimedOut),
@@ -186,11 +206,45 @@ impl RealFetcher {
 
 impl Fetcher for RealFetcher {
     fn get(&self, url: &str) -> Hop {
-        match self.agent.get(url).call() {
-            Ok(response) => self.read(response),
+        self.get_until(url, Instant::now() + self.total)
+    }
+
+    fn get_until(&self, url: &str, deadline: Instant) -> Hop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Hop::Failed(FetchFailure::TimedOut);
+        }
+        let mut request = self.agent.get(url);
+        // Near the end, the deadline is shorter than the wait for a read.
+        // A request deadline then also bounds the connection and the head.
+        if left < self.wait {
+            request = request.timeout(left);
+        }
+        match request.call() {
+            Ok(response) => self.read(response, deadline),
             Err(ureq::Error::Status(code, _)) => Hop::Failed(FetchFailure::Status(code)),
             Err(ureq::Error::Transport(t)) => Hop::Failed(transport_failure(&t)),
         }
+    }
+}
+
+/// A reader that fails with `TimedOut` once the deadline has passed. Each
+/// read is already capped by the wait limit, so a fetch ends at most one
+/// wait after its deadline.
+struct UntilDeadline<R> {
+    inner: R,
+    deadline: Instant,
+}
+
+impl<R: Read> Read for UntilDeadline<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if Instant::now() >= self.deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "total time limit",
+            ));
+        }
+        self.inner.read(buf)
     }
 }
 
@@ -261,9 +315,11 @@ struct Job {
     fetches: Arc<AtomicUsize>,
     cache: Option<ImageCache>,
     allowed: Vec<String>,
-    /// The host this address may follow a redirect to, if any.
-    permit: Option<String>,
+    /// The hosts this address may follow a redirect to for the session.
+    permits: Vec<String>,
     url: String,
+    /// The limit for the whole fetch, every hop included.
+    total: Duration,
 }
 
 impl Job {
@@ -273,12 +329,16 @@ impl Job {
         let Some(cache) = &self.cache else {
             return Outcome::Failed(FetchFailure::Other("no image cache".to_string()));
         };
+        let deadline = Instant::now() + self.total;
         let origin = host_of(&self.url);
         let mut current = self.url.trim().to_string();
         let mut redirects = 0;
         loop {
+            if Instant::now() >= deadline {
+                return Outcome::Failed(FetchFailure::TimedOut);
+            }
             self.fetches.fetch_add(1, Ordering::SeqCst);
-            let location = match self.fetcher.get(&current) {
+            let location = match self.fetcher.get_until(&current, deadline) {
                 Hop::Body(bytes) => return save(cache, &self.url, &bytes),
                 Hop::Failed(f) => return Outcome::Failed(f),
                 Hop::Redirect(location) => location,
@@ -303,13 +363,10 @@ impl Job {
                 return Outcome::Failed(FetchFailure::Other("bad redirect".to_string()));
             };
             // The reader chose the first host. Any other host must be
-            // allowed, or be the one this address may follow for the session.
+            // allowed, or be one this address may follow for the session.
             let ok = origin.as_deref() == Some(host.as_str())
                 || self.allowed.iter().any(|a| host_matches(a, &host))
-                || self
-                    .permit
-                    .as_deref()
-                    .is_some_and(|p| host_matches(p, &host));
+                || self.permits.iter().any(|p| host_matches(p, &host));
             if !ok {
                 return Outcome::RedirectBlocked(host);
             }
@@ -366,9 +423,9 @@ struct Inner {
     allowed: Vec<String>,
     /// Failures and blocked redirects, by address key.
     sessions: HashMap<String, Session>,
-    /// The one-address permission to follow a redirect: the host, by
+    /// The one-address permissions to follow a redirect: the hosts, by
     /// address key.
-    permits: HashMap<String, String>,
+    permits: HashMap<String, Vec<String>>,
     /// The addresses with a fetch running or queued, with their callers.
     in_flight: HashMap<String, Vec<OnDone>>,
     /// The fetches that wait for a free slot: the key and the address.
@@ -514,8 +571,9 @@ impl RemoteImages {
                     fetches: inner.fetches.clone(),
                     cache: inner.cache.clone(),
                     allowed: inner.allowed.clone(),
-                    permit: inner.permits.get(&key).cloned(),
+                    permits: inner.permits.get(&key).cloned().unwrap_or_default(),
                     url,
+                    total: TOTAL_LIMIT,
                 };
                 (key, job)
             };
@@ -557,14 +615,19 @@ impl RemoteImages {
     }
 
     /// Lets `url` follow its blocked redirect, to the host it names, for the
-    /// session. The host does not join the allowed list. It does nothing
-    /// when the redirect of `url` is not blocked.
+    /// session. The host does not join the allowed list. Each call adds a
+    /// host, and the hosts added before stay, so a chain through several
+    /// hosts loads after one call for each. It does nothing when the
+    /// redirect of `url` is not blocked.
     pub(crate) fn allow_redirect_once(&mut self, url: &str) {
         let key = key_of(url);
         let mut inner = self.inner.borrow_mut();
         if let Some(Session::RedirectBlocked(host)) = inner.sessions.get(&key) {
             let host = host.clone();
-            inner.permits.insert(key, host);
+            let hosts = inner.permits.entry(key).or_default();
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
         }
     }
 
@@ -770,7 +833,7 @@ mod tests {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let cache = ImageCache::at(
-            SystemPath::try_absolute(dir.path().to_path_buf())
+            SystemPath::try_absolute(dir.path())
                 .unwrap()
                 .join("image-cache"),
         );
@@ -1312,14 +1375,6 @@ mod tests {
     }
 
     #[test]
-    fn the_store_builds_one_real_fetcher() {
-        let store = RemoteImages::default();
-        let a = store.inner.borrow().fetcher.clone();
-        let b = store.inner.borrow().fetcher.clone();
-        assert!(Arc::ptr_eq(&a, &b));
-    }
-
-    #[test]
     fn the_real_fetcher_stops_a_body_over_the_limit_and_sends_no_cookie_or_referer() {
         let server = serve(|head, base| match path_of(head) {
             // No length: the body streams far past the limit.
@@ -1340,7 +1395,7 @@ mod tests {
             ),
             _ => (ok(PNG, ""), false),
         });
-        let fetcher = RealFetcher::with_limit(64 * 1024);
+        let fetcher = RealFetcher::with_limits(64 * 1024, WAIT_LIMIT, TOTAL_LIMIT);
         let url = |p: &str| format!("{}{p}", server.base);
         assert_eq!(
             fetcher.get(&url("/big")),
@@ -1362,6 +1417,150 @@ mod tests {
             assert!(!lower.contains("\r\nreferer:"), "{head}");
             assert!(lower.contains("\r\nuser-agent: kimun\r\n"), "{head}");
         }
+    }
+
+    #[gpui_kit::test]
+    fn a_chain_through_two_blocked_hosts_loads_after_one_load_for_each(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[
+            (A, Hop::Redirect("https://b.example.net/x.png".into())),
+            (
+                "https://b.example.net/x.png",
+                Hop::Redirect("https://c.example.org/y.png".into()),
+            ),
+            ("https://c.example.org/y.png", Hop::Body(PNG.to_vec())),
+        ]);
+        let env = env(cx, &fake);
+        let blocked = |h: &str| RemoteState::RedirectBlocked { host: h.into() };
+        load(&env, cx, A);
+        assert_eq!(state(cx, A), blocked("b.example.net"));
+        store(cx).allow_redirect_once(A);
+        load(&env, cx, A);
+        assert_eq!(state(cx, A), blocked("c.example.org"));
+        store(cx).allow_redirect_once(A);
+        load(&env, cx, A);
+        assert!(matches!(state(cx, A), RemoteState::Saved(_)));
+        // Retry drops both permissions.
+        store(cx).retry(A);
+        env.cache.remove(A).unwrap();
+        load(&env, cx, A);
+        assert_eq!(state(cx, A), blocked("b.example.net"));
+        store(cx).allow_redirect_once(A);
+        load(&env, cx, A);
+        assert_eq!(state(cx, A), blocked("c.example.org"));
+    }
+
+    /// A fake that sleeps before each answer.
+    struct Slow {
+        inner: Arc<Fake>,
+        delay: Duration,
+    }
+
+    impl Fetcher for Slow {
+        fn get(&self, url: &str) -> Hop {
+            std::thread::sleep(self.delay);
+            self.inner.get(url)
+        }
+    }
+
+    #[test]
+    fn a_redirect_chain_past_the_total_limit_fails_before_the_next_hop() {
+        let fake = Fake::new(&[
+            (A, Hop::Redirect("/1".into())),
+            ("https://img.example.com/1", Hop::Redirect("/2".into())),
+            ("https://img.example.com/2", Hop::Body(PNG.to_vec())),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::at(SystemPath::try_absolute(dir.path()).unwrap());
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let job = Job {
+            fetcher: Arc::new(Slow {
+                inner: fake.clone(),
+                delay: Duration::from_millis(150),
+            }),
+            fetches: fetches.clone(),
+            cache: Some(cache.clone()),
+            allowed: Vec::new(),
+            permits: Vec::new(),
+            url: A.to_string(),
+            total: Duration::from_millis(250),
+        };
+        assert!(matches!(job.run(), Outcome::Failed(FetchFailure::TimedOut)));
+        // The second hop ends past the limit, so the third never starts.
+        assert_eq!(fake.calls().len(), 2);
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(cache.find(A).is_none());
+    }
+
+    /// A server that accepts and reads the request, then calls `then` with
+    /// the stream.
+    fn serve_raw(then: fn(std::net::TcpStream)) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).is_ok_and(|n| n > 0) && line != "\r\n" {
+                        line.clear();
+                    }
+                    then(stream);
+                });
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn a_server_that_sends_nothing_fails_after_the_wait_limit() {
+        let base = serve_raw(|_stream| std::thread::sleep(Duration::from_secs(5)));
+        let fetcher = RealFetcher::with_limits(
+            MAX_BYTES,
+            Duration::from_millis(200),
+            Duration::from_secs(30),
+        );
+        let start = Instant::now();
+        assert_eq!(
+            fetcher.get(&format!("{base}/a")),
+            Hop::Failed(FetchFailure::TimedOut)
+        );
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(2), "{took:?}");
+    }
+
+    #[test]
+    fn a_server_that_trickles_fails_at_the_total_limit() {
+        let base = serve_raw(|mut stream| {
+            if stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n")
+                .is_err()
+            {
+                return;
+            }
+            // One byte each 50 ms: every read is well inside the wait limit.
+            for _ in 0..200 {
+                if stream.write_all(&[0]).is_err() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let fetcher = RealFetcher::with_limits(
+            MAX_BYTES,
+            Duration::from_millis(300),
+            Duration::from_millis(600),
+        );
+        let start = Instant::now();
+        assert_eq!(
+            fetcher.get(&format!("{base}/a")),
+            Hop::Failed(FetchFailure::TimedOut)
+        );
+        let took = start.elapsed();
+        assert!(
+            took >= Duration::from_millis(550) && took < Duration::from_secs(3),
+            "{took:?}"
+        );
     }
 
     #[test]
