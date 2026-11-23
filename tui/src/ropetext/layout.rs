@@ -44,6 +44,10 @@ pub struct RowHints<'a> {
     /// cursor. Asked where a hidden row is drawn, the layout answers with the
     /// visual line that follows it (the last one, for a hidden tail).
     pub hidden: bool,
+    /// Blank pad lines laid out under the row's last visual line, so a
+    /// frontend can paint something (an inline image) over them. Zero for
+    /// every caller that does not ask for room. A hidden row reserves nothing.
+    pub reserve: usize,
 }
 
 /// One drawn line: a slice of a logical row that fits the width.
@@ -56,6 +60,10 @@ pub struct VisualLine {
     pub bytes: Range<usize>,
     /// Whether this is the row's first visual line, as against a continuation.
     pub first: bool,
+    /// A blank line reserved under its row (see [`RowHints::reserve`]). It
+    /// holds no text: its ranges are empty at the row's end, it is never
+    /// `first`, and no position is drawn on it.
+    pub pad: bool,
 }
 
 /// A screen cell, relative to the top-left of the laid-out text.
@@ -121,6 +129,7 @@ impl Layout {
                 chars: 0..source.chars().count(),
                 bytes: 0..source.len(),
                 first: true,
+                pad: false,
             });
         }
         Self {
@@ -265,7 +274,8 @@ impl Layout {
         self.row_starts.get(row).copied()
     }
 
-    /// Which visual line `position` is drawn on.
+    /// Which visual line `position` is drawn on. Never a pad line: a position
+    /// at the end of a row that reserves pads is drawn on its last text line.
     pub fn visual_row_of(&self, position: Position) -> usize {
         let row = position.row().min(self.row_starts.len().saturating_sub(1));
         let first = self.row_starts.get(row).copied().unwrap_or(0);
@@ -274,7 +284,7 @@ impl Layout {
             .iter()
             .take_while(|line| line.logical_row == row)
             .enumerate()
-            .filter(|(_, line)| line.chars.start <= column)
+            .filter(|(_, line)| !line.pad && line.chars.start <= column)
             .map(|(offset, _)| first + offset)
             .last()
             .unwrap_or(first);
@@ -322,7 +332,8 @@ impl Layout {
     ///
     /// A column past the end of a visual line lands at its end, and a column
     /// inside a wide cluster lands on that cluster: a click between the halves of
-    /// a CJK character means the character.
+    /// a CJK character means the character. Any cell of a pad line lands at
+    /// the start of the row it is reserved under.
     pub fn position_at_cell(
         &self,
         text: &Text,
@@ -336,6 +347,9 @@ impl Layout {
             return None;
         }
         let line = self.lines.get(cell.row)?;
+        if line.pad {
+            return text.position(line.logical_row, Column::new(0));
+        }
         let hint = hint_for(hints, line.logical_row);
         let source = text.line(line.logical_row)?;
         let mut column = hint.inset;
@@ -462,8 +476,35 @@ fn visible(hint: &RowHints<'_>, chars: usize) -> bool {
     hint.visible.get(chars).copied().unwrap_or(true)
 }
 
-/// Wrap one logical row, appending at least one visual line.
+/// Wrap one logical row, then append the pad lines it reserves. A hidden row
+/// draws nothing, so it reserves nothing either.
 fn wrap_row(
+    text: &Text,
+    row: usize,
+    width: usize,
+    metrics: Metrics,
+    hint: RowHints<'_>,
+    scratch: &mut Vec<Cluster>,
+    out: &mut Vec<VisualLine>,
+) {
+    let before = out.len();
+    wrap_text(text, row, width, metrics, hint, scratch, out);
+    if hint.reserve == 0 || out.len() == before {
+        return;
+    }
+    let end = out[out.len() - 1].chars.end;
+    let end_byte = out[out.len() - 1].bytes.end;
+    out.extend((0..hint.reserve).map(|_| VisualLine {
+        logical_row: row,
+        chars: end..end,
+        bytes: end_byte..end_byte,
+        first: false,
+        pad: true,
+    }));
+}
+
+/// Wrap one logical row's text, appending at least one visual line.
+fn wrap_text(
     text: &Text,
     row: usize,
     width: usize,
@@ -509,6 +550,7 @@ fn wrap_row(
             chars: 0..0,
             bytes: 0..0,
             first: true,
+            pad: false,
         });
         return;
     }
@@ -557,6 +599,7 @@ fn wrap_row(
                 chars: char_at(start)..total_chars,
                 bytes: byte_at(start)..total_bytes,
                 first,
+                pad: false,
             });
             break;
         }
@@ -582,6 +625,7 @@ fn wrap_row(
             chars: char_at(start)..char_at(content_end),
             bytes: byte_at(start)..byte_at(content_end),
             first,
+            pad: false,
         });
         start = next_start;
         first = false;
@@ -697,6 +741,7 @@ mod tests {
             visible: &[],
             inset: 2,
             hidden: false,
+            reserve: 0,
         }];
         let layout = Layout::compute(&t, 9, Metrics::default(), &hints);
         assert_eq!(
@@ -718,6 +763,7 @@ mod tests {
             visible: &[],
             inset: 4,
             hidden: false,
+            reserve: 0,
         }];
         let layout = Layout::compute(&t, 4, Metrics::default(), &hints);
         assert_eq!(
@@ -739,6 +785,7 @@ mod tests {
             visible: &visible,
             inset: 0,
             hidden: false,
+            reserve: 0,
         }];
         let layout = Layout::compute(&t, 7, Metrics::default(), &hints);
         assert_eq!(layout.visual_line_count(), 1);
@@ -803,6 +850,7 @@ mod tests {
             visible: &[],
             inset: 2,
             hidden: false,
+            reserve: 0,
         }];
         let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
         assert_eq!(
@@ -819,6 +867,7 @@ mod tests {
             visible: &visible,
             inset: 0,
             hidden: false,
+            reserve: 0,
         }];
         let layout = Layout::compute(&t, 40, Metrics::default(), &hints);
         assert_eq!(
@@ -868,6 +917,7 @@ mod tests {
             visible: &[],
             inset: 3,
             hidden: false,
+            reserve: 0,
         }];
         let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
         let landed = layout
@@ -1276,5 +1326,188 @@ mod tests {
         layout.relayout_rows(&t, &[], 0..3, 0);
         assert_eq!(drawn(&t, &layout), ["a", "b", "c", "d"]);
         assert_eq!(layout.row_start(3), Some(3));
+    }
+
+    // -- reserved pad lines -------------------------------------------------
+
+    /// Hints that reserve `pads` lines under `row` and nothing elsewhere.
+    fn reserving(row: usize, pads: usize, count: usize) -> Vec<RowHints<'static>> {
+        (0..count)
+            .map(|r| RowHints {
+                reserve: if r == row { pads } else { 0 },
+                ..RowHints::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reserve_adds_pad_lines_after_the_row() {
+        let t = text("embed\nnext");
+        let layout = Layout::compute(&t, 10, Metrics::default(), &reserving(0, 3, 2));
+        let lines = layout.visual_lines();
+        assert_eq!(
+            lines.len(),
+            5,
+            "one text line, three pads, then the next row"
+        );
+        assert!(!lines[0].pad && lines[0].first);
+        for pad in &lines[1..4] {
+            assert_eq!(
+                pad,
+                &VisualLine {
+                    logical_row: 0,
+                    chars: 5..5,
+                    bytes: 5..5,
+                    first: false,
+                    pad: true,
+                }
+            );
+        }
+        assert!(!lines[4].pad && lines[4].first && lines[4].logical_row == 1);
+        assert_eq!(layout.row_start(1), Some(4));
+    }
+
+    #[test]
+    fn pads_follow_the_last_line_of_a_wrapped_row() {
+        let t = text("aaaa bbbb");
+        let layout = Layout::compute(&t, 5, Metrics::default(), &reserving(0, 2, 1));
+        let pads: Vec<bool> = layout.visual_lines().iter().map(|l| l.pad).collect();
+        assert_eq!(pads, [false, false, true, true]);
+        assert_eq!(layout.visual_lines()[2].chars, 9..9);
+    }
+
+    #[test]
+    fn zero_reserve_changes_nothing() {
+        for (s, width) in [("a\n\nb", 10), ("aaaa bbbb cccc\nlast", 5), ("", 3)] {
+            let t = text(s);
+            let hints = reserving(0, 0, t.line_count());
+            let layout = Layout::compute(&t, width, Metrics::default(), &hints);
+            assert_eq!(
+                layout.visual_lines(),
+                plain(&t, width).visual_lines(),
+                "{s:?}"
+            );
+            assert!(layout.visual_lines().iter().all(|l| !l.pad));
+        }
+    }
+
+    #[test]
+    fn a_hidden_row_reserves_nothing() {
+        let t = text("a\nb\nc");
+        let hints: Vec<RowHints<'static>> = (0..3)
+            .map(|row| RowHints {
+                hidden: row == 1,
+                reserve: 4,
+                ..RowHints::default()
+            })
+            .collect();
+        let layout = Layout::compute(&t, 10, Metrics::default(), &hints);
+        let rows: Vec<(usize, bool)> = layout
+            .visual_lines()
+            .iter()
+            .map(|l| (l.logical_row, l.pad))
+            .collect();
+        assert_eq!(rows.iter().filter(|(row, _)| *row == 1).count(), 0);
+        assert_eq!(
+            layout.visual_line_count(),
+            10,
+            "rows 0 and 2: one line and four pads each"
+        );
+    }
+
+    #[test]
+    fn visual_motion_skips_pad_lines() {
+        use crate::ropetext::motion::{VisualGoal, visual_vertical};
+        let t = text("intro\n![a](x.png)\nafter");
+        let hints = reserving(1, 3, 3);
+        let layout = Layout::compute(&t, 20, Metrics::default(), &hints);
+        let rc = |p: Position| (p.row(), p.column().get());
+        let down = |from| visual_vertical(&t, &layout, &hints, from, 1, VisualGoal::Cell(0));
+        let up = |from| visual_vertical(&t, &layout, &hints, from, -1, VisualGoal::Cell(0));
+        assert_eq!(
+            rc(down(at(&t, 1, 0))),
+            (2, 0),
+            "down from the embed row skips its pads"
+        );
+        assert_eq!(
+            rc(up(at(&t, 2, 0))),
+            (1, 0),
+            "up from the next row skips them back"
+        );
+        assert_eq!(rc(down(at(&t, 0, 0))), (1, 0));
+        let two = visual_vertical(&t, &layout, &hints, at(&t, 0, 0), 2, VisualGoal::Cell(0));
+        assert_eq!(
+            rc(two),
+            (2, 0),
+            "two drawn lines of text, whatever pads sit between"
+        );
+    }
+
+    #[test]
+    fn visual_motion_off_trailing_pads_stays_on_the_text() {
+        use crate::ropetext::motion::{VisualGoal, visual_vertical};
+        let t = text("intro\n![a](x.png)");
+        let hints = reserving(1, 3, 2);
+        let layout = Layout::compute(&t, 20, Metrics::default(), &hints);
+        let landed = visual_vertical(&t, &layout, &hints, at(&t, 1, 2), 1, VisualGoal::Cell(2));
+        assert_eq!((landed.row(), landed.column().get()), (1, 2));
+    }
+
+    #[test]
+    fn a_cell_on_a_pad_line_maps_to_the_row_start() {
+        let t = text("intro\n![a](x.png)\nafter");
+        let hints = reserving(1, 3, 3);
+        let layout = Layout::compute(&t, 20, Metrics::default(), &hints);
+        for row in 2..5 {
+            for column in [0, 3, 50] {
+                let landed = layout
+                    .position_at_cell(&t, &hints, Cell { row, column })
+                    .expect("a pad line is a line");
+                assert_eq!(
+                    (landed.row(), landed.column().get()),
+                    (1, 0),
+                    "cell {row},{column}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn visual_row_of_a_position_is_the_rows_first_line() {
+        let t = text("intro\n![a](x.png)\nafter");
+        let hints = reserving(1, 3, 3);
+        let layout = Layout::compute(&t, 20, Metrics::default(), &hints);
+        for column in [0, 5, 11] {
+            assert_eq!(
+                layout.visual_row_of(at(&t, 1, column)),
+                1,
+                "column {column}"
+            );
+        }
+        assert_eq!(
+            layout.cell_of(&t, &hints, at(&t, 1, 11)),
+            Cell { row: 1, column: 11 },
+            "the row's end is drawn on its text line, not on a pad"
+        );
+        assert_eq!(layout.visual_row_of(at(&t, 2, 0)), 5);
+        // A wrapped row: its end is on its last text line, still not a pad.
+        let t = text("aaaa bbbb");
+        let layout = Layout::compute(&t, 5, Metrics::default(), &reserving(0, 2, 1));
+        assert_eq!(layout.visual_row_of(at(&t, 0, 9)), 1);
+    }
+
+    #[test]
+    fn relayout_of_a_row_changes_its_pads_in_place() {
+        let t = text("a\nb\nc");
+        let mut layout = Layout::compute(&t, 10, Metrics::default(), &[]);
+        layout.relayout_rows(&t, &reserving(1, 2, 3), 1..2, 0);
+        assert_eq!(
+            layout.visual_lines(),
+            Layout::compute(&t, 10, Metrics::default(), &reserving(1, 2, 3)).visual_lines()
+        );
+        assert_eq!(layout.row_start(2), Some(4));
+        layout.relayout_rows(&t, &[], 1..2, 0);
+        assert_eq!(layout.visual_lines(), plain(&t, 10).visual_lines());
+        assert_eq!(layout.row_start(2), Some(2));
     }
 }
