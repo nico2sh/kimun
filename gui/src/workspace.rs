@@ -1384,6 +1384,15 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The vault of `group`'s note host: what a view shown there draws its
+    /// images from.
+    pub(crate) fn group_vault(&self, group: GroupId) -> Option<Arc<NoteVault>> {
+        self.state(group)?
+            .notes
+            .as_ref()
+            .map(|h| h.session.vault().clone())
+    }
+
     /// The open workspace's vault; `None` before one opens.
     pub(crate) fn vault(&self) -> Option<Arc<NoteVault>> {
         self.active_state()
@@ -4035,6 +4044,8 @@ mod drop_tests;
 mod facet_chrome_tests;
 #[cfg(test)]
 mod facet_gap_rows_tests;
+#[cfg(test)]
+mod facet_image_tests;
 #[cfg(test)]
 mod facet_line_tests;
 #[cfg(test)]

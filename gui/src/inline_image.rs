@@ -263,6 +263,16 @@ impl ImageStore {
     pub(crate) fn decodes_started(&self) -> usize {
         self.inner.borrow().decodes_started
     }
+
+    /// Every file pinned now, by any set of pins, sorted.
+    #[cfg(test)]
+    pub(crate) fn pinned_files(&self) -> Vec<PathBuf> {
+        let inner = self.inner.borrow();
+        let mut files: Vec<PathBuf> = inner.cache.pins.values().flatten().cloned().collect();
+        files.sort();
+        files.dedup();
+        files
+    }
 }
 
 impl Global for ImageStore {}

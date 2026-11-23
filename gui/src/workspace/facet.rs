@@ -72,10 +72,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::{
     Context, Entity, EventEmitter, FocusHandle, Pixels, Point, Rems, ScrollHandle, Subscription,
 };
+use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::{Facet, FacetKind, MAX_RANGES};
 use kimun_notes::logic::editor::claim::FollowTarget;
@@ -228,6 +230,12 @@ pub struct FacetView {
     /// One read-only editor per drawn chunk, reused in place.
     chunks: Vec<Entity<EditorView>>,
     _chunk_events: Vec<Subscription>,
+    /// The vault the chunks draw their **Inline image**s from, once the
+    /// host hands it ([`Self::set_image_vault`]).
+    image_vault: Option<Arc<NoteVault>>,
+    /// The column's height at the last frame, in device pixels: an image
+    /// in a chunk takes at most 60% of it.
+    image_viewport_px: f32,
     more: Option<More>,
     focus: FocusHandle,
     pub(crate) scroll: ScrollHandle,
@@ -326,6 +334,8 @@ impl FacetView {
             limit: MAX_RANGES,
             chunks: Vec::new(),
             _chunk_events: Vec::new(),
+            image_vault: None,
+            image_viewport_px: 0.0,
             more: None,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
@@ -418,6 +428,38 @@ impl FacetView {
     pub fn set_source(&mut self, source: VaultPath) {
         if self.single().is_some() {
             self.members.set_path(0, source);
+        }
+    }
+
+    /// Draw the chunks' **Inline image**s from `vault` (`None`: none). Each
+    /// chunk resolves a bare name from its own note.
+    pub(crate) fn set_image_vault(
+        &mut self,
+        vault: Option<Arc<NoteVault>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.image_vault = vault;
+        self.sync_image_sources(cx);
+    }
+
+    /// Read again what may have changed on disk: each chunk asks for the
+    /// vault's attachment list and its images on screen again.
+    pub(crate) fn refresh_images(&mut self, cx: &mut Context<Self>) {
+        for chunk in &self.chunks {
+            chunk.update(cx, |chunk, cx| chunk.refresh_images(cx));
+        }
+    }
+
+    /// Hand each chunk its image source: its own note, the vault and the
+    /// column's height. A chunk whose source is unchanged does nothing.
+    pub(super) fn sync_image_sources(&mut self, cx: &mut Context<Self>) {
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            let note = self.members.note_of(i).cloned();
+            let vault = self.image_vault.clone();
+            let viewport = self.image_viewport_px;
+            chunk.update(cx, |chunk, cx| {
+                chunk.set_image_source(note, vault, viewport, cx)
+            });
         }
     }
 
