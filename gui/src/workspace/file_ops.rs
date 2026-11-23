@@ -648,6 +648,10 @@ impl Workspace {
                     .session
                     .finish_rename(read, Some(&mut view.editor), &tx);
                 view.preedit = None;
+                // A note in another folder resolves its embeds from there.
+                if matches!(outcome, RenameOutcome::Retargeted(_)) {
+                    view.set_image_vault(Some(host.session.vault().clone()), cx);
+                }
                 cx.notify();
                 outcome
             }),

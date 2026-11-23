@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use gpui_kit::{App, AppContext as _, ImageFormat, RenderImage};
+use gpui_kit::{App, AppContext as _, Global, ImageFormat, RenderImage};
 
 /// The largest file we read: 20 MB.
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
@@ -42,6 +42,10 @@ pub enum Failure {
 
 impl Failure {
     /// The one-line note that stands in for the image.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the inline image painter writes it (next step)")
+    )]
     pub fn note(&self, name: &str, alt: &str) -> String {
         let head = match self {
             Failure::Missing => "image not found",
@@ -59,6 +63,13 @@ impl Failure {
 
 /// What we know about an image right now.
 #[derive(Clone)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the inline image painter reads the image and the failure (next step)"
+    )
+)]
 pub enum ImageState {
     /// The natural size is known; the pixels are not decoded yet.
     Sized {
@@ -79,8 +90,7 @@ pub fn fit(natural: (u32, u32), column_px: f32, pane_px: f32) -> (f32, f32) {
     }
     let scale = (column_px / w)
         .min(pane_px * PANE_HEIGHT_SHARE / h)
-        .min(1.0)
-        .max(0.0);
+        .clamp(0.0, 1.0);
     (w * scale, h * scale)
 }
 
@@ -197,7 +207,10 @@ struct Inner {
     pending: HashMap<PathBuf, FileKey>,
 }
 
-/// Natural sizes and decoded images for the vault's image files.
+/// Natural sizes and decoded images for the vault's image files. A clone
+/// shares the same cache. The app keeps one as a global, so every editor
+/// shares one byte budget.
+#[derive(Clone)]
 pub struct ImageStore {
     inner: Rc<RefCell<Inner>>,
 }
@@ -212,6 +225,8 @@ impl Default for ImageStore {
         }
     }
 }
+
+impl Global for ImageStore {}
 
 /// Checks the file and returns its kind and key, or why it cannot be drawn.
 fn inspect(path: &Path) -> Result<(Kind, FileKey), Failure> {
