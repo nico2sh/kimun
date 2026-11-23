@@ -57,7 +57,9 @@ pub(crate) mod sync;
 /// Host-scoped paths and file operations: the machine kimün runs on, its
 /// directories, and the file operations carrying OS-specific knowledge.
 pub mod system;
+mod vault_attachments;
 mod vault_journal;
+mod vault_links;
 mod vault_note_edits;
 mod vault_pinned_notes;
 mod vault_properties;
@@ -901,86 +903,6 @@ impl NoteVault {
         Ok((entry_data, content_data))
     }
 
-    /// Default attachments directory (e.g. `/assets`) inside the workspace.
-    pub fn default_attachments_path(&self) -> VaultPath {
-        VaultPath::new(DEFAULT_ASSETS_PATH)
-    }
-
-    /// Builds a candidate path for a new attachment under
-    /// [`Self::default_attachments_path`], using `prefix` and `ext` plus the current
-    /// unix-nanosecond timestamp for uniqueness. Nanoseconds (rather than
-    /// millis) make same-instant collisions vanishingly unlikely for
-    /// human-driven actions like clipboard paste.
-    ///
-    /// Does not check for collisions; callers that need stronger uniqueness
-    /// guarantees should retry with [`Self::exists`] or use a different strategy.
-    pub fn generate_attachment_path(&self, prefix: &str, ext: &str) -> VaultPath {
-        let ts = SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let filename = format!("{prefix}_{ts}.{ext}");
-        self.default_attachments_path()
-            .append(&VaultPath::new(filename))
-    }
-
-    /// Writes an attachment (raw bytes — e.g. an encoded PNG) to `path` under
-    /// the workspace. Creates parent directories as needed. The attachment is
-    /// not added to the notes index.
-    pub async fn save_attachment(&self, path: &VaultPath, bytes: &[u8]) -> Result<(), VaultError> {
-        nfs::save_attachment(self.workspace_path(), path, bytes).await?;
-        Ok(())
-    }
-
-    /// Where a note link leads: the notes `target` matches
-    /// ([`note::NoteTarget::matches`]), looked up in the index.
-    ///
-    /// - [`note::NoteTarget::Name`] (a wikilink by name): every note named
-    ///   like it whose path ends with the written components, in any folder,
-    ///   case-insensitively; several are [`LinkResolution::Ambiguous`].
-    /// - [`note::NoteTarget::Path`]: the note at exactly that path.
-    ///
-    /// No match is [`LinkResolution::Missing`] with the path a new note
-    /// would get: a name at the vault root plus its written components
-    /// (`[[work/new]]` → `/work/new.md`), a path as it is.
-    pub async fn resolve_note_target(
-        &self,
-        target: &note::NoteTarget,
-    ) -> Result<LinkResolution, VaultError> {
-        let mut hits = match target {
-            note::NoteTarget::Name(_) => {
-                let mut hits = self.index.search_note_by_name(target.name()).await?;
-                hits.retain(|(entry, _)| target.matches(&entry.path));
-                hits
-            }
-            note::NoteTarget::Path(path) => self.index.search_note_by_path(path).await?,
-        };
-        Ok(match hits.len() {
-            0 => LinkResolution::Missing(target.path().canonical()),
-            1 => {
-                let (entry, content) = hits.remove(0);
-                LinkResolution::Note(entry, content)
-            }
-            _ => LinkResolution::Ambiguous(hits),
-        })
-    }
-
-    /// The shortest wikilink target naming the note at `path` alone (no
-    /// brackets, no note extension): its name when no other note shares it
-    /// (`dup`), else the fewest trailing folders that tell it apart
-    /// (`work/dup`), else its vault-absolute path (`/work/dup`) when even
-    /// its whole path ends another note's.
-    pub async fn wikilink_target_for(&self, path: &VaultPath) -> Result<String, VaultError> {
-        let namesakes: Vec<VaultPath> = self
-            .index
-            .search_note_by_name(path.get_name())
-            .await?
-            .into_iter()
-            .map(|(entry, _)| entry.path)
-            .collect();
-        Ok(note::unique_wikilink(path, 1, &namesakes))
-    }
-
     /// Deletes the note at `path` (backing it up first when backups are
     /// enabled). The index row is removed before the file, so the index never
     /// points at a missing file.
@@ -1087,54 +1009,6 @@ impl NoteVault {
         Ok(nfs::classify(&meta, &path))
     }
 
-    /// Reads an attachment's [`AttachmentDetails`] — size, last-modified, file
-    /// extension, and a preview of its content (the decoded text for text files,
-    /// capped; nothing for binary files). The attachment is never indexed.
-    pub async fn get_attachment_details(
-        &self,
-        path: &VaultPath,
-    ) -> Result<AttachmentDetails, VaultError> {
-        let path = path.flatten();
-        let read = nfs::read_attachment(self.workspace_path(), &path).await?;
-        let extension = attachment_extension(&path);
-        let content = match read.content {
-            nfs::FileText::Text { text, truncated } => AttachmentContent::Text { text, truncated },
-            nfs::FileText::Binary => AttachmentContent::Binary,
-        };
-        Ok(AttachmentDetails {
-            path,
-            size: read.size,
-            modified_secs: read.modified_secs,
-            extension,
-            content,
-        })
-    }
-
-    /// Renames or moves an attachment (any non-note file). Plain filesystem
-    /// rename: unlike [`Self::rename_note`], it does **not** rewrite the
-    /// embed/link references to the attachment in notes, since attachments are
-    /// not part of the note-link graph. Fails if `to` already exists.
-    pub async fn rename_attachment(
-        &self,
-        from: &VaultPath,
-        to: &VaultPath,
-    ) -> Result<(), VaultError> {
-        let from = from.flatten();
-        let to = to.flatten();
-        nfs::rename_attachment(self.workspace_path(), &from, &to)
-            .await
-            .map_err(rename_dest_err)?;
-        Ok(())
-    }
-
-    /// Deletes an attachment file. No index or backup involvement — attachments
-    /// are not indexed.
-    pub async fn delete_attachment(&self, path: &VaultPath) -> Result<(), VaultError> {
-        let path = path.flatten();
-        nfs::delete_attachment(self.workspace_path(), &path).await?;
-        Ok(())
-    }
-
     /// Deletes the entry at `path`, dispatching on its [`EntryKind`]: a note
     /// (index- and backup-aware), a directory (recursive, reindexed), or an
     /// attachment (plain file). The one door the UI uses to delete any entry
@@ -1159,15 +1033,6 @@ impl NoteVault {
             EntryKind::Attachment => self.rename_attachment(from, to).await,
         }
     }
-}
-
-/// Lowercased file extension of an attachment path, if any (`diagram.png` →
-/// `png`). `VaultPath` already lowercases its components.
-fn attachment_extension(path: &VaultPath) -> Option<String> {
-    let (_, name) = path.get_parent_path();
-    std::path::Path::new(&name)
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase())
 }
 
 /// Where a note link leads ([`NoteVault::resolve_note_target`]).
