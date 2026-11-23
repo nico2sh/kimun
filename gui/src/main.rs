@@ -19,6 +19,7 @@
 )]
 
 mod assets;
+mod attachment_index;
 mod autocomplete;
 #[cfg(test)]
 mod autocomplete_tests;

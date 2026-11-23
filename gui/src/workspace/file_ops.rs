@@ -635,6 +635,13 @@ impl Workspace {
         for state in self.groups.values() {
             state.editor.update(cx, |view, cx| view.refresh_images(cx));
         }
+        // The shared attachment list of the read-only views, too.
+        if let Some(vault) = self.vault()
+            && cx.has_global::<crate::attachment_index::AttachmentIndex>()
+        {
+            cx.global_mut::<crate::attachment_index::AttachmentIndex>()
+                .refresh(&vault);
+        }
     }
 
     /// The followed notes were read at their new paths: each loads clean
