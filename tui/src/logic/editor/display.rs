@@ -132,6 +132,10 @@ pub struct EditorDisplay {
     /// now one assignment.
     pub text_snapshot: crate::ropetext::Text,
     pub cursor_snapshot: (usize, usize),
+    /// Whether the caret's row shows as raw source, as in an editor. A
+    /// read-only view turns it off ([`Self::set_reveal_caret_row`]) so its
+    /// text always draws styled.
+    reveal_caret_row: bool,
     /// Line ranges of every fenced code block in the buffer. Text-keyed
     /// (rebuilt only when `text_revision` changes); `is_in_code_block`
     /// does a cheap point lookup against this list per row so all fenced
@@ -349,6 +353,7 @@ impl EditorDisplay {
             last_drawn: (0, (0, 0), 0),
             text_snapshot: crate::ropetext::Text::new(),
             cursor_snapshot: (0, 0),
+            reveal_caret_row: true,
             fence_ranges: Vec::new(),
             frontmatter: None,
             fm_reveal: FrontmatterReveal::default(),
@@ -780,6 +785,12 @@ impl EditorDisplay {
         self.bulk_edit_pending = true;
     }
 
+    /// Whether the caret's row shows as raw source (the default). Off for a
+    /// read-only view, which has no row being edited.
+    pub fn set_reveal_caret_row(&mut self, reveal: bool) {
+        self.reveal_caret_row = reveal;
+    }
+
     /// `update` without a `Rect`: the editor only ever needs the pane's
     /// size, never its position.
     pub fn update_sized(
@@ -795,7 +806,13 @@ impl EditorDisplay {
         // cache from these same `lines`.
         let text = &snap.text;
         let row_count = text.line_count();
-        let cursor = snap.cursor;
+        // A display that shows no caret row reads the caret as off the
+        // buffer, so no row is revealed as raw source.
+        let cursor = if self.reveal_caret_row {
+            snap.cursor
+        } else {
+            (usize::MAX, 0)
+        };
         let generation = snap.content_revision.get();
         // Overlays belong to the snapshot they were built from. Clearing here
         // means a caller that stops previewing (or closes the find bar) cannot
@@ -1873,7 +1890,7 @@ impl EditorDisplay {
         block.box_width = widest.min(width as usize) as u16;
     }
 
-    fn is_in_code_block(&self, row: usize) -> bool {
+    pub(crate) fn is_in_code_block(&self, row: usize) -> bool {
         // Every line inside any fenced block renders force-raw (no markdown
         // re-styling, distinct fg color). Previously this checked only the
         // fence the cursor was sitting in, so fenced blocks elsewhere in
@@ -2455,6 +2472,23 @@ pub(crate) mod tests {
             marked(&v, 1, OverlayKind::FollowTarget),
             vec!["w", "[p.png]", "#lab"]
         );
+    }
+
+    #[test]
+    fn a_display_without_a_caret_row_draws_the_caret_row_styled() {
+        let lines = vec!["# Title".to_string(), "body".to_string()];
+        let mut v = make_view_for_lines(&lines, (0, 0), 40);
+        use crate::logic::editor::markdown::runs::Role;
+        let revealed = |v: &EditorDisplay| {
+            v.frame(40, false).rows[0]
+                .runs
+                .iter()
+                .any(|r| r.role == Role::Revealed)
+        };
+        assert!(revealed(&v), "an editor reveals the caret's row");
+        v.set_reveal_caret_row(false);
+        update_view(&mut v, &lines, (0, 0), (40, 24), 2, None);
+        assert!(!revealed(&v), "a read-only view reveals no row");
     }
 
     #[test]

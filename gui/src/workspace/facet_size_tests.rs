@@ -207,25 +207,21 @@ fn a_revealed_block_moves_the_column_once(cx: &mut TestAppContext) {
     assert_eq!(top(cx, 1), moved, "and it moved only once");
 }
 
+/// A press on a link places the caret there, and the link stays folded:
+/// a piece never shows written-out source (ADR-0062), so the press changes
+/// no piece's size.
 #[gpui_kit::test]
-fn a_click_that_unfolds_a_link_resizes_its_piece_in_the_same_frame(cx: &mut TestAppContext) {
+fn a_click_on_a_link_leaves_its_piece_folded_and_sized(cx: &mut TestAppContext) {
     let url = "https://example.com/a/very/long/path/that/goes/on/and/on/0123456789";
     let text = format!("intro #t\nsee [label]({url}) and some more words after it\n");
     let (view, cx, _events, _sub) = open(cx, &text, vec![]);
     cx.simulate_resize(size(px(300.), px(1200.)));
     settle(cx);
     let folded = rows(&view, 0, cx);
-    // The press puts the caret on the link, so the link shows written out.
-    // The press alone draws the frame that is checked. The release draws
-    // another one.
     let at = cell(&view, 0, 5, 1, cx);
     cx.update(|window, cx| window.pointer_down(at, MouseButton::Left, cx));
     cx.run_until_parked();
-    let unfolded = rows(&view, 0, cx);
-    assert!(
-        unfolded > folded,
-        "the link unfolds: {folded} to {unfolded}"
-    );
+    assert_eq!(rows(&view, 0, cx), folded, "the link stays folded");
     assert_sized(&view, cx, "the press's frame");
     cx.update(|window, cx| window.pointer_up(at, MouseButton::Left, cx));
     cx.run_until_parked();

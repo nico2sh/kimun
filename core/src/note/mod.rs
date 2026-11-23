@@ -6,6 +6,7 @@ pub(crate) mod facet_view;
 pub(crate) mod facets;
 pub(crate) mod link_target;
 pub(crate) mod properties;
+pub(crate) mod tasks;
 mod walk;
 
 pub use properties::{
@@ -24,6 +25,7 @@ pub use facet_view::{
     plan_chunks, reveal, reveal_gap, ChunkPlan, Crumb, Reveal, GAP_SHOW_ALL_MAX, MAX_RANGES,
 };
 pub use facets::{note_facets, select_blocks, Facet, FacetEntry, FacetKind, NoteFacets};
+pub use tasks::toggle_task;
 
 pub(crate) use link_target::unique_wikilink;
 pub use link_target::{markdown_attachment, NoteTarget};

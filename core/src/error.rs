@@ -56,6 +56,13 @@ pub enum VaultError {
         /// The note in which the text matched multiple times.
         path: VaultPath,
     },
+    /// A task toggle found no task on the line the caller saw: the note
+    /// changed since the caller read it. Nothing was written.
+    #[error("The task has changed in note: {path}")]
+    TaskChanged {
+        /// The note whose task was not found.
+        path: VaultPath,
+    },
     /// A user-supplied regular expression failed to compile.
     #[error("Invalid regular expression '{pattern}': {message}")]
     InvalidRegex {
@@ -143,6 +150,7 @@ impl VaultError {
             // These error Displays are already clear, single-path messages.
             VaultError::ReplaceTextNotFound { .. }
             | VaultError::ReplaceTextNotUnique { .. }
+            | VaultError::TaskChanged { .. }
             | VaultError::InvalidRegex { .. }
             | VaultError::InvalidProperty { .. } => Some(self.to_string()),
             // The user can act on this one: update the app.

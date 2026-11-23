@@ -339,6 +339,22 @@ impl Editor {
         follow_target_in_line(&line, lcol)
     }
 
+    /// The task checkbox drawn in screen cell (`row`, `col`) of the text
+    /// area: its buffer row and the text of that row. `None` when the cell
+    /// draws no checkbox, or the row is in a code block. Reads the last layout
+    /// and moves nothing. A host that shows the text read-only uses it to
+    /// toggle the task ([`kimun_core::note::toggle_task`]).
+    pub fn task_marker_at_screen(&self, row: u16, col: u16) -> Option<(usize, String)> {
+        let display = &self.session.display;
+        let (lrow, lcol) = display.text_at_screen(row as usize, col as usize)?;
+        if display.is_in_code_block(lrow) {
+            return None;
+        }
+        let line = self.buf.ta.row(lrow)?.into_owned();
+        let span = task_marker_cols(&line)?;
+        span.contains(&lcol).then_some((lrow, line))
+    }
+
     // ---- Lifecycle ---------------------------------------------------------
 
     /// Set the search needles to emphasize in the rendered buffer (the note
@@ -1539,8 +1555,65 @@ impl Editor {
     }
 }
 
+/// The char columns of the `[ ]`, `[x]` or `[X]` of a task line: after any
+/// quote markers and indent, a bullet or a number, and a space. `None` for a
+/// line that is not a task line.
+fn task_marker_cols(line: &str) -> Option<std::ops::Range<usize>> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut at = 0;
+    // Indent and quote markers.
+    while chars
+        .get(at)
+        .is_some_and(|c| c.is_whitespace() || *c == '>')
+    {
+        at += 1;
+    }
+    // A bullet, or a number with its `.` or `)`.
+    match chars.get(at)? {
+        '-' | '*' | '+' => at += 1,
+        c if c.is_ascii_digit() => {
+            while chars.get(at).is_some_and(|c| c.is_ascii_digit()) {
+                at += 1;
+            }
+            if !matches!(chars.get(at), Some('.') | Some(')')) {
+                return None;
+            }
+            at += 1;
+        }
+        _ => return None,
+    }
+    // At least one space before the box.
+    let spaces = chars[at..].iter().take_while(|c| **c == ' ').count();
+    if spaces == 0 {
+        return None;
+    }
+    at += spaces;
+    let boxed = chars.get(at..at + 3)?;
+    let closed = matches!(boxed, ['[', ' ' | 'x' | 'X', ']']);
+    let ends = chars.get(at + 3).is_none_or(|c| c.is_whitespace());
+    (closed && ends).then_some(at..at + 3)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn task_marker_cols_finds_the_box_of_a_task_line() {
+        assert_eq!(task_marker_cols("- [ ] one"), Some(2..5));
+        assert_eq!(task_marker_cols("  * [x] two"), Some(4..7));
+        assert_eq!(task_marker_cols("12. [X] three"), Some(4..7));
+        assert_eq!(task_marker_cols("> - [ ] quoted"), Some(4..7));
+        assert_eq!(task_marker_cols("- [ ]"), Some(2..5));
+    }
+
+    #[test]
+    fn task_marker_cols_ignores_other_lines() {
+        assert_eq!(task_marker_cols("- one [ ] two"), None);
+        assert_eq!(task_marker_cols("- [] one"), None);
+        assert_eq!(task_marker_cols("- [ ]one"), None);
+        assert_eq!(task_marker_cols("[ ] one"), None);
+        assert_eq!(task_marker_cols("plain"), None);
+    }
+
     use super::*;
     use crate::logic::editor::rope_buffer::CursorMove;
     use crate::logic::editor::snapshot::EditorMode;

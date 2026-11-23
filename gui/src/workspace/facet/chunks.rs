@@ -52,6 +52,9 @@ impl FacetView {
                             EditorEvent::ReadOnlyFollow { target } => {
                                 this.follow(i, target.clone(), cx)
                             }
+                            EditorEvent::TaskToggle { row, line } => {
+                                this.toggle_task(i, *row, line.clone(), cx)
+                            }
                             EditorEvent::LinkMenu { at, target } => {
                                 this.link_menu(i, *at, target.clone(), cx)
                             }

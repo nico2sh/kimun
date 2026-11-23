@@ -1355,6 +1355,26 @@ impl NoteVault {
         Ok(count)
     }
 
+    /// Flips the checkbox of the task on source line `line` (0-based) of the
+    /// note at `path`, writing the result. `seen` is the line as the caller
+    /// read it; the note is left alone and [`VaultError::TaskChanged`] is
+    /// returned when that line is no longer that task (see [`note::toggle_task`]).
+    pub async fn toggle_task(
+        &self,
+        path: &VaultPath,
+        line: usize,
+        seen: &str,
+    ) -> Result<(), VaultError> {
+        // The per-note lock spans the read and the write, as in
+        // `replace_in_note`.
+        let _guard = self.lock_note(path).await;
+        let text = self.get_note_text(path).await?;
+        let updated = note::toggle_task(&text, line, seen)
+            .ok_or_else(|| VaultError::TaskChanged { path: path.clone() })?;
+        self.save_note_unlocked(path, updated).await?;
+        Ok(())
+    }
+
     /// Dry-run of [`Self::replace_in_note`]: computes what the note would contain after
     /// the replacement **without writing** (and without taking the write lock —
     /// the result is advisory). Returns the same errors the real replace would
@@ -4340,6 +4360,53 @@ mod modify_backup_tests {
             .join(".kimun")
             .join("backups")
             .join(date)
+    }
+
+    // ---- toggle_task ----
+
+    #[tokio::test]
+    async fn toggle_task_flips_the_checkbox_and_saves() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "intro\n- [ ] one\n").await.unwrap();
+
+        vault.toggle_task(&p, 1, "- [ ] one").await.unwrap();
+
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "intro\n- [x] one\n");
+    }
+
+    #[tokio::test]
+    async fn toggle_task_keeps_the_endings_of_a_crlf_note() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(temp.path())))
+            .await
+            .unwrap();
+        vault.validate_and_init().await.unwrap();
+        let file = temp.path().join("note.md");
+        tokio::fs::write(&file, "intro\r\n- [ ] one\r\n")
+            .await
+            .unwrap();
+        let p = VaultPath::new("note.md");
+
+        vault.toggle_task(&p, 1, "- [ ] one").await.unwrap();
+
+        let after = tokio::fs::read_to_string(&file).await.unwrap();
+        assert_eq!(after, "intro\r\n- [x] one\r\n");
+    }
+
+    #[tokio::test]
+    async fn toggle_task_refuses_a_note_that_changed() {
+        let (_t, vault) = backup_vault().await;
+        let p = VaultPath::new("note.md");
+        vault.create_note(&p, "- [ ] new text\n").await.unwrap();
+
+        let err = vault
+            .toggle_task(&p, 0, "- [ ] old text")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, VaultError::TaskChanged { .. }));
+        assert_eq!(vault.get_note_text(&p).await.unwrap(), "- [ ] new text\n");
     }
 
     // ---- replace_in_note ----

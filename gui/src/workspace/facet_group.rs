@@ -238,6 +238,9 @@ impl Workspace {
                     });
                 }
             }
+            FacetEvent::ToggleTask { note, line, seen } => {
+                self.toggle_facet_task(note.clone(), *line, seen.clone(), cx)
+            }
             FacetEvent::PicksChanged => self.facet_picks_changed(cx),
             // A single-note view never emits it.
             FacetEvent::Refresh => {
