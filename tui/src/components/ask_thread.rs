@@ -555,33 +555,25 @@ impl ThreadPanel {
 
         // The question line gets a strong identity (accent + bold + a chevron
         // prompt glyph); turns are parted by a theme-dimmed horizontal rule.
-        let question = Style::default()
-            .fg(theme.accent.to_ratatui())
-            .add_modifier(Modifier::BOLD);
-        let separator = Style::default()
-            .fg(theme.gray.to_ratatui())
-            .add_modifier(Modifier::DIM);
-        let dim = Style::default().fg(theme.gray.to_ratatui());
-        let err = Style::default().fg(theme.red.to_ratatui());
         let md = crate::components::markdown_lines::MdStyles::from_theme(theme);
+        let styles = TurnStyles {
+            question: Style::default()
+                .fg(theme.accent.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            separator: Style::default()
+                .fg(theme.gray.to_ratatui())
+                .add_modifier(Modifier::DIM),
+            dim: Style::default().fg(theme.gray.to_ratatui()),
+            err: Style::default().fg(theme.red.to_ratatui()),
+            md: &md,
+        };
         let prompt = self.icons.question_prompt;
 
         let mut rows: Vec<(RowSlot, Line<'static>)> = Vec::new();
         let mut turn_start_row: Vec<(u64, u16)> = Vec::new();
         for (i, turn) in self.thread.turns().iter().enumerate() {
             turn_start_row.push((turn.id, rows.len() as u16));
-            render_turn(
-                turn,
-                rect.width,
-                i == 0,
-                prompt,
-                question,
-                separator,
-                dim,
-                err,
-                &md,
-                &mut rows,
-            );
+            render_turn(turn, rect.width, i == 0, prompt, &styles, &mut rows);
         }
         let total = rows.len() as u16;
         let height = rect.height;
@@ -724,22 +716,34 @@ impl Component for ThreadPanel {
     // `client` the trait signature has no room for. See the module doc.
 }
 
+/// The styles one turn's rows are drawn with.
+#[derive(Clone, Copy)]
+struct TurnStyles<'a> {
+    question: Style,
+    separator: Style,
+    dim: Style,
+    err: Style,
+    md: &'a crate::components::markdown_lines::MdStyles,
+}
+
 /// Render one turn's rows (question + status/body), appending to `out`.
 /// Free function (no `&self` needed) — the "one method per concern" split
 /// `render_turns` delegates to.
-#[allow(clippy::too_many_arguments)]
 fn render_turn(
     turn: &Turn,
     width: u16,
     is_first: bool,
     prompt: &str,
-    question_style: Style,
-    sep_style: Style,
-    dim: Style,
-    err: Style,
-    md: &crate::components::markdown_lines::MdStyles,
+    styles: &TurnStyles,
     out: &mut Vec<(RowSlot, Line<'static>)>,
 ) {
+    let TurnStyles {
+        question: question_style,
+        separator: sep_style,
+        dim,
+        err,
+        md,
+    } = *styles;
     // A theme-dimmed rule parts each turn from the one above (never before the
     // first turn). It belongs to this turn — clicking it selects the turn.
     if !is_first {
@@ -753,7 +757,7 @@ fn render_turn(
         ));
     }
     match &turn.status {
-        TurnStatus::Thinking | TurnStatus::Streaming => {
+        TurnStatus::Thinking => {
             out.push((
                 RowSlot::Turn(turn.id),
                 Line::from(Span::styled("… thinking", dim)),
@@ -1207,14 +1211,17 @@ mod tests {
         use crate::components::markdown_lines::MdStyles;
         let theme = Theme::default();
         let md = MdStyles::from_theme(&theme);
-        let qstyle = Style::default()
-            .fg(theme.accent.to_ratatui())
-            .add_modifier(Modifier::BOLD);
-        let sep = Style::default()
-            .fg(theme.gray.to_ratatui())
-            .add_modifier(Modifier::DIM);
-        let dim = Style::default();
-        let err = Style::default();
+        let styles = TurnStyles {
+            question: Style::default()
+                .fg(theme.accent.to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            separator: Style::default()
+                .fg(theme.gray.to_ratatui())
+                .add_modifier(Modifier::DIM),
+            dim: Style::default(),
+            err: Style::default(),
+            md: &md,
+        };
 
         let mut thread = Thread::default();
         let a = thread.ask("first".into());
@@ -1224,7 +1231,7 @@ mod tests {
 
         let mut rows: Vec<(RowSlot, Line<'static>)> = Vec::new();
         for (i, turn) in thread.turns().iter().enumerate() {
-            render_turn(turn, 40, i == 0, ">", qstyle, sep, dim, err, &md, &mut rows);
+            render_turn(turn, 40, i == 0, ">", &styles, &mut rows);
         }
 
         let is_sep = |l: &Line<'static>| l.spans.iter().any(|s| s.content.contains('─'));
@@ -1244,7 +1251,7 @@ mod tests {
             qline.spans[0].content.starts_with('>'),
             "carries the prompt"
         );
-        assert_eq!(qline.spans[0].style, qstyle, "accent + bold");
+        assert_eq!(qline.spans[0].style, styles.question, "accent + bold");
     }
 
     mod rendering {

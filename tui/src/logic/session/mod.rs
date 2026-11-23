@@ -517,7 +517,11 @@ impl NoteSession {
     /// `autosave_interval_secs`, naming [`Self::autosave_tick`]). Calls
     /// `tokio::spawn`: needs a tokio context.
     pub fn restart_autosave(&mut self, tx: &AppTx) {
-        let interval = self.settings.read().unwrap().autosave_interval_secs;
+        let interval = self
+            .settings
+            .read()
+            .expect("settings lock poisoned")
+            .autosave_interval_secs;
         self.autosave.restart(interval, tx.clone());
     }
 
@@ -538,7 +542,11 @@ impl NoteSession {
     /// again, on the settings as they are then). True when it was restarted.
     /// Calls `tokio::spawn`: needs a tokio context.
     pub fn retime_autosave(&mut self, tx: &AppTx) -> bool {
-        let wanted = self.settings.read().unwrap().autosave_interval_secs;
+        let wanted = self
+            .settings
+            .read()
+            .expect("settings lock poisoned")
+            .autosave_interval_secs;
         match self.autosave.interval_secs() {
             Some(running) if running != wanted => {
                 self.autosave.restart(wanted, tx.clone());

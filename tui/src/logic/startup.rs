@@ -39,7 +39,7 @@ pub enum VaultOpen {
 /// empty state). Logs the failure the same way.
 pub async fn try_open_vault(settings: &SharedSettings) -> VaultOpen {
     let (workspace_path, cache_path, inbox_path) = {
-        let s = settings.read().unwrap();
+        let s = settings.read().expect("settings lock poisoned");
         let wp = s.resolve_workspace_path();
         let name = s.current_workspace_name();
         let cache = name.as_ref().map(|n| s.index_for(n));
@@ -104,7 +104,10 @@ pub async fn restore_target(
     vault: Option<&Arc<NoteVault>>,
     vault_reachable: bool,
 ) -> RestoreTarget {
-    let history = settings.read().unwrap().current_last_paths();
+    let history = settings
+        .read()
+        .expect("settings lock poisoned")
+        .current_last_paths();
     // No vault (no workspace — the open is routed to onboarding) or one
     // that failed to index: nothing trustworthy to check the history
     // against.
@@ -130,10 +133,13 @@ pub async fn restore_target(
         }
     }
     if !gone.is_empty() {
-        settings.read().unwrap().edit_path_history(|paths| {
-            paths.retain(|p| !gone.iter().any(|g| g.is_like(p)));
-            true
-        });
+        settings
+            .read()
+            .expect("settings lock poisoned")
+            .edit_path_history(|paths| {
+                paths.retain(|p| !gone.iter().any(|g| g.is_like(p)));
+                true
+            });
     }
     let gone_message = history
         .first()

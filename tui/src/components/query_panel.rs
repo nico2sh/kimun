@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, ListItem, Paragraph};
 use crate::components::autocomplete::AutocompleteMode;
 use crate::components::event_state::EventState;
 use crate::components::expand_chevron::ExpandControl;
-use crate::components::preview_pane::{Highlight, PreviewPane, Step};
+use crate::components::preview_pane::{Highlight, PreviewHeader, PreviewPane, Step};
 use crate::components::query_vars::{QueryContext, query_has_variables, resolve_query};
 use crate::components::saved_search_breadcrumb::SavedSearchBreadcrumb;
 use crate::components::search_list::{
@@ -813,8 +813,10 @@ impl QueryPanel {
                 self.preview.render_full(
                     f,
                     inner,
-                    &entry.title,
-                    &entry.filename,
+                    PreviewHeader {
+                        title: &entry.title,
+                        filename: &entry.filename,
+                    },
                     &text,
                     Highlight::Needles(&needles),
                     theme,

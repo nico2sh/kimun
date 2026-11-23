@@ -120,17 +120,15 @@ pub async fn run(
             regex,
             preview,
         } => {
-            run_replace(
-                vault,
-                &path,
-                &old,
-                &new,
+            let request = ReplaceRequest {
+                path: &path,
+                old: &old,
+                new: &new,
                 all,
                 regex,
                 preview,
-                quick_note_path,
-            )
-            .await
+            };
+            run_replace(vault, request, quick_note_path).await
         }
         NoteSubcommand::Delete { path, force } => {
             run_delete(vault, &path, force, quick_note_path).await
@@ -172,18 +170,31 @@ async fn run_overwrite(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_replace(
-    vault: &NoteVault,
-    path_input: &str,
-    old: &str,
-    new: &str,
+/// The arguments of `note replace`, as parsed from the command line.
+struct ReplaceRequest<'a> {
+    path: &'a str,
+    old: &'a str,
+    new: &'a str,
     all: bool,
     regex: bool,
     preview: bool,
+}
+
+async fn run_replace(
+    vault: &NoteVault,
+    request: ReplaceRequest<'_>,
     quick_note_path: &str,
 ) -> Result<()> {
     use crate::cli::helpers::resolve_note_path;
+
+    let ReplaceRequest {
+        path: path_input,
+        old,
+        new,
+        all,
+        regex,
+        preview,
+    } = request;
 
     let vault_path = resolve_note_path(path_input, quick_note_path)?;
 

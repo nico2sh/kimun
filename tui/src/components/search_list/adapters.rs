@@ -126,7 +126,7 @@ pub struct HeldEmitSource {
 #[async_trait]
 impl RowSource<TestRow> for HeldEmitSource {
     async fn load(&self, _query: &str, emit: Emit<TestRow>) {
-        *self.slot.lock().unwrap() = Some(emit);
+        *self.slot.lock().expect("emit slot lock poisoned") = Some(emit);
     }
 
     fn reload_on_query(&self) -> bool {

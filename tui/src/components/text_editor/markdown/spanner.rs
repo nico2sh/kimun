@@ -7,9 +7,9 @@
 
 #[cfg(test)]
 use super::super::markdown_style::{mask_to_modifier, role_style};
-use crate::logic::editor::markdown::ParsedLine;
 #[cfg(test)]
 use crate::logic::editor::markdown::runs::render_runs;
+use crate::logic::editor::markdown::{ParsedLine, VisualSlice};
 #[cfg(test)]
 use crate::settings::themes::Theme;
 #[cfg(test)]
@@ -69,14 +69,11 @@ impl MarkdownSpanner {
     // ── Public API (parse-on-the-fly wrappers, used in tests only) ───────────
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
     pub fn render(
         content: &str,
         logical_line: &str,
-        visual_start_col: usize,
+        slice: VisualSlice,
         cursor_col: Option<usize>,
-        is_first_visual_line: bool,
-        force_raw: bool,
         available_width: u16,
         theme: &Theme,
     ) -> Vec<Span<'static>> {
@@ -85,10 +82,8 @@ impl MarkdownSpanner {
             content,
             logical_line,
             &parsed,
-            visual_start_col,
+            slice,
             cursor_col,
-            is_first_visual_line,
-            force_raw,
             available_width,
             theme,
         )
@@ -138,26 +133,25 @@ impl MarkdownSpanner {
         Self::rendered_col_to_logical_with(
             logical_line,
             &parsed,
-            visual_start_col,
+            VisualSlice {
+                start_col: visual_start_col,
+                is_first: is_first_visual_line,
+                force_raw,
+            },
             rendered_col,
             None,
-            is_first_visual_line,
-            force_raw,
         )
     }
 
     // ── `_with` variants: accept pre-parsed `&ParsedLine` ────────────────────
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
     pub fn render_with<'a>(
         content: &'a str,
         logical_line: &'a str,
         parsed: &'a ParsedLine,
-        visual_start_col: usize,
+        slice: VisualSlice,
         cursor_col: Option<usize>,
-        is_first_visual_line: bool,
-        force_raw: bool,
         available_width: u16,
         theme: &Theme,
     ) -> Vec<Span<'a>> {
@@ -165,10 +159,8 @@ impl MarkdownSpanner {
             content,
             logical_line,
             parsed,
-            visual_start_col,
+            slice,
             cursor_col,
-            is_first_visual_line,
-            force_raw,
             available_width,
         )
         .into_iter()
@@ -201,24 +193,19 @@ impl MarkdownSpanner {
     }
 
     /// Delegates to [`crate::logic::editor::markdown::reveal::rendered_col_with_reveal`].
-    #[allow(clippy::too_many_arguments)]
     pub fn rendered_col_with_reveal(
         logical_line: &str,
         parsed: &ParsedLine,
-        visual_start_col: usize,
+        slice: VisualSlice,
         cursor_col: usize,
         reveal_col: Option<usize>,
-        is_first_visual_line: bool,
-        force_raw: bool,
     ) -> usize {
         crate::logic::editor::markdown::reveal::rendered_col_with_reveal(
             logical_line,
             parsed,
-            visual_start_col,
+            slice,
             cursor_col,
             reveal_col,
-            is_first_visual_line,
-            force_raw,
         )
     }
 
@@ -238,24 +225,19 @@ impl MarkdownSpanner {
     }
 
     /// Delegates to [`crate::logic::editor::markdown::reveal::rendered_col_to_logical_with`].
-    #[allow(clippy::too_many_arguments)]
     pub fn rendered_col_to_logical_with(
         logical_line: &str,
         parsed: &ParsedLine,
-        visual_start_col: usize,
+        slice: VisualSlice,
         rendered_col: usize,
         reveal_col: Option<usize>,
-        is_first_visual_line: bool,
-        force_raw: bool,
     ) -> usize {
         crate::logic::editor::markdown::reveal::rendered_col_to_logical_with(
             logical_line,
             parsed,
-            visual_start_col,
+            slice,
             rendered_col,
             reveal_col,
-            is_first_visual_line,
-            force_raw,
         )
     }
 }
@@ -281,7 +263,7 @@ mod tests {
         // Caret elsewhere (or absent): the link stays collapsed, so logical
         // col 2 — the "n" of "note" — is rendered col 0.
         let collapsed =
-            MarkdownSpanner::rendered_col_with_reveal(line, &parsed, 0, 2, None, true, false);
+            MarkdownSpanner::rendered_col_with_reveal(line, &parsed, VisualSlice::first(), 2, None);
         assert_eq!(
             collapsed, 0,
             "with the caret away, the hidden `[[` occupies no screen columns"
@@ -289,8 +271,13 @@ mod tests {
 
         // Caret inside the link: it is revealed raw, so the same logical
         // column now really is two cells in.
-        let revealed =
-            MarkdownSpanner::rendered_col_with_reveal(line, &parsed, 0, 2, Some(2), true, false);
+        let revealed = MarkdownSpanner::rendered_col_with_reveal(
+            line,
+            &parsed,
+            VisualSlice::first(),
+            2,
+            Some(2),
+        );
         assert_eq!(revealed, 2, "the caret's own element renders raw");
 
         // The legacy entry point maps the caret, so it must keep agreeing with
@@ -305,7 +292,8 @@ mod tests {
     fn force_raw_expands_tabs_and_cursor_maps_round_trip() {
         let theme = crate::settings::themes::Theme::gruvbox_dark();
         // "\tx" force-raw: tab at col 0 → TAB_STOP (4) spaces, then 'x' → 5 cols.
-        let spans = MarkdownSpanner::render("\tx", "\tx", 0, None, true, true, 40, &theme);
+        let spans =
+            MarkdownSpanner::render("\tx", "\tx", VisualSlice::first().raw(), None, 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "    x", "tab must expand to 4 spaces in force-raw");
 
@@ -385,7 +373,7 @@ mod tests {
     fn blockquote_renders_bar_when_cursor_off_line() {
         let theme = crate::settings::themes::Theme::gruvbox_dark();
         // cursor_col = None → bar gutter, raw "> " hidden.
-        let spans = MarkdownSpanner::render("> hi", "> hi", 0, None, true, false, 40, &theme);
+        let spans = MarkdownSpanner::render("> hi", "> hi", VisualSlice::first(), None, 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
         assert!(
@@ -399,7 +387,8 @@ mod tests {
     fn blockquote_reveals_raw_marker_when_cursor_on_line() {
         let theme = crate::settings::themes::Theme::gruvbox_dark();
         // cursor_col = Some(..) → raw "> hi" shown, no bar.
-        let spans = MarkdownSpanner::render("> hi", "> hi", 0, Some(2), true, false, 40, &theme);
+        let spans =
+            MarkdownSpanner::render("> hi", "> hi", VisualSlice::first(), Some(2), 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "> hi");
         assert!(!text.contains('│'));
@@ -408,7 +397,7 @@ mod tests {
     #[test]
     fn nested_blockquote_renders_two_bars() {
         let theme = crate::settings::themes::Theme::gruvbox_dark();
-        let spans = MarkdownSpanner::render(">> x", ">> x", 0, None, true, false, 40, &theme);
+        let spans = MarkdownSpanner::render(">> x", ">> x", VisualSlice::first(), None, 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("││ "), "expected two bars, got {text:?}");
     }
@@ -416,7 +405,7 @@ mod tests {
     #[test]
     fn bare_blockquote_renders_bar_gutter_without_panic() {
         let theme = crate::settings::themes::Theme::gruvbox_dark();
-        let spans = MarkdownSpanner::render(">", ">", 0, None, true, false, 40, &theme);
+        let spans = MarkdownSpanner::render(">", ">", VisualSlice::first(), None, 40, &theme);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.starts_with("│ "), "expected bar gutter, got {text:?}");
         assert!(

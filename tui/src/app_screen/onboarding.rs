@@ -122,7 +122,7 @@ pub struct OnboardingScreen {
 
 impl OnboardingScreen {
     pub fn new(settings: SharedSettings) -> Self {
-        let s = settings.read().unwrap();
+        let s = settings.read().expect("settings lock poisoned");
         let model = OnboardingModel::new(&s);
         let theme = s.get_theme();
         drop(s);
@@ -236,7 +236,8 @@ impl OnboardingScreen {
     }
 
     fn dirty(&self) -> bool {
-        self.model.dirty(&self.settings.read().unwrap())
+        self.model
+            .dirty(&self.settings.read().expect("settings lock poisoned"))
     }
 
     fn on_cancel(&mut self, tx: &AppTx) {
@@ -710,7 +711,7 @@ impl OnboardingScreen {
                 );
             }
         } else {
-            let s = self.settings.read().unwrap();
+            let s = self.settings.read().expect("settings lock poisoned");
             let current = s.current_workspace_name().unwrap_or_default();
             let mut items: Vec<ListItem> = Vec::new();
             if let Some(wc) = s.workspace_config.as_ref() {
@@ -894,7 +895,7 @@ impl OnboardingScreen {
     }
 
     fn render_summary_step(&mut self, f: &mut Frame, area: Rect) {
-        let s = self.settings.read().unwrap();
+        let s = self.settings.read().expect("settings lock poisoned");
         let workspace_line = match (&self.model.draft.workspace, self.model.first_run) {
             (Some((name, path)), _) => format!("{name}  —  {}", path.display()),
             (None, false) => {
