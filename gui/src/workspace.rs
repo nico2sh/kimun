@@ -4125,6 +4125,8 @@ mod preferences_workspaces_tests;
 #[cfg(test)]
 mod preset_tests;
 #[cfg(test)]
+mod preview_image_tests;
+#[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
 mod query_builder_tests;
