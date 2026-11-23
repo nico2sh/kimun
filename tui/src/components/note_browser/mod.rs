@@ -147,15 +147,17 @@ impl NoteBrowserModal {
         let mut builder = SearchList::builder(provider, redraw_callback(tx.clone()))
             .initial_query(initial_query)
             .yank_combos_from(&key_bindings)
-            .icons(icons)
-            .autocomplete(
+            .icons(icons);
+        // Query syntax (`#tag`, `@path`, ...) only exists in the Query scope.
+        // The Files scope is a free-text fuzzy finder: suggestions there would
+        // complete against a syntax it does not have.
+        if scope == BrowserScope::Query {
+            builder = builder.highlight_query().autocomplete(
                 Arc::new(VaultSuggestions {
                     vault: vault.clone(),
                 }),
                 AutocompleteMode::SearchQuery,
             );
-        if scope == BrowserScope::Query {
-            builder = builder.highlight_query();
         }
         let list = builder.build();
         let mut modal = Self {
@@ -1139,6 +1141,16 @@ mod tests {
             query,
         );
         (modal, tx)
+    }
+
+    /// The Files scope is a free-text fuzzy finder: query-syntax suggestions
+    /// (`#tag`, note names) belong to the Query scope only.
+    #[tokio::test]
+    async fn only_the_query_scope_has_autocomplete() {
+        let (files, _) = search_modal(BrowserScope::Files, "").await;
+        let (query, _) = search_modal(BrowserScope::Query, "").await;
+        assert!(!files.list.has_autocomplete());
+        assert!(query.list.has_autocomplete());
     }
 
     #[tokio::test]
