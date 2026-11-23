@@ -58,6 +58,7 @@ pub(crate) mod sync;
 /// directories, and the file operations carrying OS-specific knowledge.
 pub mod system;
 mod vault_attachments;
+mod vault_browse;
 mod vault_entries;
 mod vault_journal;
 mod vault_links;
@@ -65,6 +66,7 @@ mod vault_note_edits;
 mod vault_pinned_notes;
 mod vault_properties;
 mod vault_saved_searches;
+mod vault_search;
 pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
@@ -83,15 +85,13 @@ pub use system::{Host, SystemPath};
 use std::{
     collections::HashMap,
     fmt::Display,
-    path::PathBuf,
     sync::Arc,
     time::{Duration, SystemTime},
 };
 
 use error::{FSError, VaultError};
-use futures_util::{stream, Stream, StreamExt, TryStreamExt};
 use index::NoteIndex;
-use log::{debug, warn};
+use log::debug;
 use nfs::{NoteEntryData, VaultPath};
 use note::{ContentChunk, NoteContentData, NoteDetails};
 use note_locks::NoteLocks;
@@ -455,269 +455,6 @@ impl NoteVault {
         Ok(a)
     }
 
-    /// Searches notes using the vault's query syntax (see [`SearchTerms`]).
-    /// Returns each matching note's entry and content data.
-    pub async fn search_notes<S: AsRef<str>>(
-        &self,
-        search_query: S,
-    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let search_query = search_query.as_ref();
-        let a = self.index.search(search_query).await?;
-        Ok(a)
-    }
-
-    /// Returns every distinct label persisted in the vault, lowercased.
-    pub async fn list_labels(&self) -> Result<Vec<String>, VaultError> {
-        Ok(self.index.list_labels().await?)
-    }
-
-    /// Returns notes whose name (filename without extension) starts with
-    /// `prefix`, case-insensitive, capped at `limit`. Used to feed the
-    /// wikilink autocomplete popup — note that the inserted wikilink target
-    /// is the `name` field, not the `path`.
-    pub async fn suggest_notes_by_prefix(
-        &self,
-        prefix: &str,
-        limit: usize,
-    ) -> Result<Vec<NoteSuggestion>, VaultError> {
-        Ok(self.index.suggest_notes_by_prefix(prefix, limit).await?)
-    }
-
-    /// Returns tag labels matching `prefix` (case-insensitive) paired with
-    /// usage counts, capped at `limit`. Used to feed the hashtag autocomplete
-    /// popup in both the editor and the search box.
-    pub async fn suggest_tags_by_prefix(
-        &self,
-        prefix: &str,
-        limit: usize,
-    ) -> Result<Vec<TagSuggestion>, VaultError> {
-        Ok(self.index.suggest_tags_by_prefix(prefix, limit).await?)
-    }
-
-    /// Returns every distinct label in the vault paired with the number of
-    /// notes carrying it. Labels are returned sorted alphabetically.
-    pub async fn label_counts(&self) -> Result<Vec<(String, usize)>, VaultError> {
-        let rows = self.index.label_counts().await?;
-        Ok(rows.into_iter().map(|(n, c)| (n, c as usize)).collect())
-    }
-
-    /// Returns every note path that carries the given label. The label
-    /// argument is lowercased before lookup, matching how labels are stored.
-    pub async fn notes_with_label<S: AsRef<str>>(
-        &self,
-        name: S,
-    ) -> Result<Vec<VaultPath>, VaultError> {
-        Ok(self.index.notes_with_label(name.as_ref()).await?)
-    }
-
-    /// Get notes under the given path. When `recursive` is false, only direct
-    /// children are returned.
-    pub async fn get_notes(
-        &self,
-        path: &VaultPath,
-        recursive: bool,
-    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let notes = self.index.get_notes(path, recursive).await?;
-        Ok(notes)
-    }
-
-    /// Counts the notes under each immediate child directory of `parent`,
-    /// at any depth. Keys are canonical child directory paths; a child with
-    /// no notes is absent, and notes directly in `parent` are not counted.
-    pub async fn child_note_counts(
-        &self,
-        parent: &VaultPath,
-    ) -> Result<HashMap<VaultPath, usize>, VaultError> {
-        let depth = parent.canonical().get_slices().len();
-        let mut counts: HashMap<VaultPath, usize> = HashMap::new();
-        for (base, n) in self.index.note_counts_by_base(parent).await? {
-            let mut child = VaultPath::new(base).canonical();
-            let mut len = child.get_slices().len();
-            if len <= depth {
-                continue; // a note directly in `parent`
-            }
-            while len > depth + 1 {
-                child = child.get_parent_path().0;
-                len -= 1;
-            }
-            *counts.entry(child).or_insert(0) += n as usize;
-        }
-        Ok(counts)
-    }
-
-    /// Returns every note in the vault with its entry and content data.
-    pub async fn get_all_notes(&self) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        let a = self.index.get_all_notes().await?;
-        Ok(a)
-    }
-    /// Resolves a vault path to its real OS filesystem location under the
-    /// workspace root.
-    pub fn path_to_pathbuf(&self, path: &VaultPath) -> PathBuf {
-        path.to_pathbuf(self.workspace_path())
-    }
-
-    /// Walks the vault per `options` and yields every entry it finds — note,
-    /// directory or attachment — as a [`SearchResult`], in discovery order,
-    /// as soon as the walker has processed it. Nothing happens until the
-    /// stream is first polled; from then on the walk runs on its own task to
-    /// completion, even if the stream is dropped early (the index sync must
-    /// not be left half-applied). A sync error surfaces as the stream's final
-    /// `Err` item. A recursive browse from the root doubles as a full index
-    /// sync: by the time the stream ends, the index reports ready.
-    ///
-    /// Use this when rows should appear while a slow (e.g. network) directory
-    /// is still being read; [`browse_vault`](Self::browse_vault) collects the
-    /// same walk into one `Vec`.
-    pub fn browse_vault_stream(
-        &self,
-        options: VaultBrowseOptions,
-    ) -> impl Stream<Item = Result<SearchResult, VaultError>> + Send + 'static {
-        let vault = self.clone();
-        // `once(..).flatten()` defers the spawn to the first poll, so building
-        // the stream needs no runtime and an unpolled stream walks nothing.
-        stream::once(async move {
-            let (sender, receiver) = futures_channel::mpsc::unbounded();
-            // `sender` moves into the task and drops when the walk ends, which
-            // is what closes `receiver` and lets `outcome` be polled.
-            let walk = tokio::spawn(async move { vault.browse_into(options, sender).await });
-            let outcome = stream::once(async move {
-                match walk.await {
-                    Ok(Ok(())) => None,
-                    Ok(Err(e)) => Some(Err(e)),
-                    Err(e) => Some(Err(VaultError::TaskJoin(format!("vault browse: {}", e)))),
-                }
-            })
-            .filter_map(std::future::ready);
-            receiver.map(Ok).chain(outcome)
-        })
-        .flatten()
-    }
-
-    /// Walks the vault per `options` and returns every entry it finds — the
-    /// collected form of [`browse_vault_stream`](Self::browse_vault_stream),
-    /// same sync side effect included.
-    pub async fn browse_vault(
-        &self,
-        options: VaultBrowseOptions,
-    ) -> Result<Vec<SearchResult>, VaultError> {
-        self.browse_vault_stream(options).try_collect().await
-    }
-
-    /// The browse walk itself: syncs the subtree into the index while sending
-    /// each discovered entry to `sender`, then marks a whole-vault walk synced.
-    async fn browse_into(
-        &self,
-        options: VaultBrowseOptions,
-        sender: futures_channel::mpsc::UnboundedSender<SearchResult>,
-    ) -> Result<(), VaultError> {
-        let start = std::time::SystemTime::now();
-        debug!("> Start fetching files with Options:\n{}", options);
-
-        // Logged here as well as returned: when the consumer dropped the
-        // stream early nobody polls the outcome, and a failed sync must not
-        // vanish silently.
-        if let Err(e) = VaultSync::new(&self.index, self.workspace_path())
-            .run(
-                &options.path,
-                options.recursive,
-                options.validation,
-                Some(sender),
-            )
-            .await
-        {
-            warn!("browse of {} failed to sync the index: {}", options.path, e);
-            return Err(e);
-        }
-
-        // A recursive browse from the root is a whole-vault sync: the index
-        // now mirrors the disk, so the readiness probe must report true —
-        // same as int_index_notes. A partial-subtree browse must NOT mark
-        // synced (the rest of a healed index could still be empty).
-        if options.recursive && options.path.is_root_or_empty() {
-            self.index.mark_synced();
-        }
-
-        let time = std::time::SystemTime::now()
-            .duration_since(start)
-            .expect("Something's wrong with the time");
-        debug!("> Files fetched in {} milliseconds", time.as_millis());
-
-        Ok(())
-    }
-
-    /// Returns all subdirectories under `path`.
-    /// Non-recursive returns only the immediate children; recursive returns the full tree.
-    pub fn get_directories(
-        &self,
-        path: &VaultPath,
-        recursive: bool,
-    ) -> Result<Vec<DirectoryDetails>, VaultError> {
-        Ok(nfs::list_directories(
-            self.workspace_path(),
-            path,
-            recursive,
-        )?)
-    }
-
-    /// Converts a note's raw Markdown into rendered Markdown and extracts all links.
-    ///
-    /// - WikiLinks (`[[note]]`) are converted to standard Markdown links.
-    /// - Note links are resolved to vault-relative absolute paths.
-    /// - Hashtags become Markdown links (`[#tag](#tag)`) and are added to the links list.
-    /// - Image paths are resolved to absolute OS paths so renderers can load them directly.
-    ///   Relative image paths are resolved against the note's location in the vault.
-    ///   External image URLs are kept as-is.
-    pub async fn get_markdown_and_links(
-        &self,
-        path: &VaultPath,
-    ) -> Result<note::MarkdownNote, VaultError> {
-        let note = self.load_note(path).await?;
-        let note_parent = if note.path.is_note() {
-            note.path.get_parent_path().0
-        } else {
-            note.path.clone()
-        };
-        let (md_text, mut links) = note.get_markdown_and_links();
-        // Since this function is intended to return content ready to be rendered
-        // We need the full path of the image links, so any markdown processor can find the image,
-        // the full path can only be resolved from here as we have the vault path
-        let (md_text, image_links) = note::process_image_links(&md_text, |alt_text, raw_path| {
-            let resolved = if note::scan::is_remote_url(raw_path) {
-                raw_path.to_string()
-            } else {
-                let image_vault_path = if raw_path.starts_with('/') {
-                    VaultPath::new(raw_path)
-                } else {
-                    note_parent.append(&VaultPath::new(raw_path)).flatten()
-                };
-                image_vault_path
-                    .to_pathbuf(self.workspace_path())
-                    .display()
-                    .to_string()
-            };
-            let link = note::NoteLink::image(&resolved, alt_text, raw_path);
-            (resolved, link)
-        });
-        links.extend(image_links);
-        Ok(note::MarkdownNote {
-            text: md_text,
-            links,
-        })
-    }
-
-    /// Returns all notes that contain a link pointing to `path`: a path link
-    /// (markdown, or a wikilink written from the root or the note's folder)
-    /// to exactly this note, or a wikilink by name whose written components
-    /// end this note's path (`[[dup]]`, `[[work/dup]]` for `/a/work/dup.md`)
-    /// — see [`note::NoteTarget::matches`]. An ambiguous name link is a
-    /// backlink of every note it can point at.
-    pub async fn get_backlinks(
-        &self,
-        path: &VaultPath,
-    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
-        Ok(self.index.get_backlinks(path).await?)
-    }
-
     /// Creates a new note at `path` with `text`, failing with
     /// [`VaultError::NoteExists`] if a note is already there. The create is
     /// exclusive (atomic `O_EXCL`), so it never clobbers an existing file.
@@ -900,13 +637,6 @@ impl NoteVault {
         let note_details = NoteDetails::new(path, written);
         let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
-    }
-
-    /// The note's labels: inline `#hashtags` and frontmatter `tags:` together,
-    /// lowercased, sorted, distinct. Index-backed: a missing or not-yet-indexed
-    /// note returns an empty list, not `NotFound`.
-    pub async fn get_tags(&self, path: &VaultPath) -> Result<Vec<String>, VaultError> {
-        Ok(self.index.labels_of(path).await?)
     }
 }
 
