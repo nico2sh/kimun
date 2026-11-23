@@ -205,6 +205,9 @@ struct Inner {
     cache: Cache,
     /// Paths with a decode in flight, so a repeated request does nothing.
     pending: HashMap<PathBuf, FileKey>,
+    /// Decodes started so far (tests count them).
+    #[cfg(test)]
+    decodes_started: usize,
 }
 
 /// Natural sizes and decoded images for the vault's image files. A clone
@@ -217,12 +220,33 @@ pub struct ImageStore {
 
 impl Default for ImageStore {
     fn default() -> Self {
+        Self::with_budget(BUDGET_BYTES)
+    }
+}
+
+impl ImageStore {
+    /// A store that keeps `budget` decoded bytes (tests use a small one).
+    fn with_budget(budget: usize) -> Self {
         Self {
             inner: Rc::new(RefCell::new(Inner {
-                cache: Cache::new(BUDGET_BYTES),
+                cache: Cache::new(budget),
                 pending: HashMap::new(),
+                #[cfg(test)]
+                decodes_started: 0,
             })),
         }
+    }
+
+    /// A store over a budget of `budget` decoded bytes.
+    #[cfg(test)]
+    pub(crate) fn with_test_budget(budget: usize) -> Self {
+        Self::with_budget(budget)
+    }
+
+    /// How many decodes this store started.
+    #[cfg(test)]
+    pub(crate) fn decodes_started(&self) -> usize {
+        self.inner.borrow().decodes_started
     }
 }
 
@@ -320,6 +344,10 @@ impl ImageStore {
                 return;
             }
             inner.pending.insert(path.to_path_buf(), key);
+            #[cfg(test)]
+            {
+                inner.decodes_started += 1;
+            }
         }
         let renderer = cx.svg_renderer();
         let owned = path.to_path_buf();
