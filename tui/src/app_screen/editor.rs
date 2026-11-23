@@ -19,7 +19,7 @@ use crate::app_screen::{AppScreen, ScreenKind};
 use crate::components::ask_thread::ThreadPanel;
 use crate::components::attachment_view::AttachmentView;
 use crate::components::dialogs::ActiveDialog;
-use crate::components::drawer::DrawerHost;
+use crate::components::drawer::{DrawerHost, DrawerPanels};
 use crate::components::drawer_views::{LinksPanel, OutlinePanel, TagsPanel};
 use crate::components::event_state::EventState;
 use crate::components::events::InputEvent;
@@ -110,7 +110,7 @@ pub struct EditorScreen {
 
 impl EditorScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
-        let s = settings.read().unwrap();
+        let s = settings.read().expect("settings lock poisoned");
         let kb = s.key_bindings.clone();
         let theme = s.get_theme();
         let footer = FooterBar::new();
@@ -129,12 +129,14 @@ impl EditorScreen {
         let drawer = DrawerHost::new(
             vault.clone(),
             &kb,
-            sidebar,
-            query_panel,
-            semantic,
-            tags,
-            links,
-            outline,
+            DrawerPanels {
+                sidebar,
+                query: query_panel,
+                semantic,
+                tags,
+                links,
+                outline,
+            },
         );
         let rail_kb = kb.clone();
         let mut editor = TextEditorComponent::new(kb, &s);
@@ -325,8 +327,7 @@ impl EditorScreen {
                     BrowserScope::Files,
                     provider,
                     self.vault.clone(),
-                    s.key_bindings.clone(),
-                    s.icons(),
+                    &s,
                     tx.clone(),
                 );
                 drop(s);
@@ -1117,8 +1118,7 @@ impl EditorScreen {
                     BrowserScope::Query,
                     provider,
                     self.vault.clone(),
-                    s.key_bindings.clone(),
-                    s.icons(),
+                    &s,
                     tx.clone(),
                 ))
             }
@@ -1133,8 +1133,7 @@ impl EditorScreen {
                         BrowserScope::Files,
                         provider,
                         self.vault.clone(),
-                        s.key_bindings.clone(),
-                        s.icons(),
+                        &s,
                         tx.clone(),
                     )
                     .with_row_sort(),
@@ -1655,8 +1654,7 @@ impl EditorScreen {
                     BrowserScope::Query,
                     provider,
                     self.vault.clone(),
-                    s.key_bindings.clone(),
-                    s.icons(),
+                    &s,
                     tx.clone(),
                     initial,
                 );
@@ -3721,8 +3719,7 @@ mod tests {
                 BrowserScope::Query,
                 provider,
                 vault.clone(),
-                s.key_bindings.clone(),
-                s.icons(),
+                &s,
                 tx.clone(),
                 "#todo",
             );

@@ -24,7 +24,7 @@ pub struct StartScreen {
 
 impl StartScreen {
     pub fn new(settings: SharedSettings, vault: Option<Arc<NoteVault>>) -> Self {
-        let theme = settings.read().unwrap().get_theme();
+        let theme = settings.read().expect("settings lock poisoned").get_theme();
         Self {
             settings,
             theme,

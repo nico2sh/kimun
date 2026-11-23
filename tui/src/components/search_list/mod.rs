@@ -677,7 +677,7 @@ impl<R: SearchRow> SearchList<R> {
         if self.highlight_query {
             let line =
                 crate::components::query_highlight::highlight_line(self.input.value(), theme, base);
-            self.input.render_line(f, area, line, base, 0, focused);
+            self.input.render_line(f, area, line, base, focused);
         } else {
             self.input.render(f, area, base, 0, focused);
         }

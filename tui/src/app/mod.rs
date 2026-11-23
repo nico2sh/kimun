@@ -122,7 +122,7 @@ pub async fn run_tui(config_path: Option<PathBuf>) -> Result<()> {
     let mut app = App::new(config_path).await?;
     // Read after App::new since both live in its settings (ADR-0015).
     let (mouse_capture, ctrl_h_setting) = {
-        let s = app.settings.read().unwrap();
+        let s = app.settings.read().expect("settings lock poisoned");
         (s.mouse(), s.ctrl_h)
     };
     let mut session = terminal::TerminalSession::enter(mouse_capture)?;
@@ -361,7 +361,7 @@ fn unreachable_binding_notice(
         ctrl_h.loss_is_worth_reporting(setting),
     );
     let stranded = {
-        let settings = app.settings.read().unwrap();
+        let settings = app.settings.read().expect("settings lock poisoned");
         unreachable_actions(&settings.key_bindings, keys)
     };
     if stranded.is_empty() {
@@ -481,7 +481,12 @@ fn notice_text(
 /// `update::check_now`; a found update is surfaced via `AppMessage::Update(UpdateFlow::Available)`. Failures are logged and
 /// swallowed — the check never blocks startup or interaction.
 fn spawn_update_check(app: &App, tx: AppTx) {
-    if !app.settings.read().unwrap().update_check() {
+    if !app
+        .settings
+        .read()
+        .expect("settings lock poisoned")
+        .update_check()
+    {
         return;
     }
     let Ok(config_dir) = crate::settings::config_dir() else {
@@ -567,7 +572,7 @@ where
                             // Global shortcuts — fire before any screen gets the event.
                             if let Some(combo) = key_event_to_combo(&key) {
                                 let action = {
-                                    let s = app.settings.read().unwrap();
+                                    let s = app.settings.read().expect("settings lock poisoned");
                                     tracing::debug!(
                                         "COMBO: {} → {:?}",
                                         combo,
@@ -745,7 +750,7 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
         }
         AppMessage::WorkspaceSwitched(name) => {
             {
-                let mut s = app.settings.write().unwrap();
+                let mut s = app.settings.write().expect("settings lock poisoned");
                 if let Some(ref mut wc) = s.workspace_config {
                     wc.global.current_workspace = name;
                 }
@@ -800,11 +805,14 @@ async fn handle_app_message(msg: AppMessage, app: &mut App, tx: &AppTx) -> io::R
                 FileOp::Renamed { from, to } | FileOp::Moved { from, to } => {
                     app.settings
                         .read()
-                        .unwrap()
+                        .expect("settings lock poisoned")
                         .follow_rename_in_history(from, to);
                 }
                 FileOp::Deleted(path) => {
-                    app.settings.read().unwrap().follow_delete_in_history(path);
+                    app.settings
+                        .read()
+                        .expect("settings lock poisoned")
+                        .follow_delete_in_history(path);
                 }
                 _ => {}
             }

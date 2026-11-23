@@ -18,6 +18,13 @@ use crate::logic::preview::PreviewModel;
 pub use crate::logic::preview::{ExpandState, Highlight};
 use crate::settings::themes::Theme;
 
+/// The fixed header of the full preview. An empty `title` shows `filename`.
+#[derive(Debug, Clone, Copy)]
+pub struct PreviewHeader<'a> {
+    pub title: &'a str,
+    pub filename: &'a str,
+}
+
 /// One expand step of a list host's preview (see [`PreviewPane::step`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
@@ -204,10 +211,10 @@ impl PreviewPane {
         &mut self,
         f: &mut Frame,
         inner: Rect,
-        title: &str,
-        filename: &str,
+        header: PreviewHeader,
         theme: &Theme,
     ) -> Rect {
+        let PreviewHeader { title, filename } = header;
         let gray = theme.gray.to_ratatui();
         let bg = theme.bg_panel.to_ratatui();
         let title_display = if title.is_empty() { filename } else { title };
@@ -261,19 +268,17 @@ impl PreviewPane {
     /// unification: FIND's needle preview now anchors like the Context
     /// preview and the Ask Sources range preview already did — previously
     /// this variant alone ignored the anchor and always opened at the top).
-    #[allow(clippy::too_many_arguments)]
     pub fn render_full(
         &mut self,
         f: &mut Frame,
         inner: Rect,
-        title: &str,
-        filename: &str,
+        header: PreviewHeader,
         text: &str,
         highlight: Highlight,
         theme: &Theme,
     ) {
         let bg = theme.bg_panel.to_ratatui();
-        let content = self.render_full_chrome(f, inner, title, filename, theme);
+        let content = self.render_full_chrome(f, inner, header, theme);
         let indent = 2usize;
         let wrap_width = content.width.saturating_sub(indent as u16 + 1) as usize;
         let find_hit = self.model.wants_hit();

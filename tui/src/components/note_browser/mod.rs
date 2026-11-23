@@ -29,7 +29,7 @@ use crate::logic::message::{AppMessage, AppTx, FileOp, OverlayData, redraw_callb
 use crate::logic::pickers::{PickerOpen, picker_open};
 use crate::logic::sort::SortState;
 use crate::logic::sort::{SortField, SortOrder};
-use crate::settings::icons::Icons;
+use crate::settings::AppSettings;
 use crate::settings::themes::Theme;
 
 pub mod file_finder_provider;
@@ -106,20 +106,10 @@ impl NoteBrowserModal {
         scope: BrowserScope,
         provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
-        key_bindings: KeyBindings,
-        icons: Icons,
+        settings: &AppSettings,
         tx: AppTx,
     ) -> Self {
-        Self::new_with_query(
-            title,
-            scope,
-            provider,
-            vault,
-            key_bindings,
-            icons,
-            tx,
-            String::new(),
-        )
+        Self::new_with_query(title, scope, provider, vault, settings, tx, String::new())
     }
 
     /// Construct the modal with a pre-filled search query.
@@ -127,40 +117,29 @@ impl NoteBrowserModal {
     /// Behaves exactly like [`new`](Self::new) except the search input is
     /// pre-populated with `query` (cursor placed at the end) and the initial
     /// load is triggered for that query string.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_initial_query<S: Into<String>>(
         title: impl Into<String>,
         scope: BrowserScope,
         provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
-        key_bindings: KeyBindings,
-        icons: Icons,
+        settings: &AppSettings,
         tx: AppTx,
         query: S,
     ) -> Self {
-        Self::new_with_query(
-            title,
-            scope,
-            provider,
-            vault,
-            key_bindings,
-            icons,
-            tx,
-            query.into(),
-        )
+        Self::new_with_query(title, scope, provider, vault, settings, tx, query.into())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn new_with_query(
         title: impl Into<String>,
         scope: BrowserScope,
         provider: impl RowSource<FileListEntry>,
         vault: Arc<NoteVault>,
-        key_bindings: KeyBindings,
-        icons: Icons,
+        settings: &AppSettings,
         tx: AppTx,
         initial_query: String,
     ) -> Self {
+        let key_bindings = settings.key_bindings.clone();
+        let icons = settings.icons();
         let prefix_glyph = match scope {
             BrowserScope::Query => icons.rail_find,
             BrowserScope::Files => icons.rail_files,
@@ -936,15 +915,7 @@ mod tests {
     async fn make_modal_with(source: impl RowSource<FileListEntry>, tx: AppTx) -> NoteBrowserModal {
         let vault = temp_vault("modal").await;
         let settings = AppSettings::default();
-        NoteBrowserModal::new(
-            "test",
-            BrowserScope::Query,
-            source,
-            vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
-            tx,
-        )
+        NoteBrowserModal::new("test", BrowserScope::Query, source, vault, &settings, tx)
     }
 
     #[tokio::test]
@@ -978,8 +949,7 @@ mod tests {
                 path: VaultPath::note_path_from("/a.md"),
             },
             vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
+            &settings,
             tx,
             "#important",
         );
@@ -1079,8 +1049,7 @@ mod tests {
                 path: VaultPath::note_path_from("/a.md"),
             },
             vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
+            &settings,
             tx.clone(),
         );
 
@@ -1165,8 +1134,7 @@ mod tests {
                 path: VaultPath::note_path_from("/a.md"),
             },
             vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
+            &settings,
             tx.clone(),
             query,
         );
@@ -1218,8 +1186,7 @@ mod tests {
             BrowserScope::Query,
             resolving_search_source(vault.clone(), recents, None),
             vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
+            &settings,
             tx.clone(),
         );
         let listed = |m: &NoteBrowserModal| -> Vec<String> {
@@ -1337,8 +1304,7 @@ mod tests {
             BrowserScope::Files,
             provider,
             vault,
-            settings.key_bindings.clone(),
-            settings.icons(),
+            &settings,
             tx.clone(),
         )
         .with_row_sort();
