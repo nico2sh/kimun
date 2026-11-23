@@ -1,6 +1,7 @@
 //! Browsing the vault on [`NoteVault`]: the walk that lists entries and
 //! syncs the index as it goes, and the directory listing.
 
+use std::fmt::Display;
 use std::path::PathBuf;
 
 use futures_util::{stream, Stream, StreamExt, TryStreamExt};
@@ -9,7 +10,7 @@ use log::{debug, warn};
 use crate::error::VaultError;
 use crate::nfs::{self, VaultPath};
 use crate::sync::VaultSync;
-use crate::{DirectoryDetails, NoteVault, SearchResult, VaultBrowseOptions};
+use crate::{DirectoryDetails, NoteVault, SearchResult};
 
 impl NoteVault {
     /// Resolves a vault path to its real OS filesystem location under the
@@ -119,5 +120,105 @@ impl NoteVault {
             path,
             recursive,
         )?)
+    }
+}
+
+/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault_stream`]
+/// and its collected form [`NoteVault::browse_vault`].
+pub struct VaultBrowseOptionsBuilder {
+    path: VaultPath,
+    validation: NotesValidation,
+    recursive: bool,
+}
+
+impl VaultBrowseOptionsBuilder {
+    /// Starts a builder rooted at `path`, with defaults otherwise.
+    pub fn new(path: &VaultPath) -> Self {
+        Self::default().path(path.clone())
+    }
+
+    /// Finalizes the options.
+    pub fn build(self) -> VaultBrowseOptions {
+        VaultBrowseOptions {
+            path: self.path,
+            validation: self.validation,
+            recursive: self.recursive,
+        }
+    }
+
+    /// Sets the path to browse from.
+    pub fn path(mut self, path: VaultPath) -> Self {
+        self.path = path;
+        self
+    }
+
+    /// Sets whether the browse descends into subdirectories.
+    pub fn recursive(mut self, recursive: bool) -> Self {
+        self.recursive = recursive;
+        self
+    }
+
+    /// Sets how thoroughly each note is re-validated against the index during
+    /// the browse.
+    pub fn validation(mut self, validation: NotesValidation) -> Self {
+        self.validation = validation;
+        self
+    }
+}
+
+impl Default for VaultBrowseOptionsBuilder {
+    fn default() -> Self {
+        Self {
+            path: VaultPath::root(),
+            validation: NotesValidation::None,
+            recursive: false,
+        }
+    }
+}
+
+/// What a browse walks: the subtree root, how deep, and how strictly each
+/// note is re-validated against the index on the way. See
+/// [`NoteVault::browse_vault`] and [`NoteVault::browse_vault_stream`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct VaultBrowseOptions {
+    pub(crate) path: VaultPath,
+    pub(crate) validation: NotesValidation,
+    pub(crate) recursive: bool,
+}
+
+impl Display for VaultBrowseOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Vault Browse Options - [Path: `{}`|Validation Type: `{}`|Recursive: `{}`]",
+            self.path, self.validation, self.recursive
+        )
+    }
+}
+
+/// How thoroughly a sync pass checks whether each note has changed before
+/// updating its index entry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NotesValidation {
+    /// Compares a content hash — detects any change, at the cost of reading
+    /// each file.
+    Full,
+    /// Compares the file size — cheaper, but misses same-size edits.
+    Fast,
+    /// Only checks whether the note exists.
+    None,
+}
+
+impl Display for NotesValidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                NotesValidation::Full => "Full",
+                NotesValidation::Fast => "Fast",
+                NotesValidation::None => "None",
+            }
+        )
     }
 }
