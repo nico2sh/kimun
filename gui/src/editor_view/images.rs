@@ -9,7 +9,9 @@
 //! Only an editor that edits draws images, once its owner hands it the vault
 //! ([`EditorView::set_image_vault`]); a read-only editor (a facet view's
 //! piece) never does. The vault's attachment list is walked off the main
-//! thread, once per note shown, and kept. Each frame checks a key (the text
+//! thread, once per note shown and again each time the window becomes
+//! active ([`EditorView::refresh_images`]: the app has no file watcher), and
+//! kept. Each frame checks a key (the text
 //! revision, the note, the pane, the images' states) and finds the embeds
 //! again only when it changed. The cursor row is the display's concern.
 //!
@@ -143,8 +145,9 @@ pub(super) struct Images {
     _listing: Option<Task<()>>,
     key: Option<Key>,
     epoch: u64,
-    /// The embeds the lines were found from, by row.
+    /// The embeds the lines were found from, by row, and those lines.
     embeds: Vec<Embed>,
+    lines: Vec<ImageLine>,
     /// The image files on screen at the last frame. Their decodes are asked
     /// for when this set changes, never when a decode lands. They are pinned
     /// in the store, so the cache never drops an image on screen: two
@@ -152,6 +155,9 @@ pub(super) struct Images {
     visible: Vec<PathBuf>,
     /// The pins of `visible`, made at the first frame with an image.
     pins: Option<Pins>,
+    /// How many times the embeds were found (tests).
+    #[cfg(test)]
+    finds: usize,
 }
 
 impl Images {
@@ -164,8 +170,11 @@ impl Images {
             key: None,
             epoch: 0,
             embeds: Vec::new(),
+            lines: Vec::new(),
             visible: Vec::new(),
             pins: None,
+            #[cfg(test)]
+            finds: 0,
         }
     }
 
@@ -207,6 +216,12 @@ impl EditorView {
         cx.notify();
     }
 
+    /// How many times this editor found its image lines (tests).
+    #[cfg(test)]
+    pub(crate) fn image_finds(&self) -> usize {
+        self.images.as_ref().map_or(0, |images| images.finds)
+    }
+
     /// Open `menu` on a right press on a drawn image from now on; `None`
     /// leaves that press to the text (the note menu).
     pub(crate) fn set_entry_menu(&mut self, menu: Option<EntryMenu>) {
@@ -226,6 +241,21 @@ impl EditorView {
         self.entry_menu.clone().filter(|_| free)
     }
 
+    /// The attachment the image on the caret's line draws, when that line
+    /// is an image line whose file was found. A follow from there opens
+    /// that file: a bare `![[name]]` takes the closest-file rule, which the
+    /// link lookup does not know.
+    pub(crate) fn image_at_cursor(&self) -> Option<VaultPath> {
+        let row = self.editor.cursor().0;
+        self.images
+            .as_ref()?
+            .embeds
+            .iter()
+            .find(|embed| embed.row == row)?
+            .found
+            .clone()
+    }
+
     /// Before a frame: hand the session the image lines of the text as it is
     /// now, sized for `pane`. Finds them again only when something they
     /// depend on changed. Starts the attachment listing for a note not
@@ -238,15 +268,23 @@ impl EditorView {
         if note.is_some() && images.listed_for != note {
             images.listed_for = note.clone();
             let vault = images.vault.clone();
-            let listing = cx.background_spawn(async move { vault.list_attachments() });
+            let listing = cx.background_spawn(async move {
+                let mut found = vault.list_attachments();
+                found.sort();
+                found
+            });
             images._listing = Some(cx.spawn(async move |this, cx| {
                 let found = listing.await;
                 let _ = this.update(cx, |view, cx| {
-                    if let Some(images) = view.images.as_mut() {
+                    // The same list again (a note reopened, an activation
+                    // with nothing new) finds nothing new.
+                    if let Some(images) = view.images.as_mut()
+                        && images.attachments.as_deref() != Some(&found)
+                    {
                         images.attachments = Some(Arc::new(found));
                         images.epoch += 1;
+                        cx.notify();
                     }
-                    cx.notify();
                 });
             }));
         }
@@ -260,6 +298,10 @@ impl EditorView {
             return;
         }
         images.key = Some(key);
+        #[cfg(test)]
+        {
+            images.finds += 1;
+        }
         images.embeds = match (&note, &images.attachments) {
             (Some(note), Some(attachments)) => {
                 embeds(&self.editor.get_text(), note, attachments, &images.vault)
@@ -268,8 +310,30 @@ impl EditorView {
             // stay text rather than flash "not found".
             _ => Vec::new(),
         };
-        let lines = image_lines(&images.embeds, pane, cx);
-        self.editor.session_mut().set_image_lines(lines);
+        images.lines = image_lines(&images.embeds, pane, cx);
+        self.editor
+            .session_mut()
+            .set_image_lines(images.lines.clone());
+    }
+
+    /// Read again what may have changed on disk since the images were found
+    /// (the window was inactive: a file saved, rewritten or deleted from
+    /// outside the app). The attachments are listed again before the next
+    /// frame, the lines found again only when a file's size changed, and the
+    /// images on screen asked for again: one whose file changed is decoded
+    /// again, one still cached is not.
+    pub(crate) fn refresh_images(&mut self, cx: &mut Context<Self>) {
+        let Some(images) = self.images.as_mut() else {
+            return;
+        };
+        images.listed_for = None;
+        images.visible.clear();
+        if let Some(key) = &images.key
+            && image_lines(&images.embeds, key.pane, cx) != images.lines
+        {
+            images.epoch += 1;
+        }
+        cx.notify();
     }
 
     /// After the frame is laid out: what each image on screen draws, sized

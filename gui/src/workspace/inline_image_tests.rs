@@ -23,6 +23,7 @@ use super::row_menu_tests::in_workspace::{menu_labels, pick};
 use super::start_tests::{Started, drive, open_started, runtime, select_all_key, vault_start};
 use crate::editor_element::image_hover_id;
 use crate::editor_view::EditorView;
+use crate::inline_image::ImageStore;
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
 
@@ -222,6 +223,169 @@ fn a_double_click_on_an_image_follows_its_link(cx: &mut TestAppContext) {
     drive(&rt, cx, |cx| {
         shown(&s, cx).is_some_and(|p| p.is_like(&path("pic.png")))
     });
+}
+
+/// A vault holding `journal/n.md`, which embeds `![[pic.png]]`, and the
+/// file in a root `assets` folder, started on the note, driven until the
+/// image is drawn (the closest-file rule found it).
+fn started_in_journal(cx: &mut TestAppContext, rt: &Runtime) -> (TestVault, Started) {
+    const TEXT: &str = "intro\n![[pic.png]]\nafter";
+    let v = rt.block_on(test_vault(&[("journal/n.md", TEXT)], &[]));
+    rt.block_on(
+        v.vault
+            .save_attachment(&path("assets/pic.png"), &png(10, 60)),
+    )
+    .expect("the attachment is saved");
+    let s = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("journal/n.md"))),
+        v.settings.clone(),
+    );
+    drive(rt, cx, |cx| {
+        s.text(cx) == TEXT && !s.indexing(cx) && drawn(&s, cx)
+    });
+    (v, s)
+}
+
+/// The `FollowLink` chord on a bare `![[name]]` whose file is in another
+/// folder shows the file the image draws, not a file of that name beside
+/// the note.
+#[gpui_kit::test]
+fn ctrl_enter_on_a_bare_embed_shows_the_file_it_draws(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started_in_journal(cx, &rt);
+    let opened = record_opens(&s, cx);
+    hit(&s, "down", cx);
+    hit(&s, "ctrl-enter", cx);
+    drive(&rt, cx, |cx| shown(&s, cx).is_some());
+    let shown = shown(&s, cx).unwrap();
+    assert!(shown.is_like(&path("assets/pic.png")), "{shown}");
+    assert!(opened.borrow().is_empty(), "not handed to the system");
+}
+
+/// A double-click on that image shows the same file.
+#[gpui_kit::test]
+fn a_double_click_on_a_bare_embed_shows_the_file_it_draws(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started_in_journal(cx, &rt);
+    let view = editor(&s, cx);
+    cx.update(|cx| view.update(cx, |v, _| v.set_clock(crate::editor_view::frozen_clock)));
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click(image_hover_id(1), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    drive(&rt, cx, |cx| shown(&s, cx).is_some());
+    let shown = shown(&s, cx).unwrap();
+    assert!(shown.is_like(&path("assets/pic.png")), "{shown}");
+}
+
+/// The user leaves the window and comes back to it (the app has no file
+/// watcher: what changed on disk meanwhile is read then).
+fn reactivate(s: &Started, cx: &mut TestAppContext) {
+    gpui_kit::VisualTestContext::from_window(s.handle, cx).deactivate_window();
+    cx.update_window(s.handle, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn store(cx: &TestAppContext) -> ImageStore {
+    cx.read(|cx| cx.global::<ImageStore>().clone())
+}
+
+/// The lines the editor's image lines take under row 1, the image's.
+fn image_finds(s: &Started, cx: &TestAppContext) -> usize {
+    let view = editor(s, cx);
+    cx.read(|cx| view.read(cx).image_finds())
+}
+
+/// An image file saved into the vault from outside the app while its note
+/// is open, the embed already written: it is drawn once the window is
+/// active again.
+#[gpui_kit::test]
+fn an_image_saved_from_outside_is_drawn_after_an_activation(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    const TEXT: &str = "intro\n![](pic.png)\nafter";
+    let v = rt.block_on(test_vault(&[("a.md", TEXT)], &[]));
+    let s = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        s.text(cx) == TEXT
+            && !s.indexing(cx)
+            && notes(&s, cx) == ["image not found: pic.png".to_string()]
+    });
+    rt.block_on(v.vault.save_attachment(&path("pic.png"), &png(10, 60)))
+        .expect("the attachment is saved");
+    reactivate(&s, cx);
+    drive(&rt, cx, |cx| drawn(&s, cx));
+    assert!(notes(&s, cx).is_empty());
+}
+
+/// An image file rewritten from outside the app (a diagram exported again,
+/// here twice as tall): after an activation it is decoded again and takes
+/// its new room.
+#[gpui_kit::test]
+fn an_image_rewritten_from_outside_is_decoded_again_after_an_activation(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (v, s) = started(cx, &rt);
+    let view = editor(&s, cx);
+    let pads = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            view.read(cx)
+                .editor
+                .session()
+                .display
+                .layout
+                .visual_lines()
+                .iter()
+                .filter(|l| l.pad && l.logical_row == 1)
+                .count()
+        })
+    };
+    let (before, decodes) = (pads(cx), store(cx).decodes_started());
+    rt.block_on(v.vault.save_attachment(&path("pic.png"), &png(10, 120)))
+        .expect("the attachment is saved");
+    reactivate(&s, cx);
+    drive(&rt, cx, |cx| drawn(&s, cx));
+    assert_eq!(store(cx).decodes_started(), decodes + 1, "decoded again");
+    assert!(pads(cx) > before, "{} pad lines, were {before}", pads(cx));
+    let size = cx.read(|cx| {
+        view.read(cx)
+            .painted
+            .as_ref()
+            .and_then(|p| p.images.iter().find(|i| i.row == 1).map(|i| i.rect.size))
+    });
+    let scale = cx
+        .update_window(s.handle, |_, window, _| window.scale_factor())
+        .unwrap();
+    assert_eq!(
+        size.map(|s| (s.width * scale, s.height * scale)),
+        Some((gpui_kit::px(10.), gpui_kit::px(120.)))
+    );
+}
+
+/// An activation with nothing changed on disk finds the lines again for
+/// nothing and decodes nothing.
+#[gpui_kit::test]
+fn an_activation_with_nothing_changed_redoes_nothing(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    let (finds, decodes) = (image_finds(&s, cx), store(cx).decodes_started());
+    for _ in 0..3 {
+        reactivate(&s, cx);
+        drive(&rt, cx, |cx| drawn(&s, cx));
+    }
+    assert_eq!(image_finds(&s, cx), finds, "no lines found again");
+    assert_eq!(store(cx).decodes_started(), decodes, "no decode");
 }
 
 /// Rename from the image's menu renames the file and leaves the note's
