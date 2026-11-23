@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/nico2sh/kimun/compare/kimun_server-v0.6.1...kimun_server-v0.6.2) - 2026-11-23
+
+### Other
+
+- removed unused dependencies
+- updated dependencies and honor reduce motion setting
+
 ## [0.6.1](https://github.com/nico2sh/kimun/compare/kimun_server-v0.6.0...kimun_server-v0.6.1) - 2026-11-14
 
 ### Other
