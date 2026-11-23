@@ -627,6 +627,16 @@ impl Workspace {
         }
     }
 
+    /// The window became active again. The app watches no files, so what
+    /// changed on disk meanwhile (an image saved or rewritten from outside
+    /// the app) is read now: every open note's editor lists the vault's
+    /// attachments again and asks again for the **Inline image**s on screen.
+    pub(super) fn window_activated(&mut self, cx: &mut Context<Self>) {
+        for state in self.groups.values() {
+            state.editor.update(cx, |view, cx| view.refresh_images(cx));
+        }
+    }
+
     /// The followed notes were read at their new paths: each loads clean
     /// there, or is given up when it would not read.
     fn file_op_retargeted(

@@ -573,6 +573,8 @@ pub(crate) struct Workspace {
     /// Keeps the Footer's dirty state in step with the first group's
     /// editor (a group made later holds its own, [`group::GroupState`]).
     _editor_watch: Subscription,
+    /// The window becoming active again ([`Self::window_activated`]).
+    _activation: Subscription,
     _on_quit: Option<Subscription>,
     /// Resolves the workspace's chords before a slot's own key bindings
     /// can take them ([`Self::intercept_shell_key`]).
@@ -814,6 +816,11 @@ impl Workspace {
             .ok();
         });
         let editor_events = cx.subscribe_in(&editor, window, Self::on_editor_event);
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.window_activated(cx);
+            }
+        });
         let entry_menu = Self::image_entry_menu(cx);
         editor.update(cx, |view, _| view.set_entry_menu(Some(entry_menu)));
         let keymap_watch = keymap::observe(cx, |this: &mut Self, cx| {
@@ -888,6 +895,7 @@ impl Workspace {
             following: None,
             opener: follow::system_opener(),
             _editor_watch: editor_watch,
+            _activation: activation,
             _on_quit: None,
             _shell_keys: shell_keys,
             drag: None,

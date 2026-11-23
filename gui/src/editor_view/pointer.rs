@@ -194,8 +194,15 @@ impl EditorView {
     }
 
     /// Ask the window's owner to follow the follow target under the caret
-    /// (a link, a label). False when there is none.
+    /// (a link, a label). False when there is none. On an **Inline image**'s
+    /// line it asks to open the file the image draws: a bare `![[name]]`
+    /// finds it by the closest-file rule, which the link lookup does not
+    /// know.
     fn follow_at_caret(&self) -> bool {
+        if let Some(path) = self.image_at_cursor() {
+            self.tx.send(AppMessage::OpenAttachment(path)).ok();
+            return true;
+        }
         let message = match self.editor.follow_target_at_cursor() {
             Some(FollowTarget::Link { target, kind }) => AppMessage::FollowLink { target, kind },
             Some(FollowTarget::Label(name)) => AppMessage::FollowLabel(name),
