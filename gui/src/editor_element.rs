@@ -530,6 +530,16 @@ impl Element for EditorElement {
                 for &(col, n) in &paint.targets {
                     target_areas.push(cell_bounds(col, r, n));
                 }
+                // A read-only piece ticks a task box on a click, so the box
+                // is a target too. The editor's own check keeps a look-alike
+                // in code out.
+                if view.read_only {
+                    for &(col, n) in &paint.boxes {
+                        if view.editor.task_marker_at_screen(r, col).is_some() {
+                            target_areas.push(cell_bounds(col, r, n));
+                        }
+                    }
+                }
                 for piece in &shaped.pieces {
                     lines.push(PlacedLine {
                         at: point(origin.x + px(piece.x), row_top),
