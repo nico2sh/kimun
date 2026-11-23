@@ -109,7 +109,7 @@ The desktop app shows an image inside the note. Put the image on a line of its o
 - An image shows at its natural size. It is never wider than the text. It is never taller than 60% of the height of the pane.
 - If the image is missing or Kimün cannot read it, a short note shows in its place.
 - Point at an image to see its alt text.
-- Click an image to put the cursor on its line. Right-click it to open the same menu as for a link to an attachment.
+- Click an image to put the cursor on its line. Right-click it to open the row menu of the image file. The menu has the items for an attachment, with Reveal in file browser.
 - If you rename or move an image, Kimün does not update the notes that use it. Change the path in those notes yourself.
 
 ## Properties

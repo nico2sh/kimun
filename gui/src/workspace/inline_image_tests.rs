@@ -451,3 +451,110 @@ fn delete_from_the_menu_shows_the_not_found_note(cx: &mut TestAppContext) {
         notes(&s, cx) == ["image not found: pic.png (a)".to_string()]
     });
 }
+
+/// Whether the image's entry menu is open.
+fn entry_menu_open(s: &Started, cx: &mut TestAppContext) -> bool {
+    let any_menu = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            !window.find_all("popup-menu").is_empty()
+        })
+        .unwrap();
+    any_menu
+        && menu_labels(s, cx)
+            .iter()
+            .any(|l| l == "Open in default app")
+}
+
+/// With a selection a right press on the image keeps its text meaning (it
+/// copies the selection): no entry menu.
+#[gpui_kit::test]
+fn a_right_click_on_an_image_with_a_selection_opens_no_entry_menu(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    hit(&s, "shift-down", cx);
+    let view = editor(&s, cx);
+    assert!(
+        cx.read(|cx| view.read(cx).editor.selection())
+            .is_some_and(|(start, end)| start != end),
+        "a selection"
+    );
+    right_click_image(&s, cx);
+    assert!(!entry_menu_open(&s, cx));
+}
+
+/// The find bar owns the pointer while open: no entry menu.
+#[gpui_kit::test]
+fn a_right_click_on_an_image_with_the_find_bar_open_opens_no_entry_menu(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started(cx, &rt);
+    hit(&s, "ctrl-f", cx);
+    let view = editor(&s, cx);
+    assert!(cx.read(|cx| view.read(cx).editor.find_bar().is_some()));
+    right_click_image(&s, cx);
+    assert!(!entry_menu_open(&s, cx));
+}
+
+/// A failed image's note is no image: a right press on it opens the Link
+/// menu of the embed's link, as before images were drawn, not an entry
+/// menu.
+#[gpui_kit::test]
+fn a_right_click_on_a_failed_image_note_opens_the_link_menu(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    const TEXT: &str = "intro\n![a](gone.png)\nafter";
+    let v = rt.block_on(test_vault(&[("a.md", TEXT)], &[]));
+    let s = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        s.text(cx) == TEXT
+            && !s.indexing(cx)
+            && notes(&s, cx) == ["image not found: gone.png (a)".to_string()]
+    });
+    let view = editor(&s, cx);
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(image_hover_id(1)).is_none(), "no image");
+        let p = view.read(cx).painted.clone().expect("painted");
+        let editor = window.find("editor").bounds();
+        let at = gpui_kit::point(
+            p.origin.x + gpui_kit::px(4.),
+            p.origin.y + gpui_kit::px(p.cells.y_of(1) + p.cells.height() / 2.),
+        );
+        window.click_with_options(
+            "editor",
+            gpui_kit::test::ClickOptions::new()
+                .with_button(gpui_kit::MouseButton::Right)
+                .with_offset(at - editor.origin),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!entry_menu_open(&s, cx));
+    let (note_menu, link_menu) = cx.read(|cx| {
+        let w = s.workspace.read(cx);
+        (w.note_menu.is_some(), w.link_menu.is_some())
+    });
+    assert!(link_menu && !note_menu, "the Link menu of its link");
+}
+
+/// A read-only editor (a facet view's piece, the Ask source reader) never
+/// opens an entry menu, even handed one.
+#[gpui_kit::test]
+fn a_read_only_editor_has_no_image_menu(cx: &mut TestAppContext) {
+    let view = cx.new(|cx| EditorView::new_read_only("![a](pic.png)", cx));
+    let menu: crate::editor_view::EntryMenu = Rc::new(|menu, _, _, _| menu);
+    let open = cx.update(|cx| {
+        view.update(cx, |view, _| {
+            view.set_entry_menu(Some(menu));
+            view.image_menu().is_some()
+        })
+    });
+    assert!(!open);
+}
