@@ -26,7 +26,10 @@ pub use facet_view::{
     plan_chunks, reveal, reveal_gap, ChunkPlan, Crumb, Reveal, GAP_SHOW_ALL_MAX, MAX_RANGES,
 };
 pub use facets::{note_facets, select_blocks, Facet, FacetEntry, FacetKind, NoteFacets};
-pub use image_embed::{image_embeds, resolve_image_embed, ImageEmbed};
+pub use image_embed::{
+    all_image_embeds, host_matches, host_of, image_embeds, normalize_image_url,
+    resolve_image_embed, FoundEmbed, ImageEmbed, RemoteImageEmbed,
+};
 pub use tasks::toggle_task;
 
 pub(crate) use link_target::unique_wikilink;
