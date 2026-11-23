@@ -296,7 +296,10 @@ pub(crate) struct NotePicker<R: PickerRow = FileListEntry> {
 }
 
 impl<R: PickerRow> NotePicker<R> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     fn new(
         kind: PickerKind,
         source: Arc<dyn RowSource<R>>,
@@ -1137,7 +1140,10 @@ impl Workspace {
 
     /// A note picker (finder, link chooser, search browser) in the modal
     /// slot.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     fn open_note_picker(
         &mut self,
         kind: PickerKind,
@@ -1155,7 +1161,10 @@ impl Workspace {
 
     /// Open the picker `kind` over `source` in the modal slot, its query
     /// field focused on `query`. The caller keeps the returned view.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is distinct context; a parameter struct would only move the list"
+    )]
     pub(super) fn open_picker<R: PickerRow>(
         &mut self,
         kind: PickerKind,

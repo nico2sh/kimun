@@ -105,7 +105,10 @@ pub(crate) fn score_beside_title(
 /// filename when the note has none), `filename`, `context` and, when
 /// present, `score` (`87%`). `marks` are the words to highlight, in the
 /// accent colour, in the context line.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is distinct context; a parameter struct would only move the list"
+)]
 pub(crate) fn result_row(
     id: SharedString,
     selected: bool,

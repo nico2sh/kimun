@@ -50,6 +50,13 @@ pub struct FaceSupport {
     pub italic: bool,
 }
 
+/// The styling a run asks of its face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FaceStyle {
+    pub bold: bool,
+    pub italic: bool,
+}
+
 /// The editor's monospace family and how it draws bold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditorFonts {
@@ -61,12 +68,12 @@ pub struct EditorFonts {
 impl EditorFonts {
     /// The face a run paints in. With synthetic bold the weight stays
     /// regular: the painter adds the weight.
-    pub fn face(&self, bold: bool, italic: bool) -> Font {
+    pub fn face(&self, style: FaceStyle) -> Font {
         let mut f = font(self.family.clone());
-        if bold && !self.faux_bold {
+        if style.bold && !self.faux_bold {
             f.weight = FontWeight::BOLD;
         }
-        if italic {
+        if style.italic {
             f.style = FontStyle::Italic;
         }
         f
@@ -288,14 +295,35 @@ mod tests {
             family: "M".into(),
             faux_bold: false,
         };
-        assert_eq!(real.face(true, true).weight, FontWeight::BOLD);
-        assert_eq!(real.face(true, true).style, FontStyle::Italic);
+        assert_eq!(
+            real.face(FaceStyle {
+                bold: true,
+                italic: true
+            })
+            .weight,
+            FontWeight::BOLD
+        );
+        assert_eq!(
+            real.face(FaceStyle {
+                bold: true,
+                italic: true
+            })
+            .style,
+            FontStyle::Italic
+        );
         assert!(!real.synthesizes(true));
         let faux = EditorFonts {
             family: "M".into(),
             faux_bold: true,
         };
-        assert_eq!(faux.face(true, false).weight, FontWeight::NORMAL);
+        assert_eq!(
+            faux.face(FaceStyle {
+                bold: true,
+                italic: false
+            })
+            .weight,
+            FontWeight::NORMAL
+        );
         assert!(faux.synthesizes(true));
         assert!(!faux.synthesizes(false));
     }

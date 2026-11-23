@@ -14,6 +14,7 @@ use gpui_kit::{AvailableSpace, Context, Pixels, Size, Window, px, size};
 use super::EditorView;
 use crate::editor_element::LINE_HEIGHT;
 use crate::editor_font;
+use crate::fonts::FaceStyle;
 use crate::grid::CellMetrics;
 
 /// The height a measure adds below the last row, so rounding never cuts
@@ -57,7 +58,7 @@ impl EditorView {
         let fonts = self.editor_fonts(&inputs, &text_system, cx);
         let cells = CellMetrics::from_text_system(
             &text_system,
-            &fonts.face(false, false),
+            &fonts.face(FaceStyle::default()),
             font_size,
             line_height(font_size),
         );
