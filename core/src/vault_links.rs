@@ -1,9 +1,9 @@
-//! Link resolution on [`NoteVault`]: where a note link leads, and the
-//! shortest wikilink that names a note.
+//! Links on [`NoteVault`]: where a note link leads, the shortest wikilink that
+//! names a note, a note's rendered Markdown with its links, and its backlinks.
 
 use crate::error::VaultError;
-use crate::nfs::VaultPath;
-use crate::note;
+use crate::nfs::{NoteEntryData, VaultPath};
+use crate::note::{self, NoteContentData};
 use crate::{LinkResolution, NoteVault};
 
 impl NoteVault {
@@ -54,5 +54,64 @@ impl NoteVault {
             .map(|(entry, _)| entry.path)
             .collect();
         Ok(note::unique_wikilink(path, 1, &namesakes))
+    }
+
+    /// Converts a note's raw Markdown into rendered Markdown and extracts all links.
+    ///
+    /// - WikiLinks (`[[note]]`) are converted to standard Markdown links.
+    /// - Note links are resolved to vault-relative absolute paths.
+    /// - Hashtags become Markdown links (`[#tag](#tag)`) and are added to the links list.
+    /// - Image paths are resolved to absolute OS paths so renderers can load them directly.
+    ///   Relative image paths are resolved against the note's location in the vault.
+    ///   External image URLs are kept as-is.
+    pub async fn get_markdown_and_links(
+        &self,
+        path: &VaultPath,
+    ) -> Result<note::MarkdownNote, VaultError> {
+        let note = self.load_note(path).await?;
+        let note_parent = if note.path.is_note() {
+            note.path.get_parent_path().0
+        } else {
+            note.path.clone()
+        };
+        let (md_text, mut links) = note.get_markdown_and_links();
+        // Since this function is intended to return content ready to be rendered
+        // We need the full path of the image links, so any markdown processor can find the image,
+        // the full path can only be resolved from here as we have the vault path
+        let (md_text, image_links) = note::process_image_links(&md_text, |alt_text, raw_path| {
+            let resolved = if note::scan::is_remote_url(raw_path) {
+                raw_path.to_string()
+            } else {
+                let image_vault_path = if raw_path.starts_with('/') {
+                    VaultPath::new(raw_path)
+                } else {
+                    note_parent.append(&VaultPath::new(raw_path)).flatten()
+                };
+                image_vault_path
+                    .to_pathbuf(self.workspace_path())
+                    .display()
+                    .to_string()
+            };
+            let link = note::NoteLink::image(&resolved, alt_text, raw_path);
+            (resolved, link)
+        });
+        links.extend(image_links);
+        Ok(note::MarkdownNote {
+            text: md_text,
+            links,
+        })
+    }
+
+    /// Returns all notes that contain a link pointing to `path`: a path link
+    /// (markdown, or a wikilink written from the root or the note's folder)
+    /// to exactly this note, or a wikilink by name whose written components
+    /// end this note's path (`[[dup]]`, `[[work/dup]]` for `/a/work/dup.md`)
+    /// — see [`note::NoteTarget::matches`]. An ambiguous name link is a
+    /// backlink of every note it can point at.
+    pub async fn get_backlinks(
+        &self,
+        path: &VaultPath,
+    ) -> Result<Vec<(NoteEntryData, NoteContentData)>, VaultError> {
+        Ok(self.index.get_backlinks(path).await?)
     }
 }
