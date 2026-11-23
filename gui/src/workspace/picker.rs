@@ -308,8 +308,10 @@ impl<R: PickerRow> NotePicker<R> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // Suggestions complete query syntax (`#tag`, `<note`), which only the
+        // search browser has: the finder is a free-text fuzzy search.
         let ac = vault
-            .filter(|_| matches!(kind, PickerKind::Finder | PickerKind::Search))
+            .filter(|_| matches!(kind, PickerKind::Search))
             .map(|vault| InputAutocomplete::new(vault, redraw.clone()));
         let placeholder = match kind {
             PickerKind::Finder => "Find a note, or name a new one",

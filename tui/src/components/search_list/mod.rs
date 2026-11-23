@@ -768,6 +768,12 @@ impl<R: SearchRow> SearchList<R> {
         }
     }
 
+    /// Whether an autocomplete controller is attached at all (open or not).
+    #[cfg(test)]
+    pub(crate) fn has_autocomplete(&self) -> bool {
+        self.autocomplete.is_some()
+    }
+
     /// Test-only: true when the autocomplete popup is open, so host tests
     /// can assert the any-mouse-interaction-dismisses rule.
     #[cfg(test)]
