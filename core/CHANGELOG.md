@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.9.0...kimun_core-v0.9.1) - 2026-11-23
+
+### Fixed
+
+- small systemtime panic
+- *(core)* name the lock in poisoned-mutex panics
+
+### Other
+
+- config and results
+- vault browse and search
+- entry moves and deltes in its own file
+- attachments extracted in core
+- *(core)* move note edits and journal out of lib.rs
+- *(core)* split lib.rs tests, properties, saved searches, pins
+
 ## [0.9.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.8.0...kimun_core-v0.9.0) - 2026-11-23
 
 ### Added
