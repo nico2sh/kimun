@@ -34,6 +34,7 @@ mod fonts;
 mod grid;
 #[cfg(test)]
 mod identity_tests;
+mod inline_image;
 mod input;
 mod keymap;
 #[cfg(test)]
