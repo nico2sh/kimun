@@ -73,7 +73,7 @@ impl NoteVault {
         options: VaultBrowseOptions,
         sender: futures_channel::mpsc::UnboundedSender<SearchResult>,
     ) -> Result<(), VaultError> {
-        let start = std::time::SystemTime::now();
+        let start = std::time::Instant::now();
         debug!("> Start fetching files with Options:\n{}", options);
 
         // Logged here as well as returned: when the consumer dropped the
@@ -100,10 +100,10 @@ impl NoteVault {
             self.index.mark_synced();
         }
 
-        let time = std::time::SystemTime::now()
-            .duration_since(start)
-            .expect("Something's wrong with the time");
-        debug!("> Files fetched in {} milliseconds", time.as_millis());
+        debug!(
+            "> Files fetched in {} milliseconds",
+            start.elapsed().as_millis()
+        );
 
         Ok(())
     }
