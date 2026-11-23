@@ -17,13 +17,13 @@ use tokio::runtime::Runtime;
 
 use super::picker::NotePicker;
 use super::search::{
-    Mark, PREVIEW_BYTES, PREVIEW_DEBOUNCE, PREVIEW_ROW_ID, PreviewText, RowKind, SearchPreview,
-    SectionMark, header_reads, marked_text,
+    Mark, PREVIEW_BYTES, PREVIEW_DEBOUNCE, PREVIEW_IMAGE_ID, PREVIEW_ROW_ID, PaintedSlice,
+    PreviewText, RowKind, SearchPreview, SectionMark, header_reads, marked_text,
 };
 use super::start_tests::{Started, drive, open_started, runtime, select_all_key, vault_start};
 use crate::attachment_index::AttachmentIndex;
 use crate::image_core::ImagePane;
-use crate::inline_image::{Failure, fit, rows_for};
+use crate::inline_image::{Failure, ImageStore, fit, rows_for};
 use crate::startup::FirstNote;
 use crate::test_vault::{TestVault, test_vault};
 
@@ -593,4 +593,487 @@ fn a_fresh_list_serves_two_loads_with_one_walk(cx: &mut TestAppContext) {
     let read = cx.read(|cx| preview.read(cx).read_paths.clone());
     assert_eq!(read, vec![path("one.md"), path("two.md")]);
     assert_eq!(walks(cx), 1, "no second walk");
+}
+
+// ---- The image rows painted ---------------------------------------------------
+
+/// The image rows' slices the preview painted at its last render.
+fn slices(s: &Started, view: &Entity<SearchPreview>, cx: &mut TestAppContext) -> Vec<PaintedSlice> {
+    frame(s, cx);
+    cx.read(|cx| view.read(cx).painted_slices())
+}
+
+fn scale(s: &Started, cx: &mut TestAppContext) -> f32 {
+    cx.update_window(s.handle, |_, window, _| window.scale_factor())
+        .unwrap()
+}
+
+/// The window bounds of preview row `ix`.
+fn row_bounds(
+    s: &Started,
+    ix: usize,
+    cx: &mut TestAppContext,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find((PREVIEW_ROW_ID, ix)).bounds()
+    })
+    .unwrap()
+}
+
+/// Open the search browser on `query` over a vault holding `n.md`
+/// (`note`) and `files`, and let its preview land, every visible image
+/// ready.
+fn browse(
+    cx: &mut TestAppContext,
+    rt: &Runtime,
+    note: &str,
+    files: &[(&str, Vec<u8>)],
+    query: &str,
+) -> (TestVault, Started, Entity<SearchPreview>) {
+    let (v, started) = started_with(cx, rt, &[("a.md", "alpha"), ("n.md", note)], files);
+    search(&started, rt, query, cx);
+    settle(&started, rt, cx);
+    let view = preview(&started, cx);
+    (v, started, view)
+}
+
+/// Drive until every image slice on screen paints its pixels.
+fn until_ready(s: &Started, view: &Entity<SearchPreview>, rt: &Runtime, cx: &mut TestAppContext) {
+    drive(rt, cx, |cx| {
+        let painted = slices(s, view, cx);
+        !painted.is_empty() && painted.iter().all(|p| p.ready)
+    });
+}
+
+/// Scroll the preview so row `to` is the top row.
+fn scroll_to_row(s: &Started, view: &Entity<SearchPreview>, to: usize, cx: &mut TestAppContext) {
+    let rows = cx.read(|cx| view.read(cx).row_lines()).len();
+    let top = top_row(s, rows, cx);
+    view.update(cx, |p, cx| p.scroll_rows(to as i32 - top as i32, cx));
+    frame(s, cx);
+}
+
+fn store(cx: &mut TestAppContext) -> ImageStore {
+    cx.update(|cx| cx.default_global::<ImageStore>().clone())
+}
+
+/// A PNG whose header reads but whose pixels do not decode: its image
+/// data corrupted, the header kept.
+fn corrupt_png(w: u32, h: u32) -> Vec<u8> {
+    let mut bytes = png(w, h);
+    let n = bytes.len();
+    for b in &mut bytes[n - 20..n - 12] {
+        *b ^= 0xFF;
+    }
+    bytes
+}
+
+const SLICED: &str = "needle\n![a cat](pic.png)\nafter";
+
+#[gpui_kit::test]
+fn an_image_row_paints_its_slice_at_the_right_offset(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s, view) = browse(
+        cx,
+        &rt,
+        SLICED,
+        &[("pic.png", png(TALL.0, TALL.1))],
+        "needle",
+    );
+    until_ready(&s, &view, &rt, cx);
+    let image = cx.read(|cx| view.read(cx).shown_images())[0].clone();
+    assert!(image.rows >= 3, "{} rows", image.rows);
+    let scale = scale(&s, cx);
+    let painted = slices(&s, &view, cx);
+    assert_eq!(painted.len(), image.rows, "every slice in view paints");
+    let row = image.first_row + 2;
+    let slice = painted
+        .iter()
+        .find(|p| p.index == 2)
+        .expect("slice 2 painted")
+        .clone();
+    assert_eq!((slice.row, slice.image), (row, 0));
+    let bounds = row_bounds(&s, row, cx);
+    assert_eq!(slice.clip, bounds, "clipped to its own row");
+    assert!(
+        bounds.size.width >= slice.rect.size.width,
+        "the row is as wide as the pane, not empty: {bounds:?}"
+    );
+    assert_eq!(slice.rect.origin.x, bounds.origin.x, "left aligned");
+    assert_eq!(
+        slice.rect.origin.y,
+        bounds.origin.y - bounds.size.height * 2.,
+        "the image origin two rows above"
+    );
+    // The fitted size of the model, device pixels to logical ones.
+    assert_eq!(
+        slice.rect.size,
+        size(px(image.fitted.0 / scale), px(image.fitted.1 / scale))
+    );
+    assert!(slice.ready, "its pixels");
+    // Every slice paints the one image at the same place.
+    assert!(painted.iter().all(|p| p.rect == slice.rect), "{painted:?}");
+}
+
+#[gpui_kit::test]
+fn a_slice_row_scrolled_in_alone_paints_its_slice(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let note = format!("needle\n![p](tall.png)\n{}", "line\n".repeat(80));
+    let (_v, s, view) = browse(cx, &rt, &note, &[("tall.png", png(10, 2000))], "needle");
+    until_ready(&s, &view, &rt, cx);
+    let image = cx.read(|cx| view.read(cx).shown_images())[0].clone();
+    assert!(image.rows > 8, "a tall image: {} rows", image.rows);
+    let k = image.rows / 2;
+    scroll_to_row(&s, &view, image.first_row + k, cx);
+    let rows = cx.read(|cx| view.read(cx).row_lines()).len();
+    assert_eq!(top_row(&s, rows, cx), image.first_row + k);
+    let painted = slices(&s, &view, cx);
+    assert!(
+        painted.iter().all(|p| p.index >= k),
+        "the slices above are off screen: {painted:?}"
+    );
+    let slice = painted
+        .iter()
+        .find(|p| p.index == k)
+        .expect("the top slice paints")
+        .clone();
+    let bounds = row_bounds(&s, image.first_row + k, cx);
+    assert_eq!(slice.clip, bounds);
+    assert_eq!(
+        slice.rect.origin.y,
+        bounds.origin.y - bounds.size.height * k as f32
+    );
+    assert!(slice.ready);
+}
+
+#[gpui_kit::test]
+fn every_image_row_has_the_tooltip_with_alt_or_name(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let note = "needle\n![a red square](a.png)\n![[b.png]]\n![](c.png)\nafter";
+    let files = [
+        ("a.png", png(10, 50)),
+        ("b.png", png(10, 50)),
+        ("c.png", png(10, 50)),
+    ];
+    let (_v, s, view) = browse(cx, &rt, note, &files, "needle");
+    let scale = scale(&s, cx);
+    let images = cx.read(|cx| view.read(cx).shown_images());
+    assert_eq!(images.len(), 3);
+    for (image, tip) in images.iter().zip(["a red square", "b.png", "c.png"]) {
+        assert!(image.rows >= 2, "{} rows", image.rows);
+        for ix in image.first_row..image.first_row + image.rows {
+            let (label, target, row) = cx
+                .update_window(s.handle, |_, window, cx| {
+                    window.render_frame(cx);
+                    let row = window.find((PREVIEW_ROW_ID, ix)).bounds();
+                    let target = window.within((PREVIEW_ROW_ID, ix)).find(PREVIEW_IMAGE_ID);
+                    (target.label().map(str::to_string), target.bounds(), row)
+                })
+                .unwrap();
+            assert_eq!(label.as_deref(), Some(tip), "row {ix}");
+            // Over the image's width and the row's height, at its left.
+            assert_eq!(target.origin, row.origin, "row {ix}");
+            assert_eq!(target.size.height, row.size.height);
+            assert_eq!(target.size.width, px(image.fitted.0 / scale));
+            crate::editor_element::BUILT_TIPS.with(|b| b.borrow_mut().clear());
+            cx.update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .within((PREVIEW_ROW_ID, ix))
+                    .hover(PREVIEW_IMAGE_ID, cx);
+            })
+            .unwrap();
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(2));
+            cx.run_until_parked();
+            frame(&s, cx);
+            let built = crate::editor_element::BUILT_TIPS.with(|b| b.borrow().clone());
+            assert_eq!(
+                built.last().map(|t| t.as_ref()),
+                Some(tip),
+                "the tooltip over row {ix}"
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn visible_images_are_pinned_and_decoded_once_and_a_completion_requests_nothing(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let note = format!(
+        "needle\n![a](a.png)\n{}![b](b.png)\nend",
+        "line\n".repeat(200)
+    );
+    let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
+    let (v, started) = started_with(cx, &rt, &[("a.md", "alpha"), ("n.md", &note)], &files);
+    let store = ImageStore::default();
+    cx.update(|cx| cx.set_global(store.clone()));
+    search(&started, &rt, "needle", cx);
+    settle(&started, &rt, cx);
+    let view = preview(&started, cx);
+    until_ready(&started, &view, &rt, cx);
+    let file = |name: &str| v.vault.path_to_pathbuf(&path(name));
+    assert_eq!(store.decodes_started(), 1, "only the image on screen");
+    assert_eq!(store.pinned_files(), vec![file("a.png")]);
+    for _ in 0..5 {
+        frame(&started, cx);
+    }
+    assert_eq!(store.decodes_started(), 1, "a completion requests nothing");
+
+    // To the end: `b` comes into view, `a` leaves.
+    view.update(cx, |p, cx| p.scroll_rows(10_000, cx));
+    until_ready(&started, &view, &rt, cx);
+    assert_eq!(store.decodes_started(), 2, "the new image decodes");
+    assert_eq!(store.pinned_files(), vec![file("b.png")]);
+    for _ in 0..5 {
+        frame(&started, cx);
+    }
+    assert_eq!(store.decodes_started(), 2, "settled");
+
+    // Back: `a` is still cached, nothing decodes again.
+    view.update(cx, |p, cx| p.scroll_rows(-10_000, cx));
+    until_ready(&started, &view, &rt, cx);
+    assert_eq!(store.decodes_started(), 2, "cached: no second decode");
+    assert_eq!(store.pinned_files(), vec![file("a.png")]);
+    let painted = slices(&started, &view, cx);
+    assert!(painted.iter().all(|p| p.image == 0 && p.ready));
+
+    // The preview gone, its pins go with it.
+    press(&started, "escape", cx);
+    started.settle_dialog(cx);
+    drop(view);
+    for _ in 0..3 {
+        frame(&started, cx);
+    }
+    assert!(
+        store.pinned_files().is_empty(),
+        "{:?}",
+        store.pinned_files()
+    );
+}
+
+#[gpui_kit::test]
+fn two_big_visible_images_over_the_budget_both_end_up_ready(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    // One 10x60 image decodes to 2400 bytes: one fits, two do not.
+    let note = "needle\n![a](a.png)\n![b](b.png)\nafter";
+    let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
+    let (_v, started) = started_with(cx, &rt, &[("a.md", "alpha"), ("n.md", note)], &files);
+    let store = ImageStore::with_test_budget(3000);
+    cx.update(|cx| cx.set_global(store.clone()));
+    search(&started, &rt, "needle", cx);
+    settle(&started, &rt, cx);
+    let view = preview(&started, cx);
+    until_ready(&started, &view, &rt, cx);
+    let painted = slices(&started, &view, cx);
+    assert!(painted.iter().any(|p| p.image == 0) && painted.iter().any(|p| p.image == 1));
+    assert_eq!(store.decodes_started(), 2, "one decode per image");
+    for _ in 0..5 {
+        frame(&started, cx);
+    }
+    assert_eq!(
+        store.decodes_started(),
+        2,
+        "an eviction decodes nothing again"
+    );
+    assert!(slices(&started, &view, cx).iter().all(|p| p.ready));
+}
+
+#[gpui_kit::test]
+fn a_failed_decode_makes_one_note_row_and_settles(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let note = "needle\n![b](bad.png)\nafter";
+    let (v, started) = started_with(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("n.md", note)],
+        &[("bad.png", corrupt_png(10, 60))],
+    );
+    let store = ImageStore::default();
+    cx.update(|cx| cx.set_global(store.clone()));
+    search(&started, &rt, "needle", cx);
+    settle(&started, &rt, cx);
+    let view = preview(&started, cx);
+    // The header reads: the load lays it out as image rows.
+    let file = v.vault.path_to_pathbuf(&path("bad.png"));
+    assert!(matches!(
+        ImageStore::default().size_of(&file),
+        crate::inline_image::ImageState::Sized { .. }
+    ));
+    drive(&rt, cx, |cx| {
+        frame(&started, cx);
+        cx.read(|cx| view.read(cx).shown_kinds())
+            .contains(&RowKind::Note { image: 0 })
+    });
+    let want = vec![RowKind::Text, RowKind::Note { image: 0 }, RowKind::Text];
+    assert_eq!(cx.read(|cx| view.read(cx).shown_kinds()), want);
+    let images = cx.read(|cx| view.read(cx).shown_images());
+    assert_eq!(images[0].failed, Some(Failure::Undecodable));
+    assert_eq!(cx.read(|cx| view.read(cx).failure_rewraps()), 1);
+    assert_eq!(store.decodes_started(), 1);
+    for _ in 0..10 {
+        frame(&started, cx);
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(2)));
+        cx.run_until_parked();
+    }
+    assert_eq!(cx.read(|cx| view.read(cx).shown_kinds()), want, "settled");
+    assert_eq!(cx.read(|cx| view.read(cx).failure_rewraps()), 1, "once");
+    assert_eq!(store.decodes_started(), 1, "no decode again");
+    assert!(slices(&started, &view, cx).is_empty(), "no slice paints");
+    assert!(cx.read(|cx| !view.read(cx).is_pending()));
+}
+
+#[gpui_kit::test]
+fn a_height_change_repaints_the_slices_at_the_new_size(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = started_with(
+        cx,
+        &rt,
+        &[("a.md", "alpha"), ("n.md", SLICED)],
+        &[("pic.png", png(10, 2000))],
+    );
+    cx.simulate_window_resize(s.handle, size(px(1400.), px(1000.)));
+    frame(&s, cx);
+    search(&s, &rt, "needle", cx);
+    settle(&s, &rt, cx);
+    let view = preview(&s, cx);
+    until_ready(&s, &view, &rt, cx);
+    let tall = cx.read(|cx| view.read(cx).shown_images())[0].clone();
+
+    cx.simulate_window_resize(s.handle, size(px(1400.), px(600.)));
+    frame(&s, cx);
+    settle(&s, &rt, cx);
+    until_ready(&s, &view, &rt, cx);
+    let short = cx.read(|cx| view.read(cx).shown_images())[0].clone();
+    assert!(short.fitted.1 < tall.fitted.1, "{short:?} vs {tall:?}");
+    let scale = scale(&s, cx);
+    let painted = slices(&s, &view, cx);
+    assert!(!painted.is_empty());
+    for slice in &painted {
+        assert_eq!(
+            slice.rect.size,
+            size(px(short.fitted.0 / scale), px(short.fitted.1 / scale)),
+            "the new fitted size"
+        );
+        let bounds = row_bounds(&s, slice.row, cx);
+        assert_eq!(
+            slice.rect.origin.y,
+            bounds.origin.y - bounds.size.height * slice.index as f32
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn a_preview_of_a_note_without_embeds_paints_and_scrolls_as_before(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let lines: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let note = format!("{lines}the needle\n{lines}");
+    let (_v, s, view) = browse(cx, &rt, &note, &[("pic.png", png(10, 60))], "needle");
+    let expected = super::search::preview_text(path("n.md"), note.clone(), &["needle".into()], 80);
+    let kinds = cx.read(|cx| view.read(cx).shown_kinds());
+    assert_eq!(kinds.len(), 401, "one row per line");
+    assert!(kinds.iter().all(|k| *k == RowKind::Text));
+    let (first_hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+    assert_eq!(first_hit, expected.summary().1);
+    assert_eq!(first_hit, Some(200));
+    let rows = kinds.len();
+    let top = top_row(&s, rows, cx);
+    view.update(cx, |p, cx| p.scroll_rows(30, cx));
+    frame(&s, cx);
+    assert_eq!(top_row(&s, rows, cx), top + 30, "scrolls as before");
+    for _ in 0..3 {
+        frame(&s, cx);
+    }
+    let store = store(cx);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).visible_checks),
+        0,
+        "no image work"
+    );
+    assert!(slices(&s, &view, cx).is_empty());
+    assert_eq!(store.decodes_started(), 0);
+    assert!(store.pinned_files().is_empty());
+}
+
+/// What a press on the preview may change: the open modal, the browser's
+/// query and selection, the note the editor shows, the preview's note.
+fn snapshot(s: &Started, cx: &mut TestAppContext) -> (Option<String>, String, String, usize) {
+    let modal = s.shown_modal(cx).map(|m| format!("{m:?}"));
+    let view = picker(s, cx);
+    let (query, selected) = cx.read(|cx| {
+        let p = view.read(cx);
+        let selected = p
+            .selected()
+            .map(|r| super::picker::picker_row_id(&r).to_string());
+        (p.query().to_string(), format!("{selected:?}"))
+    });
+    let shown = preview(s, cx);
+    let rows = cx.read(|cx| shown.read(cx).row_lines()).len();
+    (modal, format!("{query}|{selected}"), s.text(cx), rows)
+}
+
+#[gpui_kit::test]
+fn an_image_row_click_behaves_like_a_text_row_of_its_line(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s, view) = browse(
+        cx,
+        &rt,
+        SLICED,
+        &[("pic.png", png(TALL.0, TALL.1))],
+        "needle",
+    );
+    until_ready(&s, &view, &rt, cx);
+    let image = cx.read(|cx| view.read(cx).shown_images())[0].clone();
+    let before = snapshot(&s, cx);
+    assert_eq!(before.0.as_deref(), Some("Search"));
+    // A text row first, then an image row: the same nothing happens.
+    for ix in [0, image.first_row, image.first_row + 1] {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click((PREVIEW_ROW_ID, ix), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(snapshot(&s, cx), before, "a click on row {ix}");
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.double_click((PREVIEW_ROW_ID, ix), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(snapshot(&s, cx), before, "a double-click on row {ix}");
+    }
+    // On the image itself: no menu, no follow, nothing.
+    for ix in [image.first_row, image.first_row + 1] {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let mut row = window.within((PREVIEW_ROW_ID, ix));
+            row.click(PREVIEW_IMAGE_ID, cx);
+            row.double_click(PREVIEW_IMAGE_ID, cx);
+            row.right_click(PREVIEW_IMAGE_ID, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(snapshot(&s, cx), before, "presses on the image of row {ix}");
+        let menus = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.find_all("popup-menu").len()
+            })
+            .unwrap();
+        assert_eq!(menus, 0, "no menu opens");
+    }
+    assert!(!s.shown_modal(cx).is_none(), "the browser stays");
 }
