@@ -59,12 +59,14 @@ pub(crate) mod sync;
 pub mod system;
 mod vault_attachments;
 mod vault_browse;
+mod vault_config;
 mod vault_entries;
 mod vault_journal;
 mod vault_links;
 mod vault_note_edits;
 mod vault_pinned_notes;
 mod vault_properties;
+mod vault_results;
 mod vault_saved_searches;
 mod vault_search;
 pub use index::file::IndexFile;
@@ -81,10 +83,17 @@ pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
 pub use system::{Host, SystemPath};
+pub use vault_browse::{NotesValidation, VaultBrowseOptions, VaultBrowseOptionsBuilder};
+pub use vault_config::{
+    VaultConfig, DEFAULT_ASSETS_PATH, DEFAULT_INBOX_PATH, DEFAULT_JOURNAL_PATH,
+};
+pub use vault_results::{
+    AttachmentContent, AttachmentDetails, DirectoryDetails, LinkResolution, ReplacePreview,
+    ResultType, SearchResult,
+};
 
 use std::{
     collections::HashMap,
-    fmt::Display,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -99,14 +108,6 @@ use sync::VaultSync;
 use system::path_to_string;
 
 use crate::nfs::DirectoryEntryData;
-
-/// Default directory for journal entries, one note per day.
-pub const DEFAULT_JOURNAL_PATH: &str = "/journal";
-/// Default directory for quick-capture notes (see [`NoteVault::quick_note`]).
-pub const DEFAULT_INBOX_PATH: &str = "/inbox";
-/// Default directory for attachments (see
-/// [`NoteVault::default_attachments_path`]).
-pub const DEFAULT_ASSETS_PATH: &str = "/assets";
 
 /// How many incremented names ([`VaultPath::get_name_on_conflict`]) a
 /// conflict-avoiding create tries before giving up. High enough that no real
@@ -138,68 +139,6 @@ impl IndexReport {
         let duration = time.duration_since(self.start).unwrap_or_default();
         self.duration = duration;
     }
-}
-
-/// Configuration passed to [`NoteVault::new`].
-///
-/// `workspace_path` is the OS path to the vault's root directory.
-/// `db_path` overrides where the SQLite cache is stored. When `None`,
-/// the cache lives at `<workspace_path>/kimun.sqlite` (legacy default).
-#[derive(Debug, Clone)]
-pub struct VaultConfig {
-    /// The vault's root directory on this machine.
-    pub workspace_path: SystemPath,
-    /// Override for the index location. When `None`, the index lives at
-    /// `<workspace_path>/kimun.sqlite` (legacy default).
-    pub index: Option<IndexFile>,
-    /// When `true`, destructive automated edits (overwrite, replace, delete, and
-    /// the backlink rewrites of rename/move) copy a note's previous content into
-    /// a hidden in-vault backup directory before mutating it. The TUI leaves this
-    /// off; the CLI and MCP server turn it on.
-    pub backup: bool,
-}
-
-impl VaultConfig {
-    /// Builds a config for the vault rooted at `workspace_path`, with the
-    /// legacy default cache location and backups disabled.
-    ///
-    /// Takes a [`SystemPath`] rather than any `Into<PathBuf>` so a path that
-    /// the OS cannot use — relative, or carrying a `.` component that Windows
-    /// reads literally inside a verbatim path — cannot reach `create_dir_all`
-    /// or the SQLite open. Callers holding a raw path resolve it first, and
-    /// the failure lands where the path is built, not where it is opened.
-    pub fn new(workspace_path: SystemPath) -> Self {
-        Self {
-            workspace_path,
-            index: None,
-            backup: false,
-        }
-    }
-
-    /// Overrides where the index is stored, instead of the legacy
-    /// in-workspace default.
-    pub fn with_index(mut self, index: IndexFile) -> Self {
-        self.index = Some(index);
-        self
-    }
-
-    /// Enables or disables backing up note content before destructive edits
-    /// (see the [`backup`](Self::backup) field).
-    pub fn with_backup(mut self, backup: bool) -> Self {
-        self.backup = backup;
-        self
-    }
-}
-
-/// Result of a dry-run replace ([`NoteVault::preview_replace`]): how many matches
-/// would be replaced, and the note's content after the replacement. Nothing is
-/// written to disk.
-#[derive(Debug, Clone)]
-pub struct ReplacePreview {
-    /// Number of matches that would be replaced.
-    pub count: usize,
-    /// The note's content after the replacement.
-    pub content: String,
 }
 
 /// Facade over a vault: a directory of Markdown notes plus its searchable
@@ -637,202 +576,6 @@ impl NoteVault {
         let note_details = NoteDetails::new(path, written);
         let content_data = self.index.save_note(&entry_data, &note_details).await?;
         Ok((entry_data, content_data))
-    }
-}
-
-/// Where a note link leads ([`NoteVault::resolve_note_target`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkResolution {
-    /// Exactly one note matches: its index entry and content data.
-    Note(NoteEntryData, NoteContentData),
-    /// A name several notes match, in index order.
-    Ambiguous(Vec<(NoteEntryData, NoteContentData)>),
-    /// No note matches: the canonical path a new note for the link would get.
-    Missing(VaultPath),
-}
-
-/// A directory entry within the vault.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct DirectoryDetails {
-    /// Path of the directory inside the vault.
-    pub path: VaultPath,
-}
-
-/// A single entry produced by browsing the vault: a note, directory, or
-/// attachment, identified by its path.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchResult {
-    /// Path of the entry inside the vault.
-    pub path: VaultPath,
-    /// What kind of entry this is, plus any content data for notes.
-    pub rtype: ResultType,
-}
-
-impl SearchResult {
-    /// Builds a note result carrying its content data.
-    pub fn note(path: &VaultPath, content_data: &NoteContentData) -> Self {
-        Self {
-            path: path.to_owned(),
-            rtype: ResultType::Note(content_data.to_owned()),
-        }
-    }
-    /// Builds a directory result.
-    pub fn directory(path: &VaultPath) -> Self {
-        Self {
-            path: path.to_owned(),
-            rtype: ResultType::Directory,
-        }
-    }
-    /// Builds an attachment result.
-    pub fn attachment(path: &VaultPath) -> Self {
-        Self {
-            path: path.to_owned(),
-            rtype: ResultType::Attachment,
-        }
-    }
-}
-
-/// Kind of a [`SearchResult`].
-#[derive(Debug, Clone, PartialEq)]
-pub enum ResultType {
-    /// A note, with its parsed content data.
-    Note(NoteContentData),
-    /// A directory.
-    Directory,
-    /// An attachment (non-note file).
-    Attachment,
-}
-
-/// Read-only details of an attachment, for the attachment view: its identity,
-/// size, last-modified time, extension, and previewable content.
-#[derive(Debug, Clone, PartialEq)]
-pub struct AttachmentDetails {
-    /// The attachment's vault path.
-    pub path: VaultPath,
-    /// File size in bytes (the true on-disk size, even when the preview is
-    /// truncated).
-    pub size: u64,
-    /// Last-modified time, in whole seconds since the Unix epoch.
-    pub modified_secs: u64,
-    /// Lowercased file extension, if any (`png`, `pdf`, …; `None` for
-    /// extension-less files like `LICENSE`).
-    pub extension: Option<String>,
-    /// The previewable content.
-    pub content: AttachmentContent,
-}
-
-/// The previewable content of an attachment.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AttachmentContent {
-    /// A text file, decoded as UTF-8. `truncated` is `true` when the file
-    /// exceeded the preview cap and `text` is a prefix.
-    Text {
-        /// The decoded text (capped).
-        text: String,
-        /// Whether the file was longer than the preview cap.
-        truncated: bool,
-    },
-    /// A binary (non-text) file — no preview is offered.
-    Binary,
-}
-
-/// Builder for [`VaultBrowseOptions`]; see [`NoteVault::browse_vault_stream`]
-/// and its collected form [`NoteVault::browse_vault`].
-pub struct VaultBrowseOptionsBuilder {
-    path: VaultPath,
-    validation: NotesValidation,
-    recursive: bool,
-}
-
-impl VaultBrowseOptionsBuilder {
-    /// Starts a builder rooted at `path`, with defaults otherwise.
-    pub fn new(path: &VaultPath) -> Self {
-        Self::default().path(path.clone())
-    }
-
-    /// Finalizes the options.
-    pub fn build(self) -> VaultBrowseOptions {
-        VaultBrowseOptions {
-            path: self.path,
-            validation: self.validation,
-            recursive: self.recursive,
-        }
-    }
-
-    /// Sets the path to browse from.
-    pub fn path(mut self, path: VaultPath) -> Self {
-        self.path = path;
-        self
-    }
-
-    /// Sets whether the browse descends into subdirectories.
-    pub fn recursive(mut self, recursive: bool) -> Self {
-        self.recursive = recursive;
-        self
-    }
-
-    /// Sets how thoroughly each note is re-validated against the index during
-    /// the browse.
-    pub fn validation(mut self, validation: NotesValidation) -> Self {
-        self.validation = validation;
-        self
-    }
-}
-
-impl Default for VaultBrowseOptionsBuilder {
-    fn default() -> Self {
-        Self {
-            path: VaultPath::root(),
-            validation: NotesValidation::None,
-            recursive: false,
-        }
-    }
-}
-
-/// What a browse walks: the subtree root, how deep, and how strictly each
-/// note is re-validated against the index on the way. See
-/// [`NoteVault::browse_vault`] and [`NoteVault::browse_vault_stream`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct VaultBrowseOptions {
-    path: VaultPath,
-    validation: NotesValidation,
-    recursive: bool,
-}
-
-impl Display for VaultBrowseOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Vault Browse Options - [Path: `{}`|Validation Type: `{}`|Recursive: `{}`]",
-            self.path, self.validation, self.recursive
-        )
-    }
-}
-
-/// How thoroughly a sync pass checks whether each note has changed before
-/// updating its index entry.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum NotesValidation {
-    /// Compares a content hash — detects any change, at the cost of reading
-    /// each file.
-    Full,
-    /// Compares the file size — cheaper, but misses same-size edits.
-    Fast,
-    /// Only checks whether the note exists.
-    None,
-}
-
-impl Display for NotesValidation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                NotesValidation::Full => "Full",
-                NotesValidation::Fast => "Fast",
-                NotesValidation::None => "None",
-            }
-        )
     }
 }
 
