@@ -32,7 +32,7 @@ pub struct BrowseScreen {
 
 impl BrowseScreen {
     pub fn new(vault: Arc<NoteVault>, path: VaultPath, settings: SharedSettings) -> Self {
-        let s = settings.read().unwrap();
+        let s = settings.read().expect("settings lock poisoned");
         let theme = s.get_theme();
         let mut sidebar = SidebarComponent::from_settings(vault.clone(), &s);
         drop(s);
@@ -82,7 +82,7 @@ impl AppScreen for BrowseScreen {
             && let Some(combo) = key_event_to_combo(key)
         {
             let action = {
-                let s = self.settings.read().unwrap();
+                let s = self.settings.read().expect("settings lock poisoned");
                 s.key_bindings.get_action(&combo)
             };
             if action == Some(ActionShortcuts::NewJournal) {

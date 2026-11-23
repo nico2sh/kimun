@@ -191,7 +191,6 @@ pub(crate) struct SaveSearchDialog {
 }
 
 impl SaveSearchDialog {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         query: String,
         provenance: Option<String>,

@@ -118,12 +118,9 @@ fn strip_date_prefix(title: &str, date: Option<&str>) -> String {
     }
 }
 
-/// A turn's lifecycle. `Streaming` is reserved for a future streaming feature
-/// and is never constructed in v1.
-#[allow(dead_code)]
+/// A turn's lifecycle.
 pub enum TurnStatus {
     Thinking,
-    Streaming,
     Done,
     Error(String),
 }
@@ -197,7 +194,7 @@ impl Thread {
     /// return its question so the caller can re-issue the request.
     pub fn regenerate(&mut self, id: u64) -> Option<String> {
         let turn = self.turns.iter_mut().find(|t| t.id == id)?;
-        if matches!(turn.status, TurnStatus::Thinking | TurnStatus::Streaming) {
+        if matches!(turn.status, TurnStatus::Thinking) {
             return None;
         }
         turn.status = TurnStatus::Thinking;
@@ -205,13 +202,13 @@ impl Thread {
     }
 
     /// The last `HISTORY_WINDOW` `Done` turns before the newest in-flight
-    /// (`Thinking`/`Streaming`) turn, as `(question, answer)` pairs with
+    /// (`Thinking`) turn, as `(question, answer)` pairs with
     /// citation markers stripped.
     pub fn history(&self) -> Vec<(String, String)> {
         let boundary = self
             .turns
             .iter()
-            .rposition(|t| matches!(t.status, TurnStatus::Thinking | TurnStatus::Streaming))
+            .rposition(|t| matches!(t.status, TurnStatus::Thinking))
             .unwrap_or(self.turns.len());
         // Want the LAST `HISTORY_WINDOW` Dones, not the first: `.rev()` needs
         // a `DoubleEndedIterator`, which `Filter` only gets because the slice

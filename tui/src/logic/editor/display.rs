@@ -11,7 +11,9 @@ use crate::logic::editor::markdown::runs::{
     FrontmatterFence, as_frontmatter_text, box_runs, frontmatter_fence_runs,
     frontmatter_summary_runs, mark_overlay, render_runs,
 };
-use crate::logic::editor::markdown::{ElementKind, ParsedBuffer, opener_shape, reveal};
+use crate::logic::editor::markdown::{
+    ElementKind, ParsedBuffer, VisualSlice, opener_shape, reveal,
+};
 use crate::logic::editor::overlay::{Overlay, OverlayKind};
 use crate::logic::editor::rope_buffer::RopeBuffer;
 use crate::ropetext::{Column, Layout, Metrics, RowHints, Viewport, motion};
@@ -1685,20 +1687,24 @@ impl EditorDisplay {
                         content,
                         logical_line,
                         parsed,
-                        vl.chars.start,
+                        VisualSlice {
+                            start_col: vl.chars.start,
+                            is_first: vl.first,
+                            force_raw,
+                        },
                         cursor_col,
-                        vl.first,
-                        force_raw,
                         width,
                     )),
                     _ => render_runs(
                         content,
                         logical_line,
                         parsed,
-                        vl.chars.start,
+                        VisualSlice {
+                            start_col: vl.chars.start,
+                            is_first: vl.first,
+                            force_raw,
+                        },
                         cursor_col,
-                        vl.first,
-                        force_raw,
                         width,
                     ),
                 };
@@ -1737,11 +1743,13 @@ impl EditorDisplay {
                         reveal::rendered_col_with_reveal(
                             logical_line,
                             parsed,
-                            effective_start_col,
+                            VisualSlice {
+                                start_col: effective_start_col,
+                                is_first: vl.first,
+                                force_raw,
+                            },
                             col,
                             cursor_col,
-                            vl.first,
-                            force_raw,
                         ) + gutter_off
                     };
                     let mut row_overlays: Vec<&Overlay> = self
@@ -2089,11 +2097,13 @@ impl EditorDisplay {
         let logical_col = reveal::rendered_col_to_logical_with(
             logical_line,
             parsed,
-            effective_start_col,
+            VisualSlice {
+                start_col: effective_start_col,
+                is_first: vl.first,
+                force_raw,
+            },
             vcol,
             reveal_col,
-            vl.first,
-            force_raw,
         );
         (vl.logical_row, logical_col, vl.chars.end, gutter)
     }

@@ -134,7 +134,7 @@ pub struct PreferencesScreen {
 
 impl PreferencesScreen {
     pub fn new(settings: SharedSettings) -> Self {
-        let s = settings.read().unwrap();
+        let s = settings.read().expect("settings lock poisoned");
         // The model builds the theme list once; the active theme resolves
         // from it — `get_theme()` would rebuild the entire list (plus disk
         // IO) again.
@@ -198,7 +198,7 @@ impl PreferencesScreen {
     }
 
     fn do_save(&mut self, tx: &AppTx) {
-        let s = self.settings.read().unwrap();
+        let s = self.settings.read().expect("settings lock poisoned");
         match prefs::save_plan(&s, &self.initial_settings) {
             Err(e) => {
                 drop(s);
@@ -221,20 +221,28 @@ impl PreferencesScreen {
     /// Called when the file browser confirms a directory path (via 'c' or Ctrl+Enter).
     fn confirm_file_browser(&mut self, chosen: PathBuf, _tx: &AppTx) {
         if let Some(name) = self.pending_create_name.take() {
-            if let Err(e) = prefs::add_workspace(&mut self.settings.write().unwrap(), &name, chosen)
-            {
+            if let Err(e) = prefs::add_workspace(
+                &mut self.settings.write().expect("settings lock poisoned"),
+                &name,
+                chosen,
+            ) {
                 tracing::warn!("rejected workspace add: {}", e);
             }
         } else if let Some(name) = self.workspaces_section.selected_name().map(str::to_string) {
             // Browsing path for the selected workspace: repoints the entry
             // and flags a reindex when that actually moves the vault — one
             // call, so the two cannot disagree.
-            prefs::set_workspace_path(&mut self.settings.write().unwrap(), &name, chosen);
+            prefs::set_workspace_path(
+                &mut self.settings.write().expect("settings lock poisoned"),
+                &name,
+                chosen,
+            );
         }
         self.workspaces_section
-            .refresh(&self.settings.read().unwrap());
-        self.indexing_section
-            .set_vault_available(prefs::has_vault(&self.settings.read().unwrap()));
+            .refresh(&self.settings.read().expect("settings lock poisoned"));
+        self.indexing_section.set_vault_available(prefs::has_vault(
+            &self.settings.read().expect("settings lock poisoned"),
+        ));
         self.overlay = Overlay::None;
     }
 }
@@ -271,23 +279,23 @@ impl PreferencesScreen {
                 self.model.select_theme(self.model.theme_idx);
                 let changed = self
                     .model
-                    .apply_appearance(&mut self.settings.write().unwrap());
+                    .apply_appearance(&mut self.settings.write().expect("settings lock poisoned"));
                 if changed {
                     self.theme = self.model.selected_theme().clone().adapt_to_terminal();
                 }
             }
             PreferencesSection::Display => self
                 .model
-                .apply_display(&mut self.settings.write().unwrap()),
+                .apply_display(&mut self.settings.write().expect("settings lock poisoned")),
             PreferencesSection::Sorting => self
                 .model
-                .apply_sorting(&mut self.settings.write().unwrap()),
-            PreferencesSection::Editor => {
-                self.model.apply_editor(&mut self.settings.write().unwrap())
-            }
-            PreferencesSection::Server => {
-                self.model.apply_server(&mut self.settings.write().unwrap())
-            }
+                .apply_sorting(&mut self.settings.write().expect("settings lock poisoned")),
+            PreferencesSection::Editor => self
+                .model
+                .apply_editor(&mut self.settings.write().expect("settings lock poisoned")),
+            PreferencesSection::Server => self
+                .model
+                .apply_server(&mut self.settings.write().expect("settings lock poisoned")),
             PreferencesSection::Workspaces | PreferencesSection::Indexing => {}
         }
     }
@@ -545,7 +553,9 @@ impl AppScreen for PreferencesScreen {
                     }
                     KeyCode::Enter => {
                         if *focused_button == ConfirmButton::Confirm {
-                            let target = prefs::reindex_target(&self.settings.read().unwrap());
+                            let target = prefs::reindex_target(
+                                &self.settings.read().expect("settings lock poisoned"),
+                            );
                             let Some((workspace, cache)) = target else {
                                 self.overlay = Overlay::None;
                                 return EventState::Consumed;
@@ -585,7 +595,8 @@ impl AppScreen for PreferencesScreen {
                             // the shared settings (theme preview, autosave,
                             // editor_backend) — roll them back so a later
                             // save_to_disk can't persist discarded choices.
-                            *self.settings.write().unwrap() = self.initial_settings.clone();
+                            *self.settings.write().expect("settings lock poisoned") =
+                                self.initial_settings.clone();
                             tx.send(AppMessage::ClosePreferences).ok();
                         }
                     }
@@ -628,7 +639,8 @@ impl AppScreen for PreferencesScreen {
         };
         match key.code {
             KeyCode::Esc => {
-                let changed = *self.settings.read().unwrap() != self.initial_settings;
+                let changed =
+                    *self.settings.read().expect("settings lock poisoned") != self.initial_settings;
                 if !changed {
                     tx.send(AppMessage::ClosePreferences).ok();
                 } else {
@@ -726,7 +738,7 @@ impl AppScreen for PreferencesScreen {
                                 && key.code == KeyCode::Enter
                             {
                                 let checked = prefs::check_new_workspace_name(
-                                    &self.settings.read().unwrap(),
+                                    &self.settings.read().expect("settings lock poisoned"),
                                     self.workspaces_section.input(),
                                 );
                                 match checked {
@@ -747,7 +759,7 @@ impl AppScreen for PreferencesScreen {
                             {
                                 let renamed = match pre_selected.as_deref() {
                                     Some(old_name) => prefs::rename_workspace(
-                                        &mut self.settings.write().unwrap(),
+                                        &mut self.settings.write().expect("settings lock poisoned"),
                                         old_name,
                                         self.workspaces_section.input(),
                                     ),
@@ -757,8 +769,9 @@ impl AppScreen for PreferencesScreen {
                                     Err(e) => self.workspaces_section.set_error(e.to_string()),
                                     Ok(_) => {
                                         self.workspaces_section.reset_mode();
-                                        self.workspaces_section
-                                            .refresh(&self.settings.read().unwrap());
+                                        self.workspaces_section.refresh(
+                                            &self.settings.read().expect("settings lock poisoned"),
+                                        );
                                     }
                                 }
                             }
@@ -773,7 +786,7 @@ impl AppScreen for PreferencesScreen {
                                     // after it is released, since a delete can
                                     // wait on a handle another process holds.
                                     let taken = prefs::take_workspace_for_delete(
-                                        &mut self.settings.write().unwrap(),
+                                        &mut self.settings.write().expect("settings lock poisoned"),
                                         name,
                                     );
                                     if let Ok((index, history)) = taken {
@@ -781,8 +794,9 @@ impl AppScreen for PreferencesScreen {
                                     }
                                 }
                                 self.workspaces_section.reset_mode();
-                                self.workspaces_section
-                                    .refresh(&self.settings.read().unwrap());
+                                self.workspaces_section.refresh(
+                                    &self.settings.read().expect("settings lock poisoned"),
+                                );
                             }
 
                             r
@@ -818,7 +832,7 @@ impl AppScreen for PreferencesScreen {
                 let starting_dir = self
                     .settings
                     .read()
-                    .unwrap()
+                    .expect("settings lock poisoned")
                     .resolve_workspace_path()
                     .or_else(|| kimun_core::system::browse_root().ok())
                     .map(|p| p.into_path_buf())
@@ -828,7 +842,8 @@ impl AppScreen for PreferencesScreen {
             AppMessage::TriggerFastReindex => {
                 // Fast reindex starts immediately (no confirmation overlay) — it is a
                 // low-cost incremental operation unlike full reindex.
-                let target = prefs::reindex_target(&self.settings.read().unwrap());
+                let target =
+                    prefs::reindex_target(&self.settings.read().expect("settings lock poisoned"));
                 let Some((workspace, cache)) = target else {
                     IndexOutcome::Failed("No workspace set".to_string()).send(tx);
                     return;
@@ -847,10 +862,17 @@ impl AppScreen for PreferencesScreen {
             }
             AppMessage::VaultIndexed(outcome) => match outcome {
                 IndexOutcome::Done(duration) => {
-                    self.settings.write().unwrap().report_indexed();
+                    self.settings
+                        .write()
+                        .expect("settings lock poisoned")
+                        .report_indexed();
                     if self.pending_save_after_index {
                         self.pending_save_after_index = false;
-                        self.settings.read().unwrap().save_to_disk().ok();
+                        self.settings
+                            .read()
+                            .expect("settings lock poisoned")
+                            .save_to_disk()
+                            .ok();
                         tx.send(AppMessage::PreferencesSaved).ok();
                     } else {
                         self.overlay =

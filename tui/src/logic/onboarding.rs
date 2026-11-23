@@ -459,7 +459,11 @@ pub fn commit(
     first_run: bool,
 ) -> Result<(), CommitError> {
     apply_draft(settings, draft, first_run)?;
-    if let Err(e) = settings.read().unwrap().save_to_disk() {
+    if let Err(e) = settings
+        .read()
+        .expect("settings lock poisoned")
+        .save_to_disk()
+    {
         tracing::error!("failed to save settings after onboarding: {e}");
     }
     Ok(())
@@ -496,7 +500,7 @@ pub fn apply_draft(
     } else {
         None
     };
-    let mut s = settings.write().unwrap();
+    let mut s = settings.write().expect("settings lock poisoned");
     if let Some((name, path, existed)) = workspace {
         let wc = s
             .workspace_config

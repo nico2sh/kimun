@@ -128,6 +128,48 @@ pub struct ImagePlaceholder {
     pub placeholder_width: usize,
 }
 
+/// Which visual line of a logical line is drawn or measured, and in which mode.
+///
+/// Wrapped lines draw as several visual lines. `start_col` is the logical
+/// column where this one begins, `is_first` marks the first visual line (only
+/// that one carries block markers such as a heading `#`), and `force_raw`
+/// draws the source text as written, as inside a code fence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisualSlice {
+    pub start_col: usize,
+    pub is_first: bool,
+    pub force_raw: bool,
+}
+
+#[cfg(test)]
+impl VisualSlice {
+    /// The first visual line, starting at column 0, drawn with markdown applied.
+    pub fn first() -> Self {
+        Self {
+            start_col: 0,
+            is_first: true,
+            force_raw: false,
+        }
+    }
+
+    /// A wrapped continuation line that starts at `start_col`.
+    pub fn continuation(start_col: usize) -> Self {
+        Self {
+            start_col,
+            is_first: false,
+            force_raw: false,
+        }
+    }
+
+    /// The same slice, drawn as raw source.
+    pub fn raw(self) -> Self {
+        Self {
+            force_raw: true,
+            ..self
+        }
+    }
+}
+
 /// Pre-parsed result for a single logical line.
 /// Build once per frame via `ParsedLine::parse`, then reuse across render, cursor,
 /// wrap-width, and click-mapping calls to avoid redundant pulldown-cmark invocations.

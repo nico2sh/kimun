@@ -40,18 +40,30 @@ pub struct DrawerHost {
     config: ConfigPanel,
 }
 
+/// The drawer views the caller builds itself. `DrawerHost` creates the rest.
+pub struct DrawerPanels {
+    pub sidebar: SidebarComponent,
+    pub query: QueryPanel,
+    pub semantic: SemanticPanel,
+    pub tags: TagsPanel,
+    pub links: LinksPanel,
+    pub outline: OutlinePanel,
+}
+
 impl DrawerHost {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vault: std::sync::Arc<NoteVault>,
         key_bindings: &crate::keys::KeyBindings,
-        sidebar: SidebarComponent,
-        query: QueryPanel,
-        semantic: SemanticPanel,
-        tags: TagsPanel,
-        links: LinksPanel,
-        outline: OutlinePanel,
+        panels: DrawerPanels,
     ) -> Self {
+        let DrawerPanels {
+            sidebar,
+            query,
+            semantic,
+            tags,
+            links,
+            outline,
+        } = panels;
         Self {
             active: DrawerView::Files,
             sidebar,
@@ -231,12 +243,14 @@ mod tests {
         DrawerHost::new(
             vault,
             &settings.key_bindings,
-            sidebar,
-            query,
-            semantic,
-            tags,
-            links,
-            outline,
+            DrawerPanels {
+                sidebar,
+                query,
+                semantic,
+                tags,
+                links,
+                outline,
+            },
         )
     }
 

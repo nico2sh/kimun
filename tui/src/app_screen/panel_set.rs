@@ -655,6 +655,7 @@ impl PanelSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::drawer::DrawerPanels;
     use crate::settings::AppSettings;
     use crate::test_support::{mouse_down_at, temp_vault};
     use ratatui::crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
@@ -699,12 +700,14 @@ mod tests {
         let drawer = DrawerHost::new(
             vault,
             &settings.key_bindings,
-            sidebar,
-            query,
-            semantic,
-            tags,
-            links,
-            outline,
+            DrawerPanels {
+                sidebar,
+                query,
+                semantic,
+                tags,
+                links,
+                outline,
+            },
         );
         PanelSet::from_panels(
             drawer,
