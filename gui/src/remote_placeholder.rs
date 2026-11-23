@@ -9,10 +9,6 @@
 //! passes the whole look as `rect` and its own row as `clip`. Each row then
 //! paints its slice, and only the buttons inside its clip count as hits.
 
-// The surfaces call this piece in the next steps of the remote images work.
-// Until then the release build does not use it.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use gpui_kit::{
     App, Bounds, ContentMask, Font, Pixels, Point, Rgba, SharedString, TextAlign, TextRun, Window,
     fill, point, px, size,

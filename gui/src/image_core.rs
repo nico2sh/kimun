@@ -132,8 +132,6 @@ pub(crate) enum ImageLook {
     /// A one-line note in the embed line: the image cannot be drawn.
     Note(String),
     /// A remote embed with no saved copy. It takes [`remote_rows`] rows.
-    // The surfaces paint it from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     Remote(RemoteLook),
 }
 
@@ -244,9 +242,6 @@ fn source_of<'a>(embed: &'a Embed, remote: &RemoteImages) -> Source<'a> {
 /// The file the image of `embed` is drawn from now: the vault file, or
 /// the saved copy of a remote embed. The file to pin and to ask a decode
 /// for. `None` for an unresolved embed and a remote embed with no copy.
-// The surfaces pin and decode a saved copy from the next step of the
-// remote images work.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn image_file(embed: &Embed, remote: &RemoteImages) -> Option<PathBuf> {
     match source_of(embed, remote) {
         Source::File(file) => file.map(Path::to_path_buf),

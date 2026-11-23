@@ -479,8 +479,6 @@ impl RemoteImages {
 
     /// Keeps a copy of the allowed hosts. The workspace calls it when the
     /// settings load and after each change of the list.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_allowed_hosts(&mut self, hosts: &[String]) {
         self.inner.borrow_mut().allowed = hosts.to_vec();
     }
@@ -532,8 +530,6 @@ impl RemoteImages {
     /// that is loading, it adds `on_done` and starts nothing. It forgets a
     /// failure of the session. It does nothing for a saved copy and for an
     /// address that is not `https`.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn load(
         &mut self,
         url: &str,
@@ -625,8 +621,6 @@ impl RemoteImages {
     /// host, and the hosts added before stay, so a chain through several
     /// hosts loads after one call for each. It does nothing when the
     /// redirect of `url` is not blocked.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn allow_redirect_once(&mut self, url: &str) {
         let key = key_of(url);
         let mut inner = self.inner.borrow_mut();
@@ -641,8 +635,6 @@ impl RemoteImages {
 
     /// Forgets the failure and the redirect permission of `url`, so it can
     /// load again.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn retry(&mut self, url: &str) {
         let key = key_of(url);
         let mut inner = self.inner.borrow_mut();
@@ -651,8 +643,6 @@ impl RemoteImages {
     }
 
     /// Removes the saved copy of `url` and loads it again.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn reload(
         &mut self,
         url: &str,
@@ -665,8 +655,6 @@ impl RemoteImages {
 
     /// Removes the saved copy of `url` and its session state. The address
     /// shows its placeholder again.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn clear_copy(&mut self, url: &str) {
         self.remove_copy(url);
         self.retry(url);
@@ -687,8 +675,6 @@ impl RemoteImages {
     /// of the session. The host check uses the host the store reads from the
     /// address. It starts nothing else. `on_done` runs once for each fetch
     /// that ends.
-    // Called by the surfaces from the next step of the remote images work.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn auto_load(
         &mut self,
         urls: &[(String, String)],
@@ -951,6 +937,17 @@ mod tests {
         RemoteState::Blocked {
             host: h.to_string(),
         }
+    }
+
+    /// The store the app makes on first use holds the cache in the app
+    /// folder, so a saved copy shows in production with no test seam.
+    #[test]
+    fn the_default_store_uses_the_cache_in_the_app_folder() {
+        let store = RemoteImages::default();
+        let inner = store.inner.borrow();
+        let cache = inner.cache.as_ref().expect("a cache");
+        let want = ImageCache::in_app_dir().expect("the app folder");
+        assert_eq!(cache.root(), want.root());
     }
 
     #[gpui_kit::test]

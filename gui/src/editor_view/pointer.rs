@@ -14,6 +14,7 @@ use kimun_notes::logic::editor::find_bar::BarFocus;
 use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerInput, PointerKind};
 use kimun_notes::logic::message::AppMessage;
 
+use super::remote::PlaceholderPress;
 use super::{EditorEvent, EditorView};
 use crate::grid::CellMetrics;
 use crate::input;
@@ -104,6 +105,20 @@ impl EditorView {
             self.read_only_press(pointer, left, window, cx);
             return;
         }
+        // A press on a remote placeholder's button runs it, and a right
+        // press on a placeholder opens nothing. Neither moves the caret.
+        let right = pointer.kind == PointerKind::Down(Button::Right);
+        if (left || right)
+            && let Some(press) = self.placeholder_press(event.position, left)
+        {
+            self.clicks.end();
+            self.dragging = false;
+            if let PlaceholderPress::Button(url, host, action) = press {
+                self.run_remote_action(url, host, action, cx);
+            }
+            self.settle(window, cx);
+            return;
+        }
         // A right press with no selection on a follow target asks for the
         // Link menu instead of the note menu. The caret stays: the target is
         // read from the cell, not from the caret. With a selection, or off
@@ -132,7 +147,7 @@ impl EditorView {
             self.feed_pointer(&pointer, true);
             // Stay armed even when it follows: the release must still reach
             // the editor to end the press `handle_pointer` started.
-            self.follow_at_caret();
+            self.follow_at_caret(cx);
             self.dragging = true;
             self.settle(window, cx);
             return;
@@ -145,7 +160,7 @@ impl EditorView {
             if self
                 .clicks
                 .completes_double(pointer.col, pointer.row, (self.clock)())
-                && self.follow_at_caret()
+                && self.follow_at_caret(cx)
             {
                 self.dragging = false;
                 self.settle(window, cx);
@@ -197,10 +212,15 @@ impl EditorView {
     /// (a link, a label). False when there is none. On an **Inline image**'s
     /// line it asks to open the file the image draws: a bare `![[name]]`
     /// finds it by the closest-file rule, which the link lookup does not
-    /// know.
-    fn follow_at_caret(&self) -> bool {
+    /// know. On a **Remote image**'s line it asks to open the address in
+    /// the browser.
+    fn follow_at_caret(&self, cx: &mut Context<Self>) -> bool {
         if let Some(path) = self.image_at_cursor() {
             self.tx.send(AppMessage::OpenAttachment(path)).ok();
+            return true;
+        }
+        if let Some(url) = self.remote_image_at_cursor() {
+            cx.emit(EditorEvent::OpenRemoteImage { url });
             return true;
         }
         let message = match self.editor.follow_target_at_cursor() {
