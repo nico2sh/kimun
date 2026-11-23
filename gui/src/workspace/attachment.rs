@@ -3,9 +3,16 @@
 //! header with the file's name, vault path, size, last change and type, an
 //! `Open externally` button (and the `FollowLink` chord while the view has
 //! the keyboard) that hands the file to the system's default program, and
-//! below it a scrollable preview of a text file, or a line saying there is
-//! none (binary files, images included: showing an image is a later
-//! feature).
+//! below it a scrollable preview of a text file, the image of a drawable
+//! image file, or a line saying there is none.
+//!
+//! **The image** (PNG, JPEG, GIF, WebP, SVG) is drawn with the shared image
+//! pieces (`inline_image`, `image_core`): at its natural size, scaled down
+//! only to fit the whole preview area, centered, never scrolled. The fit is
+//! a pure function of the area measured at paint, so a resize refits. An
+//! empty box of the fitted size shows until the pixels are decoded; the
+//! file is pinned while the view shows it. An image that cannot be drawn
+//! says why under "No preview".
 //!
 //! **Reading.** Core reads the file (`NoteVault::get_attachment_details`,
 //! capped: a large text file comes back as a prefix, flagged truncated) on
@@ -26,6 +33,7 @@
 //! The view never writes: renaming, moving or deleting the attachment is a
 //! FILES row's file operation, which the view follows (or leaves, deleted).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
@@ -39,10 +47,10 @@ use gpui_kit::component::empty::{
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
-    div, point, px, rems, uniform_list,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels,
+    Render, RenderImage, Rgba, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window, canvas, div, point, px, rems, size, uniform_list,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::{AttachmentContent, NoteVault};
@@ -52,10 +60,13 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::Panel;
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::message::FileOp;
+use kimun_notes::settings::themes::Theme;
 
 use super::Workspace;
 use super::files::ellipsis;
 use super::note::{Closing, LeavingFor, NoteLeft};
+use crate::image_core::paint_look;
+use crate::inline_image::{ImageState, ImageStore, Pins, can_draw, fit_to};
 use crate::input;
 use crate::tasks;
 use crate::theme;
@@ -66,6 +77,10 @@ pub(crate) const OPEN_EXTERNALLY_ID: &str = "attachment-open-externally";
 pub(crate) const PREVIEW_ID: &str = "attachment-preview";
 pub(crate) const TRUNCATED_ID: &str = "attachment-truncated";
 pub(crate) const NO_PREVIEW_ID: &str = "attachment-no-preview";
+pub(crate) const NO_PREVIEW_NOTE_ID: &str = "attachment-no-preview-note";
+pub(crate) const IMAGE_ID: &str = "attachment-image";
+/// What "No preview" says under it for a file that is not a drawable image.
+pub(crate) const NO_PREVIEW_NOTE: &str = "Open it externally to view it.";
 
 /// One preview line's height, in rems.
 const LINE_REMS: f32 = 1.375;
@@ -150,7 +165,10 @@ pub(crate) fn display_line(line: &str) -> SharedString {
 pub(crate) enum Preview {
     /// A text file's lines; `truncated` when core read only a prefix.
     Text { lines: Lines, truncated: bool },
-    /// Binary (images included): metadata only.
+    /// A drawable image (`inline_image::can_draw`): its real file, read
+    /// only when drawn.
+    Image { file: PathBuf },
+    /// Any other file: metadata only.
     None,
 }
 
@@ -178,7 +196,10 @@ pub(crate) async fn load(vault: &NoteVault, path: &VaultPath) -> Result<Loaded, 
         .get_attachment_details(path)
         .await
         .map_err(|e| e.to_string())?;
+    let file = vault.path_to_pathbuf(&details.path);
+    // An SVG reads as text, so the extension decides before the content.
     let preview = match details.content {
+        _ if can_draw(&file) => Preview::Image { file },
         AttachmentContent::Text { text, truncated } => Preview::Text {
             lines: Lines::of(text),
             truncated,
@@ -212,11 +233,39 @@ pub(crate) struct AttachmentView {
     pub(crate) scroll: UniformListScrollHandle,
     /// The `FollowLink` chord, for the hint beside the button.
     open_chord: Option<KeyInput>,
+    /// The image's pin, made at its first frame; it drops with the view.
+    pins: Option<Pins>,
+    /// The image as painted at the last frame (tests).
+    #[cfg(test)]
+    painted: std::rc::Rc<std::cell::RefCell<Option<PaintedImage>>>,
+}
+
+/// The image as painted (tests).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PaintedImage {
+    /// The preview area it is fitted and centered in.
+    pub(crate) area: Bounds<Pixels>,
+    /// Where it is drawn.
+    pub(crate) rect: Bounds<Pixels>,
+    /// Its pixels, not the empty box.
+    pub(crate) ready: bool,
+}
+
+/// Where an image of `fitted` device pixels is drawn centered in `area` at
+/// `scale` device pixels per logical one: pixel exact, its offset a whole
+/// number of device pixels.
+fn centered(area: Bounds<Pixels>, fitted: (f32, f32), scale: f32) -> Bounds<Pixels> {
+    let gap = |room: Pixels, used: f32| ((f32::from(room) * scale - used) / 2.0).floor().max(0.0);
+    let dx = gap(area.size.width, fitted.0) / scale;
+    let dy = gap(area.size.height, fitted.1) / scale;
+    Bounds::new(
+        point(area.origin.x + px(dx), area.origin.y + px(dy)),
+        size(px(fitted.0 / scale), px(fitted.1 / scale)),
+    )
 }
 
 impl EventEmitter<AttachmentEvent> for AttachmentView {}
-
-impl AttachmentView {}
 
 impl AttachmentView {
     pub(crate) fn new(
@@ -229,7 +278,16 @@ impl AttachmentView {
             focus: cx.focus_handle(),
             scroll: UniformListScrollHandle::new(),
             open_chord,
+            pins: None,
+            #[cfg(test)]
+            painted: Default::default(),
         }
+    }
+
+    /// The image as painted at the last frame, `None` when none was (tests).
+    #[cfg(test)]
+    pub(crate) fn painted_image(&self) -> Option<PaintedImage> {
+        *self.painted.borrow()
     }
 
     pub(crate) fn path(&self) -> &VaultPath {
@@ -348,7 +406,7 @@ impl AttachmentView {
             )
     }
 
-    fn render_preview(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_preview(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::current(cx);
         let t = &*theme;
         match &self.loaded.preview {
@@ -418,37 +476,131 @@ impl AttachmentView {
                     )
                     .into_any_element()
             }
-            Preview::None => div()
-                .id(NO_PREVIEW_ID)
-                .test_support()
-                .flex()
-                .flex_1()
-                .min_h_0()
-                .child(
-                    Empty::new()
-                        .border_0()
-                        .text_color(theme::foreground(t))
-                        .header(
-                            EmptyHeader::new()
-                                .media(
-                                    EmptyMedia::new()
-                                        .with_variant(EmptyMediaVariant::Icon)
-                                        .bg(theme::panel_background(t))
-                                        .child(
-                                            Icon::new(IconName::File).text_color(theme::muted(t)),
-                                        ),
-                                )
-                                .title(EmptyTitle::new().child("No preview"))
-                                .description(
-                                    EmptyDescription::new()
-                                        .text_color(theme::muted(t))
-                                        .child("Open it externally to view it."),
-                                ),
-                        ),
-                )
-                .into_any_element(),
+            Preview::Image { file } => {
+                let file = file.clone();
+                self.render_image(file, cx)
+            }
+            Preview::None => no_preview(NO_PREVIEW_NOTE.into(), theme::muted(t), t),
         }
     }
+}
+
+impl AttachmentView {
+    /// The image at `file`: its pixels or the empty box of its size, fitted
+    /// to the area at paint; or "No preview" with the reason it cannot be
+    /// drawn. While it is not decoded (first shown, or rewritten on disk)
+    /// its decode is asked for; the store starts one decode per file
+    /// version and a landed one is `Ready` or `Failed`, so this settles. A
+    /// landed decode only redraws.
+    fn render_image(&mut self, file: PathBuf, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(test)]
+        self.painted.borrow_mut().take();
+        let theme = theme::current(cx);
+        let t = &*theme;
+        let mut store = cx.default_global::<ImageStore>().clone();
+        if self.pins.is_none() {
+            let pins = store.pins();
+            pins.set(std::slice::from_ref(&file));
+            self.pins = Some(pins);
+        }
+        let state = store.size_of(&file);
+        if matches!(state, ImageState::Sized { .. }) {
+            let view = cx.weak_entity();
+            store.request(&file, cx, move |cx| {
+                view.update(cx, |_, cx| cx.notify()).ok();
+            });
+        }
+        let (image, natural) = match state {
+            ImageState::Ready(image, width, height) => (Some(image), (width, height)),
+            ImageState::Sized { width, height } => (None, (width, height)),
+            ImageState::Failed(failure) => {
+                let note = failure.note(&self.loaded.name, "");
+                return no_preview(note.into(), theme::image_note(t), t);
+            }
+        };
+        self.image_area(image, natural, theme::image_placeholder(t))
+    }
+
+    /// The preview area holding the image of `natural` device pixels,
+    /// fitted to the area and centered in it at paint.
+    fn image_area(
+        &self,
+        image: Option<Arc<RenderImage>>,
+        natural: (u32, u32),
+        placeholder: Rgba,
+    ) -> AnyElement {
+        #[cfg(test)]
+        let log = self.painted.clone();
+        let paint = canvas(
+            |_, _, _| {},
+            move |area, _, window, _| {
+                let scale = window.scale_factor();
+                let fitted = fit_to(
+                    natural,
+                    f32::from(area.size.width) * scale,
+                    f32::from(area.size.height) * scale,
+                );
+                let rect = centered(area, fitted, scale);
+                paint_look(window, rect, area, image.as_ref(), placeholder);
+                #[cfg(test)]
+                log.borrow_mut().replace(PaintedImage {
+                    area,
+                    rect,
+                    ready: image.is_some(),
+                });
+            },
+        )
+        .size_full();
+        div()
+            .id(IMAGE_ID)
+            .test_support()
+            .role(Role::Image)
+            .aria_label(self.loaded.name.clone())
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .px_4()
+            .py_2()
+            .child(paint)
+            .into_any_element()
+    }
+}
+
+/// "No preview", with `note` under it in `note_color`.
+fn no_preview(note: SharedString, note_color: Rgba, t: &Theme) -> AnyElement {
+    div()
+        .id(NO_PREVIEW_ID)
+        .test_support()
+        .aria_label("No preview")
+        .flex()
+        .flex_1()
+        .min_h_0()
+        .child(
+            Empty::new()
+                .border_0()
+                .text_color(theme::foreground(t))
+                .header(
+                    EmptyHeader::new()
+                        .media(
+                            EmptyMedia::new()
+                                .with_variant(EmptyMediaVariant::Icon)
+                                .bg(theme::panel_background(t))
+                                .child(Icon::new(IconName::File).text_color(theme::muted(t))),
+                        )
+                        .title(EmptyTitle::new().child("No preview"))
+                        .description(
+                            EmptyDescription::new().text_color(note_color).child(
+                                div()
+                                    .id(NO_PREVIEW_NOTE_ID)
+                                    .test_support()
+                                    .role(Role::Note)
+                                    .aria_label(note.clone())
+                                    .child(note),
+                            ),
+                        ),
+                ),
+        )
+        .into_any_element()
 }
 
 impl Focusable for AttachmentView {
