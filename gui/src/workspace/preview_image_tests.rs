@@ -8,6 +8,8 @@
 //! GPUI's `run_until_parked` (`start_tests::drive`).
 #![cfg(test)]
 
+use std::sync::Arc;
+
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, Entity, TestAppContext, px, size};
 use kimun_core::nfs::VaultPath;
@@ -489,4 +491,106 @@ fn a_height_change_keeps_the_top_line_in_view(cx: &mut TestAppContext) {
         line,
         "the same note line leads the pane"
     );
+}
+
+// ---- The attachment list a load waits for -------------------------------------
+
+/// A preview on its own over `v`'s vault (no window: nothing is drawn).
+fn lone_preview(v: &TestVault, cx: &mut TestAppContext) -> Entity<SearchPreview> {
+    let vault = v.vault.clone();
+    cx.update(|cx| cx.new(|cx| SearchPreview::new(vault, cx)))
+}
+
+/// Show `note` and let its debounce, its list and its read land.
+fn show_settled(
+    preview: &Entity<SearchPreview>,
+    note: &str,
+    rt: &Runtime,
+    cx: &mut TestAppContext,
+) {
+    preview.update(cx, |p, cx| {
+        p.show(Some(path(note)), Arc::from(Vec::new()), cx)
+    });
+    settle_lone(preview, rt, cx);
+}
+
+fn settle_lone(preview: &Entity<SearchPreview>, rt: &Runtime, cx: &mut TestAppContext) {
+    drive(rt, cx, |cx| {
+        cx.executor().advance_clock(PREVIEW_DEBOUNCE);
+        cx.run_until_parked();
+        cx.read(|cx| !preview.read(cx).is_pending())
+    });
+}
+
+fn walks(cx: &mut TestAppContext) -> usize {
+    cx.update(|cx| cx.default_global::<AttachmentIndex>().walks())
+}
+
+/// Two notes embedding `new.png`, which is not in the vault yet.
+const ONE: &str = "![a](new.png)\n";
+const TWO: &str = "![a](new.png)\nmore\n";
+
+#[gpui_kit::test]
+fn a_refreshed_list_is_walked_again_before_the_next_load(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("one.md", ONE), ("two.md", TWO)], &[]));
+    let preview = lone_preview(&v, cx);
+    show_settled(&preview, "one.md", &rt, cx);
+    assert_eq!(
+        cx.read(|cx| preview.read(cx).shown_kinds()),
+        vec![RowKind::Note { image: 0 }],
+        "not there yet"
+    );
+    assert_eq!(walks(cx), 1);
+
+    // Added from outside the app, then the window activates (a refresh).
+    rt.block_on(v.vault.save_attachment(&path("new.png"), &png(10, 40)))
+        .expect("the attachment is saved");
+    let vault = v.vault.clone();
+    cx.update(|cx| cx.default_global::<AttachmentIndex>().refresh(&vault));
+
+    show_settled(&preview, "two.md", &rt, cx);
+    let kinds = cx.read(|cx| preview.read(cx).shown_kinds());
+    assert_eq!(kinds[0], RowKind::Image { image: 0, index: 0 }, "{kinds:?}");
+    assert_eq!(*kinds.last().unwrap(), RowKind::Text);
+    assert!(!kinds.iter().any(|k| matches!(k, RowKind::Note { .. })));
+    assert_eq!(walks(cx), 2, "walked again after the refresh");
+}
+
+#[gpui_kit::test]
+fn a_selection_moved_while_the_list_is_awaited_reads_only_the_new_note(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("one.md", ONE), ("two.md", TWO)], &[]));
+    let preview = lone_preview(&v, cx);
+    preview.update(cx, |p, cx| {
+        p.show(Some(path("one.md")), Arc::from(Vec::new()), cx);
+        // Its debounce ends: it asks for the list, not listed yet.
+        p.debounce_ended(cx);
+        // The selection moves before the walk lands.
+        p.show(Some(path("two.md")), Arc::from(Vec::new()), cx);
+    });
+    settle_lone(&preview, &rt, cx);
+    let read = cx.read(|cx| preview.read(cx).read_paths.clone());
+    assert_eq!(read, vec![path("two.md")], "one.md's load never starts");
+    // one.md's late list does not start two.md early: two.md's own debounce
+    // ran out and asked for the list (two debounce ends in all).
+    assert_eq!(cx.read(|cx| preview.read(cx).reads), 2);
+    let shown = cx.read(|cx| preview.read(cx).shown());
+    assert!(shown.is_some_and(|(p, current)| p.is_like(&path("two.md")) && current));
+    assert_eq!(walks(cx), 1);
+}
+
+#[gpui_kit::test]
+fn a_fresh_list_serves_two_loads_with_one_walk(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("one.md", ONE), ("two.md", TWO)], &[]));
+    let preview = lone_preview(&v, cx);
+    show_settled(&preview, "one.md", &rt, cx);
+    show_settled(&preview, "two.md", &rt, cx);
+    let read = cx.read(|cx| preview.read(cx).read_paths.clone());
+    assert_eq!(read, vec![path("one.md"), path("two.md")]);
+    assert_eq!(walks(cx), 1, "no second walk");
 }
