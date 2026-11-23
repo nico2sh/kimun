@@ -213,7 +213,7 @@ pub fn markdown_attachment(dest: &str, from_note: &VaultPath) -> Option<VaultPat
 
 /// A markdown destination as a vault path, as written: `<…>` unwrapped, the
 /// `#fragment` cut. `None` for a URL, an empty or invalid path.
-fn markdown_path(dest: &str) -> Option<VaultPath> {
+pub(super) fn markdown_path(dest: &str) -> Option<VaultPath> {
     let dest = dest.trim();
     let dest = dest
         .strip_prefix('<')
@@ -228,7 +228,7 @@ fn markdown_path(dest: &str) -> Option<VaultPath> {
 
 /// `path` written in the note at `from_note`, resolved against that note's
 /// folder (an absolute `path` as is), canonical.
-fn resolve_in_folder_of(path: &VaultPath, from_note: &VaultPath) -> VaultPath {
+pub(super) fn resolve_in_folder_of(path: &VaultPath, from_note: &VaultPath) -> VaultPath {
     let (folder, _) = from_note.canonical().get_parent_path();
     folder.append(path).canonical()
 }
