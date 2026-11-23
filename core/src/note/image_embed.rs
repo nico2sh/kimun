@@ -97,11 +97,15 @@ pub fn resolve_image_embed(
     note: &VaultPath,
     attachments: &[VaultPath],
 ) -> Option<VaultPath> {
+    // Filtered by name first: the text changes on each keystroke, and only
+    // the few files of that name are worth a canonical copy.
     let written = markdown_path(&embed.target)?;
     if embed.exact {
         let path = resolve_in_folder_of(&written, note);
+        let name = path.get_name();
         return attachments
             .iter()
+            .filter(|candidate| candidate.name_is(&name))
             .map(VaultPath::canonical)
             .find(|candidate| *candidate == path);
     }
@@ -110,8 +114,8 @@ pub fn resolve_image_embed(
     let folder = folder.get_slices();
     attachments
         .iter()
+        .filter(|candidate| candidate.name_is(&name))
         .map(VaultPath::canonical)
-        .filter(|candidate| candidate.get_name() == name)
         .min_by_key(|candidate| {
             let (parent, _) = candidate.get_parent_path();
             (closeness(&folder, &parent.get_slices()), candidate.clone())

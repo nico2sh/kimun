@@ -191,8 +191,8 @@ pub struct EditorDisplay {
     gutter_insets: Vec<usize>,
     /// Per-logical-row count of blank pad lines the layout reserves under the
     /// row, for a frontend to paint an inline image over. Empty (no pads
-    /// anywhere) unless a frontend hands counts in through
-    /// [`Self::set_image_reserves`]; the TUI never does.
+    /// anywhere) unless a frontend hands image lines in through
+    /// [`Self::set_image_lines`]; the TUI never does.
     image_reserves: Vec<usize>,
     /// Per-logical-row image height in lines for an inline image's embed
     /// row, `None` on every other row. Empty unless a frontend hands lines in
@@ -677,8 +677,9 @@ impl EditorDisplay {
     /// so an empty list removes every pad. Sticky across frames, in the current
     /// text's row numbering: call it after each `update`, before drawing.
     ///
-    /// Only rows whose pads changed are laid out again. The TUI never calls
-    /// this, so its layout never holds a pad line.
+    /// Only rows whose pads changed are laid out again. Tests only: a
+    /// frontend hands image lines in through [`Self::set_image_lines`].
+    #[cfg(test)]
     pub fn set_image_reserves(&mut self, reserves: Vec<(usize, usize)>) {
         let mut dense = vec![0; self.layout.row_count()];
         for (row, pads) in reserves {
