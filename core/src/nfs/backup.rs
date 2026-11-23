@@ -28,7 +28,7 @@ async fn purge_old_backups(backups_root: &Path) {
     // the dir not existing yet, or a read error) is retried on the next backup.
     if LAST_PURGE
         .lock()
-        .unwrap()
+        .expect("last purge lock poisoned")
         .as_ref()
         .is_some_and(|(root, day)| root == backups_root && *day == today)
     {
@@ -47,7 +47,8 @@ async fn purge_old_backups(backups_root: &Path) {
             }
         }
     }
-    *LAST_PURGE.lock().unwrap() = Some((backups_root.to_path_buf(), today));
+    *LAST_PURGE.lock().expect("last purge lock poisoned") =
+        Some((backups_root.to_path_buf(), today));
 }
 
 /// Atomically reserves a free backup destination: tries the mirrored name first,
