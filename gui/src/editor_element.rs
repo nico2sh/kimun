@@ -578,12 +578,20 @@ impl Element for EditorElement {
             let rows = pane_rows - chrome - bar_rows;
             let mut draws = Vec::new();
             if view.sized_to_text {
+                // A read-only chunk's images, from its own source.
+                let pane = view.read_only_pane(cols, cells.width(), f32::from(line_height), scale);
                 // When the measure prepared this frame at these columns, with
                 // a viewport that shows every row, nothing is left to do. The
                 // guard assumes no edit since the measure: see
                 // `measured_this_frame`.
                 if !view.measured_this_frame(cols) {
+                    if let Some(pane) = pane {
+                        view.prepare_images(pane, view_cx);
+                    }
                     view.prepare_counted(cols, rows, self.view.entity_id());
+                }
+                if let Some(pane) = pane {
+                    draws = view.image_draws(pane, view_cx);
                 }
             } else {
                 // Device pixels, the unit an image's natural size is in.

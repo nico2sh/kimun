@@ -66,6 +66,9 @@ impl FacetView {
                 }
             }
         }
+        // A new chunk, or one now from another note, draws its images from
+        // its own note.
+        self.sync_image_sources(cx);
         self.close_list_if_gone(cx);
         // A plan can change the picks, the summary and the counts. The bar
         // eases to its new height only when what it draws changed.

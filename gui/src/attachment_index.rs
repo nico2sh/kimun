@@ -86,7 +86,6 @@ impl Inner {
 impl AttachmentIndex {
     /// The list as last found, sorted; `None` before the first one lands.
     /// After `refresh` it is still the old list until the new one lands.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the read-only views"))]
     pub(crate) fn get(&self, vault: &Arc<NoteVault>) -> Option<Arc<Vec<VaultPath>>> {
         self.inner
             .borrow()
@@ -101,7 +100,6 @@ impl AttachmentIndex {
     /// otherwise when the walk lands. Requests made while a walk is in
     /// flight share it and all their callbacks run. A callback should hold a
     /// `WeakEntity`: it runs even when its requester is gone.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by the read-only views"))]
     pub(crate) fn request(
         &mut self,
         vault: &Arc<NoteVault>,

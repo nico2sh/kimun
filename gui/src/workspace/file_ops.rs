@@ -625,6 +625,7 @@ impl Workspace {
                 .editor
                 .update(cx, |view, cx| view.set_image_vault(Some(vault), cx));
         }
+        self.relist_shared_images(cx);
     }
 
     /// The window became active again. The app watches no files, so what
@@ -635,12 +636,23 @@ impl Workspace {
         for state in self.groups.values() {
             state.editor.update(cx, |view, cx| view.refresh_images(cx));
         }
-        // The shared attachment list of the read-only views, too.
+        self.relist_shared_images(cx);
+    }
+
+    /// The shared attachment list of the read-only views is listed again,
+    /// and each facet view's chunks ask for it and for their images on
+    /// screen again.
+    fn relist_shared_images(&mut self, cx: &mut Context<Self>) {
         if let Some(vault) = self.vault()
             && cx.has_global::<crate::attachment_index::AttachmentIndex>()
         {
             cx.global_mut::<crate::attachment_index::AttachmentIndex>()
                 .refresh(&vault);
+        }
+        for state in self.groups.values() {
+            if let Some(facet) = &state.facet {
+                facet.update(cx, |view, cx| view.refresh_images(cx));
+            }
         }
     }
 

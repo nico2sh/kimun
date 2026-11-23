@@ -65,6 +65,13 @@ impl EditorView {
         let cols = cells.col_at(width.into()).max(1);
         #[cfg(test)]
         probe::width(cx.entity_id(), width);
+        // A chunk's images take lines: they are laid out before the rows
+        // are counted.
+        let line_px = f32::from(line_height(font_size));
+        if let Some(pane) = self.read_only_pane(cols, cells.width(), line_px, window.scale_factor())
+        {
+            self.prepare_images(pane, cx);
+        }
         // The height only sets the viewport. It does not change the wrap.
         self.prepare_counted(cols, u16::MAX, cx.entity_id());
         self.measured_cols = Some(cols);

@@ -208,7 +208,12 @@ impl Workspace {
         let asked = picks.clone();
         let members = member_inits(&mut load);
         let total = load.total;
-        let view = cx.new(|cx| FacetView::new_collection(query, members, total, picks, cx));
+        let vault = self.group_vault(group);
+        let view = cx.new(|cx| {
+            let mut view = FacetView::new_collection(query, members, total, picks, cx);
+            view.set_image_vault(vault, cx);
+            view
+        });
         let events = cx.subscribe(&view, Self::on_facet_event);
         // The view drops picks no member holds without an event.
         let pruned = view.read(cx).picks() != asked.as_slice();

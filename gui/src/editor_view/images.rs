@@ -6,14 +6,23 @@
 //! image on screen draws (its pixels, an empty box while they decode, or a
 //! failed image's note); the editor element paints it.
 //!
-//! Only an editor that edits draws images, once its owner hands it the vault
-//! ([`EditorView::set_image_vault`]); a read-only editor (a facet view's
-//! piece) never does. The vault's attachment list is walked off the main
+//! An editor that edits draws images once its owner hands it the vault
+//! ([`EditorView::set_image_vault`]). A read-only editor (a facet view's
+//! chunk) ignores that, and draws them only from a read-only source
+//! ([`EditorView::set_image_source`]): the note that resolves its bare
+//! names, which need not be the session's, and the height of the pane it
+//! scrolls in. Its display reveals no caret row, so every embed line shows
+//! only its image or its note, and a read-only editor opens no image menu
+//! and follows no image.
+//!
+//! An editor that edits walks the vault's attachment list off the main
 //! thread, once per note shown and again each time the window becomes
 //! active ([`EditorView::refresh_images`]: the app has no file watcher), and
-//! kept. Each frame checks a key (the text
-//! revision, the note, the pane, the images' states) and finds the embeds
-//! again only when it changed. The cursor row is the display's concern.
+//! keeps it. A read-only source takes the vault's shared list
+//! ([`AttachmentIndex`]), so fifty chunks walk the vault once. Each frame
+//! checks a key (the text revision, the note, the pane, the images' states)
+//! and finds the embeds again only when it changed. The cursor row is the
+//! display's concern.
 //!
 //! Pixels are decoded only for the images on screen, each time the set of
 //! images on screen changes (a note opens, a scroll or a resize brings one
@@ -35,6 +44,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
+use crate::attachment_index::AttachmentIndex;
 use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, natural_of};
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 
@@ -73,9 +83,27 @@ struct Key {
     epoch: u64,
 }
 
+/// At most this many embeds of a read-only editor are drawn; later ones
+/// stay text. Each one reads its file's header.
+const READ_ONLY_EMBEDS: usize = 100;
+
+/// Where a read-only editor's images come from
+/// ([`EditorView::set_image_source`]).
+#[derive(Clone, Debug, PartialEq)]
+struct ReadOnlySource {
+    /// The note that resolves bare names, in place of the session's.
+    note: Option<VaultPath>,
+    /// The height of the pane the editor scrolls in, in device pixels: an
+    /// image takes at most 60% of it.
+    viewport_px: f32,
+}
+
 /// The vault an editor draws images from, and what it knows of it.
 pub(super) struct Images {
     vault: Arc<NoteVault>,
+    /// Set for a read-only editor: its note and pane, and the attachments
+    /// come from the shared list.
+    source: Option<ReadOnlySource>,
     /// The vault's attachments, once listed.
     attachments: Option<Arc<Vec<VaultPath>>>,
     /// The note the last listing was started for: another note lists again.
@@ -103,6 +131,7 @@ impl Images {
     fn new(vault: Arc<NoteVault>, attachments: Option<Arc<Vec<VaultPath>>>) -> Self {
         Self {
             vault,
+            source: None,
             attachments,
             listed_for: None,
             _listing: None,
@@ -155,10 +184,81 @@ impl EditorView {
         cx.notify();
     }
 
+    /// Draw inline images in a read-only editor from `vault`, resolving bare
+    /// names from `note` and fitting each image to 60% of `viewport_px`
+    /// (the height, in device pixels, of the pane the editor scrolls in).
+    /// `None` turns every image line back into text. The attachments come
+    /// from the vault's shared list. An editor that edits ignores it: its
+    /// door is [`Self::set_image_vault`].
+    pub(crate) fn set_image_source(
+        &mut self,
+        note: Option<VaultPath>,
+        vault: Option<Arc<NoteVault>>,
+        viewport_px: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.read_only {
+            return;
+        }
+        let source = ReadOnlySource { note, viewport_px };
+        let Some(vault) = vault else {
+            if self.images.take().is_some() {
+                self.editor.session_mut().set_image_lines(Vec::new());
+                cx.notify();
+            }
+            return;
+        };
+        if let Some(images) = self.images.as_mut()
+            && Arc::ptr_eq(&images.vault, &vault)
+        {
+            if images.source.as_ref() == Some(&source) {
+                return;
+            }
+            // Another note or pane: the lines are found again (the key
+            // holds both). The list is the vault's, so it stays.
+            images.source = Some(source);
+            cx.notify();
+            return;
+        }
+        let attachments = cx.default_global::<AttachmentIndex>().get(&vault);
+        let mut images = Images::new(vault, attachments);
+        images.source = Some(source);
+        self.images = Some(images);
+        cx.notify();
+    }
+
+    /// The room a read-only source fits its images to, for text laid out
+    /// at `cols` cells `cell_px` wide in lines `line_px` tall (logical
+    /// pixels), at `scale` device pixels per logical one. `None` when the
+    /// editor draws no images from one.
+    pub(crate) fn read_only_pane(
+        &self,
+        cols: u16,
+        cell_px: f32,
+        line_px: f32,
+        scale: f32,
+    ) -> Option<ImagePane> {
+        let source = self.images.as_ref()?.source.as_ref()?;
+        Some(ImagePane {
+            column_px: f32::from(cols) * cell_px * scale,
+            pane_px: source.viewport_px,
+            row_px: line_px * scale,
+        })
+    }
+
     /// How many times this editor found its image lines (tests).
     #[cfg(test)]
     pub(crate) fn image_finds(&self) -> usize {
         self.images.as_ref().map_or(0, |images| images.finds)
+    }
+
+    /// The image files on screen at the last frame, which this editor pins
+    /// (tests).
+    #[cfg(test)]
+    pub(crate) fn shown_image_files(&self) -> Vec<PathBuf> {
+        self.images
+            .as_ref()
+            .map_or_else(Vec::new, |images| images.visible.clone())
     }
 
     /// Open `menu` on a right press on a drawn image from now on; `None`
@@ -183,8 +283,12 @@ impl EditorView {
     /// The attachment the image on the caret's line draws, when that line
     /// is an image line whose file was found. A follow from there opens
     /// that file: a bare `![[name]]` takes the closest-file rule, which the
-    /// link lookup does not know.
+    /// link lookup does not know. `None` in a read-only editor: an image
+    /// there follows nothing.
     pub(crate) fn image_at_cursor(&self) -> Option<VaultPath> {
+        if self.read_only {
+            return None;
+        }
         let row = self.editor.cursor().0;
         self.images
             .as_ref()?
@@ -198,13 +302,22 @@ impl EditorView {
     /// Before a frame: hand the session the image lines of the text as it is
     /// now, sized for `pane`. Finds them again only when something they
     /// depend on changed. Starts the attachment listing for a note not
-    /// listed yet, and the decode of an image first seen.
+    /// listed yet (a read-only source asks for the shared list once), and
+    /// the decode of an image first seen.
     pub(crate) fn prepare_images(&mut self, pane: ImagePane, cx: &mut Context<Self>) {
         let Some(images) = self.images.as_mut() else {
             return;
         };
-        let note = self.editor.session().note.clone();
-        if note.is_some() && images.listed_for != note {
+        let note = match &images.source {
+            Some(source) => source.note.clone(),
+            None => self.editor.session().note.clone(),
+        };
+        if images.source.is_some() {
+            if images.listed_for.is_none() && note.is_some() {
+                images.listed_for = note.clone();
+                ask_shared_list(&images.vault, cx);
+            }
+        } else if note.is_some() && images.listed_for != note {
             images.listed_for = note.clone();
             let vault = images.vault.clone();
             let listing = cx.background_spawn(async move {
@@ -233,7 +346,13 @@ impl EditorView {
             pane,
             epoch: images.epoch,
         };
-        if images.key.as_ref() == Some(&key) {
+        // A text that embeds nothing embeds nothing in another pane either:
+        // a resize costs it nothing.
+        let pane_only = images.key.as_ref().is_some_and(|old| {
+            old.revision == key.revision && old.note == key.note && old.epoch == key.epoch
+        });
+        if images.key.as_ref() == Some(&key) || (pane_only && images.embeds.is_empty()) {
+            images.key = Some(key);
             return;
         }
         images.key = Some(key);
@@ -241,13 +360,14 @@ impl EditorView {
         {
             images.finds += 1;
         }
+        let limit = images.source.as_ref().map(|_| READ_ONLY_EMBEDS);
         images.embeds = match (&note, &images.attachments) {
             (Some(note), Some(attachments)) => embeds_of(
                 &self.editor.get_text(),
                 note,
                 attachments,
                 &images.vault,
-                None,
+                limit,
             ),
             // Until the attachments are listed no embed resolves: the lines
             // stay text rather than flash "not found".
@@ -362,6 +482,41 @@ impl EditorView {
             images.visible = visible;
         }
         draws
+    }
+}
+
+/// Ask for the vault's shared attachment list. When it is there, the
+/// editor takes it and finds its lines again if it is new to it.
+fn ask_shared_list(vault: &Arc<NoteVault>, cx: &mut Context<EditorView>) {
+    let mut index = cx.default_global::<AttachmentIndex>().clone();
+    let view = cx.weak_entity();
+    let shared = index.clone();
+    let weak = Arc::downgrade(vault);
+    index.request(vault, cx, move |cx| {
+        let Some(vault) = weak.upgrade() else {
+            return;
+        };
+        let list = shared.get(&vault);
+        let _ = view.update(cx, |view, cx| {
+            if let Some(images) = view.images.as_mut()
+                && Arc::ptr_eq(&images.vault, &vault)
+                && !same_list(images.attachments.as_ref(), list.as_ref())
+            {
+                images.attachments = list;
+                images.epoch += 1;
+                cx.notify();
+            }
+        });
+    });
+}
+
+/// Whether two lists are the same shared list (every chunk holds the one
+/// the index gave out, so no element is compared).
+fn same_list(a: Option<&Arc<Vec<VaultPath>>>, b: Option<&Arc<Vec<VaultPath>>>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        (None, None) => true,
+        _ => false,
     }
 }
 
