@@ -29,16 +29,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::menu::PopupMenu;
-use gpui_kit::{
-    App, AppContext as _, Context, RenderImage, SharedString, Task, WeakEntity, Window,
-};
+use gpui_kit::{App, AppContext as _, Context, SharedString, Task, WeakEntity, Window};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
-use kimun_core::note::scan::link_target_filename;
-use kimun_core::note::{ImageEmbed, image_embeds, resolve_image_embed};
 use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
+use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, natural_of};
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 
 /// Fills a kit menu with the **Entry menu** of the attachment at a path:
@@ -46,52 +43,6 @@ use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 /// it, since the menu's picks are the owner's to run.
 pub(crate) type EntryMenu =
     Rc<dyn Fn(PopupMenu, VaultPath, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
-
-/// The room an image is fitted to, in device pixels (the unit of
-/// [`fit`]): the text column's width, the pane's height (`fit` takes 60% of
-/// it) and one line's height.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ImagePane {
-    pub(crate) column_px: f32,
-    pub(crate) pane_px: f32,
-    pub(crate) row_px: f32,
-}
-
-/// One embed line, as found with the lines: what it draws and how it is
-/// named.
-#[derive(Clone, Debug)]
-struct Embed {
-    row: usize,
-    /// The attachment it resolved to, and its file.
-    found: Option<VaultPath>,
-    file: Option<PathBuf>,
-    /// The file name as written (the embed target's last part).
-    name: String,
-    /// The alt text of `![alt](path)`; empty for `![[name]]`.
-    alt: String,
-}
-
-impl Embed {
-    fn of(embed: &ImageEmbed, found: Option<VaultPath>, file: Option<PathBuf>) -> Self {
-        let target = embed.target.trim_start_matches('<').trim_end_matches('>');
-        Self {
-            row: embed.row,
-            found,
-            file,
-            name: link_target_filename(target).to_string(),
-            alt: embed.alt.clone(),
-        }
-    }
-
-    /// The hover text: the alt text, or the file name without one.
-    fn tip(&self) -> SharedString {
-        if self.alt.is_empty() {
-            self.name.clone().into()
-        } else {
-            self.alt.clone().into()
-        }
-    }
-}
 
 /// What one image on screen draws, in the lines the display gave it.
 #[derive(Clone)]
@@ -108,18 +59,6 @@ pub(crate) struct ImageDraw {
     /// The attachment it draws: a right-click on it opens its **Entry
     /// menu**. `None` for a failed image's note.
     pub(crate) path: Option<VaultPath>,
-}
-
-/// How an image on screen looks.
-#[derive(Clone)]
-pub(crate) enum ImageLook {
-    /// Its pixels, at the fitted size (device pixels).
-    Ready(Arc<RenderImage>, (f32, f32)),
-    /// An empty box of the fitted size: the pixels are not decoded (yet, or
-    /// any more).
-    Pending((f32, f32)),
-    /// A one-line note in the embed line: the image cannot be drawn.
-    Note(String),
 }
 
 /// What a set of image lines was found for. The same key again finds the
@@ -303,9 +242,13 @@ impl EditorView {
             images.finds += 1;
         }
         images.embeds = match (&note, &images.attachments) {
-            (Some(note), Some(attachments)) => {
-                embeds(&self.editor.get_text(), note, attachments, &images.vault)
-            }
+            (Some(note), Some(attachments)) => embeds_of(
+                &self.editor.get_text(),
+                note,
+                attachments,
+                &images.vault,
+                None,
+            ),
             // Until the attachments are listed no embed resolves: the lines
             // stay text rather than flash "not found".
             _ => Vec::new(),
@@ -439,28 +382,6 @@ fn on_decoded(view: WeakEntity<EditorView>, file: PathBuf) -> impl FnOnce(&mut A
     }
 }
 
-/// The whole-line embeds of `text`, the note at `note`, each resolved
-/// against `attachments`.
-fn embeds(
-    text: &str,
-    note: &VaultPath,
-    attachments: &[VaultPath],
-    vault: &NoteVault,
-) -> Vec<Embed> {
-    // Most notes embed nothing: skip the scan.
-    if !text.contains("![") {
-        return Vec::new();
-    }
-    image_embeds(text)
-        .iter()
-        .map(|embed| {
-            let found = resolve_image_embed(embed, note, attachments);
-            let file = found.as_ref().map(|found| vault.path_to_pathbuf(found));
-            Embed::of(embed, found, file)
-        })
-        .collect()
-}
-
 /// The image line of each embed, sized from its file's header. Nothing is
 /// decoded here: [`EditorView::image_draws`] asks for the images on screen.
 fn image_lines(embeds: &[Embed], pane: ImagePane, cx: &mut App) -> Vec<ImageLine> {
@@ -468,14 +389,7 @@ fn image_lines(embeds: &[Embed], pane: ImagePane, cx: &mut App) -> Vec<ImageLine
     embeds
         .iter()
         .map(|embed| {
-            let natural = match embed.file.as_ref().map(|file| store.size_of(file)) {
-                Some(ImageState::Sized { width, height } | ImageState::Ready(_, width, height)) => {
-                    Some((width, height))
-                }
-                // Missing, unsupported, undecodable, too large: no room,
-                // the note takes the embed line.
-                Some(ImageState::Failed(_)) | None => None,
-            };
+            let natural = natural_of(embed, &mut store);
             let rows = natural.map_or(0, |natural| {
                 let (_, height) = fit(natural, pane.column_px, pane.pane_px);
                 rows_for(height, pane.row_px)

@@ -36,7 +36,7 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::menu::ContextMenuExt as _;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, Corners, CursorStyle, Element, ElementId,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
     InteractiveElement as _, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, RenderImage, Rgba, Role, ScrollEvent, ShapedLine, SharedString,
@@ -54,6 +54,7 @@ use crate::editor_view::{
 use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
+use crate::image_core::paint_look;
 use crate::row_cache::RowCache;
 use crate::row_paint::{RowPaint, cells_of, cluster_at};
 use crate::theme::{self, CellStyle};
@@ -1034,25 +1035,13 @@ impl Element for EditorElement {
                 paint_line(placed, window, cx);
             }
             for image in &prepaint.images {
-                match &image.image {
-                    // A frame the GPU cannot take is skipped, not fatal.
-                    Some(pixels) => {
-                        let _ = window.paint_image(
-                            image.clip,
-                            image.rect,
-                            Corners::default(),
-                            pixels.clone(),
-                            0,
-                            false,
-                        );
-                    }
-                    None => {
-                        window.paint_quad(fill(
-                            image.rect.intersect(&image.clip),
-                            prepaint.placeholder,
-                        ));
-                    }
-                }
+                paint_look(
+                    window,
+                    image.rect,
+                    image.clip,
+                    image.image.as_ref(),
+                    prepaint.placeholder,
+                );
             }
             if let Some((covered, backing, line)) = &prepaint.preedit {
                 window.paint_quad(fill(*covered, *backing));
