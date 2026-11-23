@@ -1831,8 +1831,14 @@ impl EditorDisplay {
             && !self.layout.visual_lines().is_empty()
         {
             let cursor_vrow = self.cursor_vrow;
-            if cursor_vrow >= scroll && cursor_vrow < scroll + height {
-                let vl = &self.layout.visual_lines()[cursor_vrow];
+            // `get`, not an index: a cached row that outlived a layout change
+            // must hide the caret for a frame, not panic.
+            if let Some(vl) = self
+                .layout
+                .visual_lines()
+                .get(cursor_vrow)
+                .filter(|_| cursor_vrow >= scroll && cursor_vrow < scroll + height)
+            {
                 let parsed = &self.parse_state.buf().lines[cursor.0];
                 let row_text = text.line(cursor.0).unwrap_or_default();
                 let logical_line = row_text.as_ref();
@@ -1958,6 +1964,7 @@ impl EditorDisplay {
                 .filter(|h| !h.hidden)
                 .map_or(0, |h| h.reserve)
         };
+        let mut changed = false;
         let mut row = 0;
         while row < rows {
             if laid[row] == wanted(row) {
@@ -1972,9 +1979,23 @@ impl EditorDisplay {
             let below = self.layout.row_start(row);
             let before = self.layout.visual_line_count();
             self.layout.relayout_rows(text, &hints, start..row, 0);
+            changed = true;
             let delta = self.layout.visual_line_count() as isize - before as isize;
             if delta != 0 && below.is_some_and(|start| top >= start) {
                 self.viewport.scroll_by(&self.layout, delta);
+            }
+        }
+        if changed {
+            // The caret's visual row was cached by `update` against the
+            // layout before the pads changed: find it again, as `update`
+            // does, and keep it on screen.
+            let (row, col) = self.cursor_snapshot;
+            self.cursor_vrow = text
+                .position(row, Column::new(col))
+                .map(|at| self.layout.visual_row_of(at))
+                .unwrap_or(self.cursor_vrow);
+            if !self.detached {
+                self.viewport.follow_row(self.cursor_vrow);
             }
         }
     }
@@ -4899,5 +4920,38 @@ mod image_reserve_tests {
         };
         assert_eq!((pads(10), pads(20)), (2, 3));
         assert_eq!(v.layout.visual_lines(), fresh_layout(&v).visual_lines());
+    }
+
+    #[test]
+    fn pads_shrinking_above_the_caret_keep_the_caret_on_its_line() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        v.set_image_reserves(vec![(1, 3)]);
+        // The next frame's update caches the caret against the padded layout.
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        assert_eq!(v.cursor_vrow, 5);
+        v.set_image_reserves(Vec::new());
+        assert_eq!(v.cursor_vrow, 2);
+        let frame = v.frame(40, true);
+        assert_eq!(frame.cursor, Some((0, 2)), "the caret on `after`'s line");
+    }
+
+    #[test]
+    fn pads_growing_above_the_caret_move_the_caret_with_its_row() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 3), rect(10), 1, None);
+        assert_eq!(v.cursor_vrow, 2);
+        v.set_image_reserves(vec![(1, 3)]);
+        assert_eq!(v.cursor_vrow, 5, "row 2's visual line, after the pads");
+        assert!(!v.layout.visual_lines()[v.cursor_vrow].pad);
+        assert_eq!(v.frame(40, true).cursor, Some((3, 5)));
+    }
+
+    #[test]
+    fn a_stale_caret_row_past_the_layout_draws_no_caret() {
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (2, 0), rect(10), 1, None);
+        v.cursor_vrow = 9;
+        assert_eq!(v.frame(40, true).cursor, None);
     }
 }
