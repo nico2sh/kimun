@@ -76,9 +76,9 @@ pub(crate) const LONE_GROUP_HOVER: &str = "lone-group";
 pub(crate) const CORNER_DIM_OPACITY: f32 = 0.35;
 /// The room, in rems, a lone group's facet view keeps clear at its bar's
 /// right end for the corner buttons: their inset from the document's right
-/// edge (1), the facet button (1.5), the note-menu button (1) and a gap
-/// (0.5).
-pub(crate) const CORNER_ROOM_REMS: f32 = 4.0;
+/// edge (1), the facet button (1.5), the note-menu button (1), the surface
+/// padding (0.125 each side) and a gap (0.5).
+pub(crate) const CORNER_ROOM_REMS: f32 = 4.25;
 /// The target marker's id prefix.
 pub(crate) const GROUP_TARGET_ID: &str = "group-target";
 /// Every glyph a header draws, for the bundle test: an icon the asset
@@ -252,6 +252,7 @@ impl Workspace {
         group: GroupId,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let surface = theme::background(&theme::current(cx));
         div()
             .id("group-menu-corner-wrap")
             .absolute()
@@ -261,6 +262,15 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
+            // One opaque surface under both buttons, in the editor's own
+            // background, so text that runs up under them stays readable.
+            .p_0p5()
+            .rounded_md()
+            .bg(surface)
+            // The surface hides the editor under it, so it also takes the
+            // pointer: an arrow, not the editor's text cursor.
+            .occlude()
+            .cursor_default()
             .children(self.facet_or_refresh(CORNER_FACET_ID, CORNER_REFRESH_ID, group, cx))
             .child(
                 div()

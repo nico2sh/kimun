@@ -100,6 +100,15 @@ impl EditorView {
             });
             return;
         }
+        if left
+            && pointer.mods == Mods::NONE
+            && let Some((row, line)) = self.editor.task_marker_at_screen(pointer.row, pointer.col)
+        {
+            // A task's checkbox: a click toggles it, and the owner decides.
+            self.clicks.end();
+            cx.emit(EditorEvent::TaskToggle { row, line });
+            return;
+        }
         if left {
             let now = (self.clock)();
             let after_follow = self
