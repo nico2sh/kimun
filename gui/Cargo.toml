@@ -24,10 +24,13 @@ toml = { workspace = true }
 tracing = "0.1"
 unicode-segmentation = "1"
 
-# The X11 window icon (`WindowOptions::icon`, an `image::RgbaImage`): GPUI's
-# own `image` major, PNG decoding only.
-[target.'cfg(target_os = "linux")'.dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Inline images (`inline_image`): header sizes for raster files, plus the
+# X11 window icon (`WindowOptions::icon`, an `image::RgbaImage`). GPUI's own
+# `image` major; the formats GPUI decodes for an embed.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# The natural size of an SVG without rendering it. Already in the tree through
+# GPUI, same pinned minor.
+usvg = "0.46"
 
 # The Windows exe's icon and version resource (see build.rs). A build script's
 # `cfg` tests the host, so the dependency is unconditional and build.rs checks

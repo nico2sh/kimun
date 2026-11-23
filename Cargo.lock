@@ -4947,6 +4947,7 @@ dependencies = [
  "toml 1.2.2+spec-1.1.0",
  "tracing",
  "unicode-segmentation",
+ "usvg 0.46.0",
  "winresource",
 ]
 
