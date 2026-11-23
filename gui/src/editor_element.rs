@@ -18,21 +18,32 @@
 //! The pointer is the I-beam over the text and the pointing hand over every
 //! follow target, in a read-only editor as in one that edits, with or
 //! without a modifier held.
+//!
+//! An editor that edits paints its **Inline image**s over the lines the
+//! display reserved for them ([`EditorView::image_draws`]): the pixels at
+//! their fitted size, one image pixel to one device pixel, or an empty box
+//! while they decode, clipped to the text rows. A failed image's note is
+//! muted text in its embed line. Over each image a hover target shows its
+//! alt text (the file name without one) as a tooltip.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
+use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    AnyElement, App, Bounds, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollEvent, ShapedLine,
-    SharedString, StrikethroughStyle, Style, TextAlign, TextRun, UnderlineStyle, Window,
-    WindowTextSystem, fill, point, px, relative, size,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, Corners, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
+    InteractiveElement as _, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, RenderImage, Rgba, Role, ScrollEvent, ShapedLine, SharedString,
+    StatefulInteractiveElement as _, StrikethroughStyle, Style, Styled as _, TextAlign, TextRun,
+    UnderlineStyle, Window, WindowTextSystem, div, fill, point, px, relative, size,
 };
 use kimun_notes::settings::themes::Theme;
 
 use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_size};
 use crate::editor_font;
-use crate::editor_view::{CaretShape, EditorView, ImagePane, Painted};
+use crate::editor_view::{CaretShape, EditorView, ImageDraw, ImageLook, ImagePane, Painted};
 use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
@@ -209,6 +220,61 @@ fn snap(b: Bounds<Pixels>, scale: f32) -> Bounds<Pixels> {
     Bounds::new(point(x0, y0), size(x1 - x0, (y1 - y0).max(px(1.0 / scale))))
 }
 
+/// The hover target over the inline image of logical row `row`: it shows
+/// the image's tooltip.
+pub(crate) fn image_hover_id(row: usize) -> ElementId {
+    ElementId::NamedInteger("inline-image".into(), row as u64)
+}
+
+/// An inline image as painted: its embed's row and tooltip, where its full
+/// box would be, the part of the pane it may paint in, and its pixels
+/// (`None`: the empty box).
+pub(crate) struct ImagePaint {
+    pub(crate) row: usize,
+    pub(crate) tip: SharedString,
+    pub(crate) rect: Bounds<Pixels>,
+    pub(crate) clip: Bounds<Pixels>,
+    pub(crate) image: Option<Arc<RenderImage>>,
+}
+
+/// Where each image in `draws` paints, for the text rows `text_rows`
+/// (window coordinates) of lines `line_height` tall, at `scale` device
+/// pixels per logical pixel. A failed image's note is left out: it is text.
+/// So is an image wholly outside the text rows.
+fn place_images(
+    draws: &[ImageDraw],
+    text_rows: Bounds<Pixels>,
+    line_height: Pixels,
+    scale: f32,
+) -> Vec<ImagePaint> {
+    draws
+        .iter()
+        .filter_map(|draw| {
+            let (image, (w, h)) = match &draw.look {
+                ImageLook::Ready(image, fitted) => (Some(image.clone()), *fitted),
+                ImageLook::Pending(fitted) => (None, *fitted),
+                ImageLook::Note(_) => return None,
+            };
+            let top = text_rows.origin.y + line_height * draw.top as f32;
+            let region = Bounds::new(
+                point(text_rows.origin.x, top),
+                size(text_rows.size.width, line_height * draw.lines as f32),
+            );
+            let clip = region.intersect(&text_rows);
+            // Device pixels to logical ones: pixel exact.
+            let rect = Bounds::new(region.origin, size(px(w / scale), px(h / scale)));
+            let shown = rect.intersect(&clip);
+            (shown.size.width > px(0.) && shown.size.height > px(0.)).then(|| ImagePaint {
+                row: draw.row,
+                tip: draw.tip.clone(),
+                rect,
+                clip,
+                image,
+            })
+        })
+        .collect()
+}
+
 /// Paints one [`EditorView`]. Built fresh each frame by the view's `render`.
 pub struct EditorElement {
     view: Entity<EditorView>,
@@ -303,6 +369,33 @@ impl EditorElement {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The image tooltips built so far on this thread: GPUI builds one when
+    /// it shows it (tests).
+    pub(crate) static BUILT_TIPS: std::cell::RefCell<Vec<SharedString>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hover target over an inline image: as big as its visible part, it
+/// paints nothing and shows `tip` as a tooltip. Its accessible name is the
+/// same text, the image's alternative text.
+fn image_hover(row: usize, tip: SharedString, at: gpui_kit::Size<Pixels>) -> AnyElement {
+    div()
+        .id(image_hover_id(row))
+        .role(Role::Image)
+        .aria_label(tip.clone())
+        .w(at.width)
+        .h(at.height)
+        .tooltip(move |window, cx| {
+            #[cfg(test)]
+            BUILT_TIPS.with(|built| built.borrow_mut().push(tip.clone()));
+            Tooltip::new(tip.clone()).build(window, cx)
+        })
+        .test_support()
+        .into_any_element()
+}
+
 impl IntoElement for EditorElement {
     type Element = Self;
 
@@ -349,6 +442,12 @@ pub struct EditorPrepaint {
     caret_glyph: Option<PlacedLine>,
     /// The mode line's texts (label, then the hint), when shown.
     mode_line: Vec<PlacedLine>,
+    /// Inline images, over their reserved lines.
+    images: Vec<ImagePaint>,
+    /// The empty box's fill.
+    placeholder: Rgba,
+    /// A hover target over each image, carrying its tooltip.
+    image_hovers: Vec<AnyElement>,
 }
 
 /// An open autocomplete popup waiting to be handed to the window: its size in
@@ -452,6 +551,7 @@ impl Element for EditorElement {
                 .map_or(0, find_bar::rows)
                 .min(pane_rows - chrome);
             let rows = pane_rows - chrome - bar_rows;
+            let mut draws = Vec::new();
             if view.sized_to_text {
                 // When the measure prepared this frame at these columns, with
                 // a viewport that shows every row, nothing is left to do. The
@@ -462,15 +562,14 @@ impl Element for EditorElement {
                 }
             } else {
                 // Device pixels, the unit an image's natural size is in.
-                view.prepare_images(
-                    ImagePane {
-                        column_px: f32::from(cols) * cells.width() * scale,
-                        pane_px: f32::from(bounds.size.height) * scale,
-                        row_px: f32::from(line_height) * scale,
-                    },
-                    view_cx,
-                );
+                let pane = ImagePane {
+                    column_px: f32::from(cols) * cells.width() * scale,
+                    pane_px: f32::from(bounds.size.height) * scale,
+                    row_px: f32::from(line_height) * scale,
+                };
+                view.prepare_images(pane, view_cx);
                 view.editor.prepare_frame(cols, rows);
+                draws = view.image_draws(pane, view_cx);
             }
             // The bar has the keyboard while open: no caret in the text.
             let bar_open = view.editor.find_open();
@@ -562,6 +661,45 @@ impl Element for EditorElement {
                 row_paint.push(shaped.paint.clone());
             }
             view.row_cache.end_frame();
+
+            // Inline images over their lines, clipped to the text rows; a
+            // failed image's note in its embed line, muted.
+            let text_rows = Bounds::new(
+                origin,
+                size(px(cells.width() * f32::from(cols)), px(cells.y_of(rows))),
+            );
+            let images = place_images(&draws, text_rows, line_height, scale);
+            #[cfg(test)]
+            let mut image_notes = Vec::new();
+            for draw in &draws {
+                let ImageLook::Note(note) = &draw.look else {
+                    continue;
+                };
+                let Some(r) = u16::try_from(draw.top).ok().filter(|&r| r < rows) else {
+                    continue;
+                };
+                let run = TextRun {
+                    len: note.len(),
+                    font: base_font.clone(),
+                    color: theme::image_note(theme).into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line = text_system.shape_line(
+                    SharedString::from(note.clone()),
+                    font_size,
+                    &[run],
+                    Some(px(cells.width())),
+                );
+                lines.push(PlacedLine {
+                    at: cell_bounds(0, r, 0).origin,
+                    line,
+                    faux_bold: false,
+                });
+                #[cfg(test)]
+                image_notes.push((r, note.clone()));
+            }
 
             let caret_at = frame.cursor.filter(|&(_, r)| r < rows);
             let caret_cell = caret_at.map(|(c, r)| cell_bounds(c, r, 1));
@@ -733,6 +871,19 @@ impl Element for EditorElement {
                 popup: None,
                 #[cfg(test)]
                 hand_areas: target_areas.clone(),
+                #[cfg(test)]
+                images: images
+                    .iter()
+                    .map(|paint| crate::editor_view::PaintedImage {
+                        row: paint.row,
+                        rect: paint.rect,
+                        clip: paint.clip,
+                        ready: paint.image.is_some(),
+                        tip: paint.tip.clone(),
+                    })
+                    .collect(),
+                #[cfg(test)]
+                image_notes,
             });
             // The popup hangs from the caret's cell: nowhere to hang from
             // (scrolled off, the find bar has the keyboard), nothing drawn.
@@ -754,6 +905,9 @@ impl Element for EditorElement {
                 caret,
                 caret_glyph,
                 mode_line: mode_texts,
+                placeholder: theme::image_placeholder(theme),
+                images,
+                image_hovers: Vec::new(),
                 text_hitbox: None,
                 target_hitboxes: Vec::new(),
                 target_areas,
@@ -781,6 +935,22 @@ impl Element for EditorElement {
             .target_areas
             .iter()
             .map(|b| window.insert_hitbox(*b, HitboxBehavior::Normal))
+            .collect();
+        // Above the text's hitboxes: the image's tooltip under the pointer.
+        prepaint.image_hovers = prepaint
+            .images
+            .iter()
+            .map(|paint| {
+                let at = paint.rect.intersect(&paint.clip);
+                let mut hover = image_hover(paint.row, paint.tip.clone(), at.size);
+                hover.prepaint_as_root(
+                    at.origin,
+                    at.size.map(AvailableSpace::Definite),
+                    window,
+                    cx,
+                );
+                hover
+            })
             .collect();
         prepaint
     }
@@ -836,6 +1006,27 @@ impl Element for EditorElement {
             for placed in &prepaint.lines {
                 paint_line(placed, window, cx);
             }
+            for image in &prepaint.images {
+                match &image.image {
+                    // A frame the GPU cannot take is skipped, not fatal.
+                    Some(pixels) => {
+                        let _ = window.paint_image(
+                            image.clip,
+                            image.rect,
+                            Corners::default(),
+                            pixels.clone(),
+                            0,
+                            false,
+                        );
+                    }
+                    None => {
+                        window.paint_quad(fill(
+                            image.rect.intersect(&image.clip),
+                            prepaint.placeholder,
+                        ));
+                    }
+                }
+            }
             if let Some((covered, backing, line)) = &prepaint.preedit {
                 window.paint_quad(fill(*covered, *backing));
                 line.paint(
@@ -858,6 +1049,10 @@ impl Element for EditorElement {
                 paint_line(text, window, cx);
             }
         });
+
+        for hover in &mut prepaint.image_hovers {
+            hover.paint(window, cx);
+        }
 
         let origin = bounds.origin;
         let cells = prepaint.cells;
