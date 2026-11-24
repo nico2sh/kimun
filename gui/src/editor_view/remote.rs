@@ -84,10 +84,7 @@ impl EditorView {
             ));
         }
         // A right press with a selection copies it, as on any line.
-        let unselected = self
-            .editor
-            .selection()
-            .is_none_or(|(start, end)| start == end);
+        let unselected = !self.has_selection();
         unselected.then_some(PlaceholderPress::Swallow)
     }
 

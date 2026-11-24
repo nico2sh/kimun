@@ -330,13 +330,17 @@ impl EditorView {
         self.entry_menu.clone().filter(|_| self.menu_free())
     }
 
+    /// Whether the editor holds a selection that is not empty.
+    pub(super) fn has_selection(&self) -> bool {
+        self.editor
+            .selection()
+            .is_some_and(|(start, end)| start != end)
+    }
+
     /// Whether a right press on an image opens its menu now: nothing
     /// selected, the find bar shut, and an editor that edits.
     pub(super) fn menu_free(&self) -> bool {
-        let unselected = self
-            .editor
-            .selection()
-            .is_none_or(|(start, end)| start == end);
+        let unselected = !self.has_selection();
         !self.read_only && unselected && self.editor.find_bar().is_none()
     }
 
@@ -516,12 +520,12 @@ impl EditorView {
                     let shown = on_screen.as_ref().is_none_or(|lines| {
                         spot.top < lines.end && spot.top + spot.lines as isize > lines.start
                     });
-                    if let (RemoteLook::Placeholder { host, actions }, Some(url)) = (&look, &url)
+                    if let (RemoteLook::Placeholder { actions, .. }, Some(url)) = (&look, &url)
                         && !actions.always
                         && shown
                         && caret_row != Some(embed.row)
                     {
-                        to_load.push((url.clone(), host.clone()));
+                        to_load.push(url.clone());
                     }
                     draws.push(ImageDraw {
                         row: spot.row,

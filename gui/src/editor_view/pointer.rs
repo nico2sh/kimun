@@ -208,10 +208,7 @@ impl EditorView {
     /// find bar owns the pointer while open, so there a press never acts on
     /// a link: no target, and the right press asks for the note menu.
     pub(super) fn link_menu_target(&mut self, pointer: &PointerInput) -> Option<FollowTarget> {
-        let unselected = self
-            .editor
-            .selection()
-            .is_none_or(|(start, end)| start == end);
+        let unselected = !self.has_selection();
         if pointer.kind != PointerKind::Down(Button::Right)
             || !unselected
             || self.editor.find_bar().is_some()
