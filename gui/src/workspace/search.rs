@@ -215,7 +215,7 @@ struct PreviewRow {
 /// An image the rows draw (an **Inline image**, CONTEXT.md).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PreviewImage {
-    /// Its embed in [`ImagePlan::embeds`].
+    /// Its embed in [`ImagePlan::embeds`], by index.
     pub(crate) embed: usize,
     /// The file it draws: the attachment's when the embed resolved, or the
     /// saved copy of a remote embed. `None` for a placeholder.
@@ -256,17 +256,9 @@ impl RawRule {
 /// read: a re-wrap at another width or height reads no file.
 #[derive(Clone, Debug)]
 pub(crate) struct ImagePlan {
-    /// The embeds of the (capped) text, at most [`PREVIEW_EMBEDS`]. Remote
-    /// embeds count.
-    pub(crate) embeds: Vec<Embed>,
-    /// The file each embed draws: the vault file, or the saved copy of a
-    /// remote embed when the plan was made. `None` for an unresolved embed
-    /// and for a remote embed with no copy (a placeholder).
-    pub(crate) files: Vec<Option<PathBuf>>,
-    /// Each embed's natural size from its file's header; `None` when it
-    /// cannot be drawn, and then why in `failures`.
-    pub(crate) naturals: Vec<Option<(u32, u32)>>,
-    pub(crate) failures: Vec<Option<Failure>>,
+    /// The embeds of the (capped) text, at most [`PREVIEW_EMBEDS`], each
+    /// with what its file says. Remote embeds count.
+    pub(crate) embeds: Vec<PlannedEmbed>,
     /// The room the images are fitted to.
     pub(crate) pane: ImagePane,
     pub(crate) raw: RawRule,
@@ -278,14 +270,44 @@ pub(crate) struct ImagePlan {
     pub(crate) remote: usize,
 }
 
+/// One embed of a plan with what its file says.
+#[derive(Clone, Debug)]
+pub(crate) struct PlannedEmbed {
+    pub(crate) embed: Embed,
+    /// The file it draws: the vault file, or the saved copy of a remote
+    /// embed when the plan was made. `None` for an unresolved embed and
+    /// for a remote embed with no copy (a placeholder).
+    pub(crate) file: Option<PathBuf>,
+    /// Its natural size from its file's header; `None` when it cannot be
+    /// drawn, and then why in `failure`.
+    pub(crate) natural: Option<(u32, u32)>,
+    pub(crate) failure: Option<Failure>,
+}
+
+impl PlannedEmbed {
+    /// `embed` drawn from `file`, its header read through `store`.
+    fn resolve(embed: Embed, file: Option<PathBuf>, store: &mut ImageStore) -> Self {
+        let (natural, failure) = header_of(file.as_deref(), &embed, store);
+        Self {
+            embed,
+            file,
+            natural,
+            failure,
+        }
+    }
+
+    /// Whether it shows the placeholder: a remote embed with no saved
+    /// copy.
+    fn is_placeholder(&self) -> bool {
+        self.embed.remote.is_some() && self.file.is_none()
+    }
+}
+
 impl ImagePlan {
     /// No images: the rows are the text's alone.
     fn none(pane: ImagePane) -> Self {
         Self {
             embeds: Vec::new(),
-            files: Vec::new(),
-            naturals: Vec::new(),
-            failures: Vec::new(),
             pane,
             raw: RawRule::Hits,
             failed: 0,
@@ -293,28 +315,22 @@ impl ImagePlan {
         }
     }
 
-    /// Whether embed `e` shows the placeholder: a remote embed with no
-    /// saved copy.
-    fn is_placeholder(&self, e: usize) -> bool {
-        self.embeds
-            .get(e)
-            .is_some_and(|embed| embed.remote.is_some())
-            && self.files.get(e).is_some_and(Option::is_none)
+    /// The embed at index `e`.
+    pub(crate) fn embed(&self, e: usize) -> Option<&Embed> {
+        self.embeds.get(e).map(|planned| &planned.embed)
     }
 
     /// Find each remote embed's saved copy in `cache` again, and read its
     /// header. Vault embeds keep what they have. Runs on tokio.
     fn resolve_remote(&mut self, cache: Option<&ImageCache>) {
         let mut store = ImageStore::default();
-        for (e, embed) in self.embeds.iter().enumerate() {
-            let Some(remote) = &embed.remote else {
+        for planned in &mut self.embeds {
+            let Some(remote) = &planned.embed.remote else {
                 continue;
             };
             let file = cache.and_then(|cache| cache.find(&remote.url));
-            let (natural, failure) = header_of(file.as_deref(), embed, &mut store);
-            self.files[e] = file;
-            self.naturals[e] = natural;
-            self.failures[e] = failure;
+            let embed = planned.embed.clone();
+            *planned = PlannedEmbed::resolve(embed, file, &mut store);
         }
         self.remote += 1;
     }
@@ -351,8 +367,11 @@ fn wrap_lines(
     // The embeds come in line order.
     let mut embeds = images.embeds.iter().enumerate().peekable();
     for (i, line) in lines.iter().enumerate() {
-        while embeds.next_if(|(_, embed)| embed.row < i).is_some() {}
-        let Some((e, embed)) = embeds.next_if(|(_, embed)| embed.row == i) else {
+        while embeds
+            .next_if(|(_, planned)| planned.embed.row < i)
+            .is_some()
+        {}
+        let Some((e, planned)) = embeds.next_if(|(_, planned)| planned.embed.row == i) else {
             push_text_rows(&mut rows, i, line, columns);
             continue;
         };
@@ -363,19 +382,19 @@ fn wrap_lines(
         let image = drawn.len();
         let mut drawn_image = PreviewImage {
             embed: e,
-            file: images.files.get(e).cloned().flatten(),
-            name: embed.name.clone(),
-            alt: embed.alt.clone(),
+            file: planned.file.clone(),
+            name: planned.embed.name.clone(),
+            alt: planned.embed.alt.clone(),
             fitted: (0.0, 0.0),
             rows: 0,
             first_row: rows.len(),
             failed: None,
         };
         let end = line.text.len();
-        match images.naturals.get(e).copied().flatten() {
+        match planned.natural {
             // A remote embed with no saved copy: the placeholder's rows,
             // below the raw line when it shows.
-            None if images.is_placeholder(e) => {
+            None if planned.is_placeholder() => {
                 drawn_image.rows = remote_rows();
                 rows.extend((0..drawn_image.rows).map(|index| PreviewRow {
                     line: i,
@@ -400,8 +419,7 @@ fn wrap_lines(
             // The raw text says it all: nothing is added.
             None if raw => continue,
             None => {
-                let failure = images.failures.get(e).copied().flatten();
-                drawn_image.failed = Some(failure.unwrap_or(Failure::Missing));
+                drawn_image.failed = Some(planned.failure.unwrap_or(Failure::Missing));
                 rows.push(PreviewRow {
                     line: i,
                     start: 0,
@@ -573,30 +591,25 @@ fn plan_images(
     let Some((vault, attachments)) = found else {
         return ImagePlan::none(pane);
     };
-    let embeds = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
-    if embeds.is_empty() {
+    let found = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
+    if found.is_empty() {
         return ImagePlan::none(pane);
     }
     // A store of this read's own: the headers only, nothing decoded (the
     // app's store is the UI thread's).
     let mut store = ImageStore::default();
-    let files: Vec<Option<PathBuf>> = embeds
-        .iter()
-        .map(|embed| match &embed.remote {
-            None => embed.file.clone(),
-            Some(remote) => cache.and_then(|cache| cache.find(&remote.url)),
+    let embeds = found
+        .into_iter()
+        .map(|embed| {
+            let file = match &embed.remote {
+                None => embed.file.clone(),
+                Some(remote) => cache.and_then(|cache| cache.find(&remote.url)),
+            };
+            PlannedEmbed::resolve(embed, file, &mut store)
         })
         .collect();
-    let (naturals, failures) = embeds
-        .iter()
-        .zip(&files)
-        .map(|(embed, file)| header_of(file.as_deref(), embed, &mut store))
-        .unzip();
     ImagePlan {
         embeds,
-        files,
-        naturals,
-        failures,
         pane,
         raw: RawRule::Hits,
         failed: 0,
@@ -850,7 +863,7 @@ impl ImagePixels {
             .wrapped
             .images
             .get(image)
-            .and_then(|i| shown.plan.embeds.get(i.embed))?;
+            .and_then(|i| shown.plan.embed(i.embed))?;
         let look = Some(look_of(embed, store, remote, shown.wrapped.pane));
         self.found.push((image, look.clone()));
         look
@@ -923,8 +936,7 @@ fn render_row(
             let fitted = drawn.fitted;
             let tip = shown
                 .plan
-                .embeds
-                .get(drawn.embed)
+                .embed(drawn.embed)
                 .map(Embed::tip)
                 .unwrap_or_default();
             let ready = pixels.of(image, shown);
@@ -963,7 +975,7 @@ fn render_row(
         }
         RowKind::Remote { image, index } => {
             let url = image_of(image)
-                .and_then(|drawn| shown.plan.embeds.get(drawn.embed))
+                .and_then(|drawn| shown.plan.embed(drawn.embed))
                 .and_then(|embed| embed.remote.as_ref())
                 .map(|remote| remote.url.clone());
             // A copy that came since the rows were made draws nothing here:
@@ -1750,8 +1762,7 @@ impl SearchPreview {
                     && let Some(drawn) = shown.wrapped.images.get(image)
                     && shown
                         .plan
-                        .embeds
-                        .get(drawn.embed)
+                        .embed(drawn.embed)
                         .is_some_and(|embed| embed.remote.is_some())
                     && !on_screen.contains(&drawn.embed)
                 {
@@ -1762,7 +1773,7 @@ impl SearchPreview {
                         .wrapped
                         .images
                         .get(image)
-                        .and_then(|i| shown.plan.embeds.get(i.embed))
+                        .and_then(|i| shown.plan.embed(i.embed))
                     && let Some(r) = &embed.remote
                     && let ImageLook::Remote(RemoteLook::Placeholder { host, actions }) =
                         look_of(embed, &mut store, &remote, shown.wrapped.pane)
@@ -1864,18 +1875,22 @@ impl SearchPreview {
             return;
         };
         let plan = &shown.plan;
-        if plan.embeds.iter().all(|embed| embed.remote.is_none()) {
+        if plan
+            .embeds
+            .iter()
+            .all(|planned| planned.embed.remote.is_none())
+        {
             return;
         }
         let remote = cx.default_global::<RemoteImages>().clone();
         let stale = plan
             .embeds
             .iter()
-            .zip(&plan.files)
             .enumerate()
             .filter(|(e, _)| only.is_none_or(|only| only.contains(e)))
-            .any(|(_, (embed, file))| {
-                embed.remote.is_some() && image_file(embed, &remote).is_some() != file.is_some()
+            .any(|(_, planned)| {
+                planned.embed.remote.is_some()
+                    && image_file(&planned.embed, &remote).is_some() != planned.file.is_some()
             });
         if stale {
             self.replan(cx);
@@ -1973,12 +1988,15 @@ impl SearchPreview {
         };
         let plan = &mut shown.plan;
         let mut changed = false;
-        for (e, file) in plan.files.iter().enumerate() {
-            let Some((_, failure)) = failed.iter().find(|(f, _)| file.as_ref() == Some(f)) else {
+        for planned in &mut plan.embeds {
+            let Some((_, failure)) = failed
+                .iter()
+                .find(|(f, _)| planned.file.as_ref() == Some(f))
+            else {
                 continue;
             };
-            if plan.naturals.get_mut(e).and_then(Option::take).is_some() {
-                plan.failures[e] = Some(*failure);
+            if planned.natural.take().is_some() {
+                planned.failure = Some(*failure);
                 changed = true;
             }
         }
