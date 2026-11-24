@@ -32,27 +32,6 @@ pub struct ImageEmbed {
     pub exact: bool,
 }
 
-/// The embeds that fill a whole line of `text`, in order. An embed inside
-/// prose, inside code or inside frontmatter is not one, and neither is a
-/// remote URL or a target that is not an image.
-pub fn image_embeds(text: &str) -> Vec<ImageEmbed> {
-    let zones = ExclusionZones::from_text(text);
-    let mut embeds = Vec::new();
-    let mut line_start = 0;
-    for (row, raw) in text.split('\n').enumerate() {
-        let start = line_start;
-        line_start += raw.len() + 1;
-        let line = raw.trim();
-        if !line.starts_with('!') || zones.contains_code_link_or_frontmatter(start) {
-            continue;
-        }
-        if let Some(embed) = whole_line_embed(row, line) {
-            embeds.push(embed);
-        }
-    }
-    embeds
-}
-
 /// The embed `line` (trimmed, one line) is, when it is nothing else.
 fn whole_line_embed(row: usize, line: &str) -> Option<ImageEmbed> {
     if let Some(m) = md_link_matches(line).next() {
@@ -118,7 +97,8 @@ pub enum FoundEmbed {
 }
 
 /// The vault embeds and the remote embeds that fill a whole line of `text`,
-/// in row order. The same zone rules as [`image_embeds`] apply.
+/// in row order. An embed inside prose, inside code or inside frontmatter is
+/// not one, and neither is a vault target that is not an image.
 pub fn all_image_embeds(text: &str) -> Vec<FoundEmbed> {
     let zones = ExclusionZones::from_text(text);
     let mut found = Vec::new();
@@ -375,6 +355,17 @@ mod tests {
             target: name.to_string(),
             exact: false,
         }
+    }
+
+    /// The vault embeds among all the embeds of `text`.
+    fn image_embeds(text: &str) -> Vec<ImageEmbed> {
+        all_image_embeds(text)
+            .into_iter()
+            .filter_map(|found| match found {
+                FoundEmbed::Vault(embed) => Some(embed),
+                FoundEmbed::Remote(_) => None,
+            })
+            .collect()
     }
 
     #[test]
