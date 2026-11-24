@@ -70,8 +70,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role,
-    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    UniformListScrollHandle, Window, div, rems, uniform_list,
+    ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout_tree::RailPosition;
@@ -446,6 +446,9 @@ pub(crate) struct PreferencesView {
     /// The write under way: every control waits for it.
     saving: Option<Task<()>>,
     theme_scroll: UniformListScrollHandle,
+    /// The content pane's scroll. Only the Keyboard section moves it, to
+    /// bring its chooser into view at the foot of the page.
+    content_scroll: ScrollHandle,
     /// Preferences > Workspaces ([`workspaces`]).
     ws: workspaces::Workspaces,
     /// Preferences > Indexing, the reindex under way and its panels.
@@ -557,6 +560,7 @@ impl PreferencesView {
             confirm: None,
             saving: None,
             theme_scroll: UniformListScrollHandle::new(),
+            content_scroll: ScrollHandle::new(),
             ws: workspaces::Workspaces::new(cx.focus_handle().tab_stop(true)),
             index: workspaces::Indexing::new(),
             remote: remote_images::RemoteSection::new(cx.focus_handle().tab_stop(true)),
@@ -564,6 +568,8 @@ impl PreferencesView {
                 cx.focus_handle(),
                 cx.focus_handle(),
                 keyboard::file::KeyFile::new(window, cx),
+                window,
+                cx,
             ),
             _load: Some(load),
             _subscriptions: subscriptions,
@@ -782,7 +788,7 @@ impl PreferencesView {
         cx: &mut Context<Self>,
     ) {
         self.section = section;
-        self.keyboard.leave();
+        self.keyboard.leave(window, cx);
         window.focus(&self.sections_focus, cx);
         if section == Section::Display {
             // The family dropdown's list: read once, in the background.
@@ -2335,6 +2341,7 @@ impl PreferencesView {
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.content_scroll)
             .child(
                 div()
                     .flex()

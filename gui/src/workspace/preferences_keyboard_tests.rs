@@ -12,13 +12,14 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, ScrollDelta, TestAppContext, point};
 use kimun_notes::logic::actions::ActionShortcuts as A;
 use kimun_notes::logic::input::KeyInput;
+use kimun_notes::logic::layout::Dir;
 use kimun_notes::logic::nav::DrawerView;
 use tokio::runtime::Runtime;
 
 use super::config::{CONFIG_ID, CONFIG_PREFERENCES_ID};
 use super::preferences::keyboard::{
-    EDITOR_NOTE, KEYBOARD_ID, NOTICE_ID, RESET_ALL_ID, VIM_NOTE, change_id, clear_id, group_id,
-    reset_id, row_id, warning_id,
+    EDITOR_NOTE, FILTER_EMPTY_ID, FILTER_ID, KEYBOARD_ID, NOTICE_ID, RESET_ALL_ID, VIM_NOTE,
+    change_id, clear_id, group_id, reset_id, row_id, warning_id,
 };
 use super::preferences::{CANCEL_ID, CONTENT_ID, DISCARD_ID, PREFERENCES_ID, SAVE_ID, Section};
 use super::preferences_tests::{on_disk, on_vault, settle, vault};
@@ -87,7 +88,7 @@ fn lines(s: &Started, action: &A, cx: &mut TestAppContext) -> Option<String> {
 
 /// Scroll the section with the wheel until the element `id` is wholly in
 /// the pane, as a person scrolls to a row before clicking it.
-fn reveal(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
+pub(super) fn reveal(s: &Started, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) {
     let id = id.into();
     for _ in 0..300 {
         let dy = cx
@@ -561,6 +562,389 @@ fn clearing_the_leader_and_preferences_chords_still_leaves_the_cfg_button(cx: &m
     settle(&rt, cx);
 }
 
+/// The bounds of the element `id`, in a fresh frame.
+fn bounds(
+    s: &Started,
+    id: impl Into<gpui_kit::ElementId>,
+    cx: &mut TestAppContext,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    let id = id.into();
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).bounds()
+    })
+    .unwrap()
+}
+
+/// While a row listens its button reads Cancel; a click on it ends the
+/// listening as Esc does, the chord stays, and the keyboard is back on the
+/// row's button. The other rows keep their Change. Esc still works.
+#[gpui_kit::test]
+fn the_listening_row_offers_cancel(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    assert_eq!(
+        label(&s, change_id(&A::OpenNote), cx).as_deref(),
+        Some("Change the shortcut of Open note")
+    );
+    click(&s, change_id(&A::OpenNote), cx);
+    assert!(s.pf_read(cx, |v| v.keyboard_listening().is_some()));
+    assert_eq!(
+        label(&s, change_id(&A::OpenNote), cx).as_deref(),
+        Some("Cancel changing the shortcut of Open note")
+    );
+    assert_eq!(
+        label(&s, change_id(&A::OpenFileBrowser), cx).as_deref(),
+        Some("Change the shortcut of Open files"),
+        "the other rows keep their Change"
+    );
+    s.pf_click(change_id(&A::OpenNote), cx);
+    assert_eq!(s.pf_read(cx, |v| v.keyboard_listening().cloned()), None);
+    assert_eq!(
+        row(&s, &A::OpenNote, cx),
+        "Open note: Ctrl+O / Ctrl+Shift+O"
+    );
+    assert!(overrides(&s, cx).is_empty());
+    assert!(
+        focused(&s, change_id(&A::OpenNote), cx),
+        "the keyboard is back on the row's button"
+    );
+    assert_eq!(
+        label(&s, change_id(&A::OpenNote), cx).as_deref(),
+        Some("Change the shortcut of Open note")
+    );
+    // Esc still cancels.
+    click(&s, change_id(&A::OpenNote), cx);
+    s.pf_press("escape", cx);
+    assert_eq!(s.pf_read(cx, |v| v.keyboard_listening().cloned()), None);
+    assert!(focused(&s, change_id(&A::OpenNote), cx));
+    assert!(s.pf_is_open(cx));
+    settle(&rt, cx);
+}
+
+/// `Change` and `Clear` start at the same x on every row, whatever the
+/// width of the chord text, and a `Reset` on a changed row moves neither.
+#[gpui_kit::test]
+fn the_row_buttons_line_up_across_rows(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    change(&s, &A::ToggleRail, "ctrl-alt-j", cx);
+    assert!(label(&s, reset_id(&A::ToggleRail), cx).is_some());
+    let change_x = bounds(&s, change_id(&A::OpenNote), cx).left();
+    let clear_x = bounds(&s, clear_id(&A::OpenNote), cx).left();
+    // A row's text starts where its group heading does: the row is pulled
+    // out by its own padding (0.5rem), which leaves room for the listening
+    // background.
+    let rem = cx
+        .update_window(s.handle, |_, window, _| window.rem_size())
+        .unwrap();
+    for (ix, group) in bindable_groups().iter().enumerate() {
+        let heading = bounds(&s, group_id(ix), cx).left();
+        for r in &group.rows {
+            assert_eq!(
+                bounds(&s, row_id(&r.action), cx).left() + rem * 0.5,
+                heading,
+                "label of {:?}",
+                r.action
+            );
+        }
+    }
+    for group in bindable_groups() {
+        for r in &group.rows {
+            assert_eq!(
+                bounds(&s, change_id(&r.action), cx).left(),
+                change_x,
+                "Change of {:?}",
+                r.action
+            );
+            assert_eq!(
+                bounds(&s, clear_id(&r.action), cx).left(),
+                clear_x,
+                "Clear of {:?}",
+                r.action
+            );
+        }
+    }
+    // A listening row's Cancel starts where its Change did.
+    click(&s, change_id(&A::SearchNotes), cx);
+    assert_eq!(bounds(&s, change_id(&A::SearchNotes), cx).left(), change_x);
+    settle(&rt, cx);
+}
+
+// ── The filter ──────────────────────────────────────────────────────────────
+
+/// Give the filter field the keyboard and type `text` into it.
+fn filter(s: &Started, text: &str, cx: &mut TestAppContext) {
+    click(s, FILTER_ID, cx);
+    cx.update_window(s.handle, |_, window, cx| window.input(text, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// The filter field's text.
+fn filter_text(s: &Started, cx: &mut TestAppContext) -> String {
+    let input = s.pf_read(cx, |v| v.keyboard_filter_input());
+    cx.read(|cx| input.read(cx).value().to_string())
+}
+
+/// Whether the row of `action` is drawn.
+fn shown(s: &Started, action: &A, cx: &mut TestAppContext) -> bool {
+    label(s, row_id(action), cx).is_some()
+}
+
+/// The indices of the group headings drawn.
+fn headings(s: &Started, cx: &mut TestAppContext) -> Vec<usize> {
+    (0..bindable_groups().len())
+        .filter(|ix| label(s, group_id(*ix), cx).is_some())
+        .collect()
+}
+
+/// A word of a row label keeps only the rows that have it, and only their
+/// group's heading; a scope tag matches too. An empty field shows all.
+#[gpui_kit::test]
+fn the_filter_keeps_the_rows_whose_label_matches(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    assert_eq!(
+        label(&s, FILTER_ID, cx).as_deref(),
+        Some("Filter shortcuts")
+    );
+    assert_eq!(
+        label(&s, KEYBOARD_ID, cx).as_deref(),
+        Some("Keyboard shortcuts")
+    );
+    filter(&s, "SPLIT", cx);
+    assert!(shown(&s, &A::SplitSlotRight, cx));
+    assert!(shown(&s, &A::SplitSlotDown, cx));
+    assert!(!shown(&s, &A::OpenNote, cx));
+    assert!(!shown(&s, &A::ToggleRail, cx), "a row of the same group");
+    assert_eq!(headings(&s, cx), [2], "only Layout and views");
+    assert_eq!(label(&s, FILTER_EMPTY_ID, cx), None);
+    // The scope tag is matched too.
+    s.pf_with_view(cx, |v, window, cx| {
+        let input = v.keyboard_filter_input();
+        input.update(cx, |i, cx| i.set_value("sidebar and rail", window, cx));
+    });
+    cx.run_until_parked();
+    assert!(shown(&s, &A::YankRow, cx));
+    assert!(!shown(&s, &A::OpenNote, cx));
+    // An empty field: every row, every heading.
+    s.pf_with_view(cx, |v, window, cx| {
+        let input = v.keyboard_filter_input();
+        input.update(cx, |i, cx| i.set_value("", window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        headings(&s, cx),
+        (0..bindable_groups().len()).collect::<Vec<_>>()
+    );
+    for group in bindable_groups() {
+        for r in &group.rows {
+            assert!(shown(&s, &r.action, cx), "{:?}", r.action);
+        }
+    }
+    settle(&rt, cx);
+}
+
+/// The keys a row shows match, written either way.
+#[gpui_kit::test]
+fn the_filter_matches_the_chord_text(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    filter(&s, "ctrl+e", cx);
+    assert!(shown(&s, &A::OpenFileBrowser, cx), "Open files has Ctrl+E");
+    assert!(!shown(&s, &A::OpenNote, cx));
+    s.pf_press("escape", cx);
+    filter(&s, "Ctrl+E", cx);
+    assert!(shown(&s, &A::OpenFileBrowser, cx));
+    assert!(!shown(&s, &A::OpenNote, cx));
+    settle(&rt, cx);
+}
+
+/// Every word must match.
+#[gpui_kit::test]
+fn every_word_of_the_filter_must_match(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    filter(&s, "move  left", cx);
+    assert!(shown(&s, &A::MoveViewToNeighbour(Dir::Left), cx));
+    assert!(!shown(&s, &A::FocusRegion(Dir::Left), cx), "no move");
+    assert!(
+        !shown(&s, &A::MoveViewToNeighbour(Dir::Right), cx),
+        "no left"
+    );
+    settle(&rt, cx);
+}
+
+/// Set the filter field's text, the keyboard staying where it is.
+fn set_filter(s: &Started, text: &str, cx: &mut TestAppContext) {
+    let text = text.to_string();
+    s.pf_with_view(cx, |v, window, cx| {
+        let input = v.keyboard_filter_input();
+        input.update(cx, |i, cx| i.set_value(text, window, cx));
+    });
+    cx.run_until_parked();
+}
+
+/// A row never goes from under the user: the listening row stays while it
+/// listens, and the rows an edit changed or warned stay while the filter
+/// keeps the text it had then.
+#[gpui_kit::test]
+fn the_filter_keeps_the_rows_being_worked_on(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    click(&s, change_id(&A::ToggleFacetView), cx);
+    set_filter(&s, "split", cx);
+    assert!(s.pf_read(cx, |v| v.keyboard_listening().is_some()));
+    assert!(
+        shown(&s, &A::ToggleFacetView, cx),
+        "the listening row stays"
+    );
+    assert!(!shown(&s, &A::FindInBuffer, cx));
+    // Change then Esc edits nothing: the row goes.
+    s.pf_press("escape", cx);
+    assert!(!shown(&s, &A::ToggleFacetView, cx), "no edit, no keep");
+    // An edit under "ctrl+o": the row no longer matches, nor does the row
+    // it took the chord from, and both stay.
+    set_filter(&s, "ctrl+o", cx);
+    change(&s, &A::OpenNote, "ctrl-e", cx);
+    assert!(shown(&s, &A::OpenNote, cx), "the row edited stays");
+    assert!(shown(&s, &A::OpenFileBrowser, cx), "the warned row stays");
+    assert!(!shown(&s, &A::NewNote, cx));
+    settle(&rt, cx);
+}
+
+/// A new filter after an edit drops the rows the edit kept: with no match,
+/// the note shows alone.
+#[gpui_kit::test]
+fn a_new_filter_drops_the_rows_an_edit_kept(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    set_filter(&s, "ctrl+o", cx);
+    change(&s, &A::OpenNote, "ctrl-e", cx);
+    assert!(shown(&s, &A::OpenNote, cx));
+    set_filter(&s, "zqx", cx);
+    assert!(!shown(&s, &A::OpenNote, cx));
+    assert!(!shown(&s, &A::OpenFileBrowser, cx));
+    assert!(headings(&s, cx).is_empty());
+    assert_eq!(
+        label(&s, FILTER_EMPTY_ID, cx).as_deref(),
+        Some("No shortcut matches \"zqx\".")
+    );
+    settle(&rt, cx);
+}
+
+/// No row matches: a note says so, with the text typed.
+#[gpui_kit::test]
+fn a_filter_with_no_match_says_so(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    filter(&s, "Zqx", cx);
+    assert_eq!(
+        label(&s, FILTER_EMPTY_ID, cx).as_deref(),
+        Some("No shortcut matches \"Zqx\".")
+    );
+    let role = cx
+        .update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(FILTER_EMPTY_ID).role()
+        })
+        .unwrap();
+    assert_eq!(role, Some(gpui_kit::Role::Status), "an empty state");
+    assert!(headings(&s, cx).is_empty());
+    assert!(!shown(&s, &A::OpenNote, cx));
+    settle(&rt, cx);
+}
+
+/// Esc in the field clears its text and keeps Preferences; Esc in the
+/// empty field closes the clean view, as Esc does elsewhere.
+#[gpui_kit::test]
+fn esc_in_the_filter_clears_it_then_closes(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    filter(&s, "split", cx);
+    s.pf_press("escape", cx);
+    assert_eq!(filter_text(&s, cx), "");
+    assert!(s.pf_is_open(cx), "Preferences stay");
+    assert!(shown(&s, &A::OpenNote, cx), "the full list is back");
+    assert!(focused(&s, FILTER_ID, cx), "the field keeps the keyboard");
+    s.pf_press("escape", cx);
+    assert!(!s.pf_is_open(cx), "a second Esc closes them");
+    settle(&rt, cx);
+}
+
+/// Tab goes from the field to the first row: the field comes first.
+#[gpui_kit::test]
+fn tab_goes_from_the_filter_to_the_list(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    click(&s, FILTER_ID, cx);
+    assert!(focused(&s, FILTER_ID, cx));
+    s.pf_press("tab", cx);
+    let first = &bindable_groups()[0].rows[0].action;
+    assert!(focused(&s, change_id(first), cx));
+    settle(&rt, cx);
+}
+
+/// Another section shown, then Keyboard again: the full list.
+#[gpui_kit::test]
+fn leaving_the_section_clears_the_filter(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    filter(&s, "split", cx);
+    assert!(!shown(&s, &A::OpenNote, cx));
+    s.pf_section(cx, Section::Display);
+    s.pf_section(cx, Section::Keyboard);
+    assert_eq!(filter_text(&s, cx), "");
+    assert!(shown(&s, &A::OpenNote, cx));
+    assert_eq!(headings(&s, cx).len(), bindable_groups().len());
+    settle(&rt, cx);
+}
+
+/// The filter is view state: the draft stays clean and Save off.
+#[gpui_kit::test]
+fn the_filter_leaves_the_draft_clean(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    filter(&s, "split", cx);
+    assert!(s.pf_disabled(SAVE_ID, cx));
+    assert!(overrides(&s, cx).is_empty());
+    s.pf_press("enter", cx);
+    assert!(s.pf_is_open(cx), "Enter does nothing special");
+    assert!(s.pf_disabled(SAVE_ID, cx));
+    settle(&rt, cx);
+}
+
+/// Keys typed in the field are text: a listening row stops listening and
+/// takes no chord.
+#[gpui_kit::test]
+fn typing_in_the_filter_assigns_no_chord(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_v, s) = keyboard(cx, &rt);
+    click(&s, change_id(&A::ToggleFacetView), cx);
+    click(&s, FILTER_ID, cx);
+    s.pf_press("ctrl-g", cx);
+    s.pf_press("g", cx);
+    assert_eq!(s.pf_read(cx, |v| v.keyboard_listening().cloned()), None);
+    assert!(overrides(&s, cx).is_empty(), "no chord for the row");
+    assert_eq!(lines(&s, &A::ToggleFacetView, cx), None, "no refusal");
+    assert_eq!(row(&s, &A::ToggleFacetView, cx), "Toggle facet view: none");
+    settle(&rt, cx);
+}
+
 // ── Save installs the keymap in the running window ──────────────────────────
 
 /// What `key` (a GPUI keystroke) does in the editor window now: the action
@@ -689,7 +1073,7 @@ mod file {
     use crate::workspace::folder_chooser::{self, FolderChooser, Listing};
     use crate::workspace::preferences::keyboard::file::{
         CHOOSER_PREFIX, EXPORT_CHOOSE_ID, EXPORT_ID, EXPORT_NOTICE_ID, EXPORT_PATH_ID,
-        IMPORT_CHOOSE_ID, IMPORT_ID, IMPORT_NOTICE_ID,
+        IMPORT_CHOOSE_ID, IMPORT_ID, IMPORT_NOTICE_ID, IMPORT_PATH_ID,
     };
     use crate::workspace::preferences_tests::config;
     use crate::workspace::start_tests::drive;
@@ -760,6 +1144,183 @@ mod file {
 
     fn config_bytes(v: &TestVault) -> Option<Vec<u8>> {
         std::fs::read(config(v)).ok()
+    }
+
+    /// The Keymap file area comes after the list; Reset all and its notice
+    /// stay above it. The chooser takes the area's place, still below the
+    /// list.
+    #[gpui_kit::test]
+    fn the_keymap_file_area_is_below_the_list(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        change(&s, &A::ToggleFacetView, "ctrl-g", cx);
+        click(&s, RESET_ALL_ID, cx);
+        let list = bounds(&s, KEYBOARD_ID, cx);
+        assert!(bounds(&s, RESET_ALL_ID, cx).bottom() <= list.top());
+        assert!(bounds(&s, NOTICE_ID, cx).bottom() <= list.top());
+        assert!(
+            bounds(&s, EXPORT_PATH_ID, cx).top() >= list.bottom(),
+            "Export under the list"
+        );
+        assert!(bounds(&s, IMPORT_PATH_ID, cx).top() >= list.bottom());
+        let (_tmp, dir) = folder();
+        set_path(&s, false, &dir.join("missing.toml"), cx);
+        click(&s, IMPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        let top = bounds(
+            &s,
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser")),
+            cx,
+        )
+        .top();
+        assert!(
+            top >= bounds(&s, KEYBOARD_ID, cx).bottom(),
+            "the chooser too"
+        );
+        settle(&rt, cx);
+    }
+
+    /// Tab goes from the last row's buttons to the Export field: the list
+    /// first, then the file area.
+    #[gpui_kit::test]
+    fn tab_goes_from_the_last_row_to_the_keymap_file_area(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let groups = bindable_groups();
+        let last = &groups.last().unwrap().rows.last().unwrap().action;
+        click(&s, change_id(last), cx);
+        s.pf_press("escape", cx);
+        assert!(focused(&s, change_id(last), cx));
+        let mut reached = false;
+        for _ in 0..3 {
+            s.pf_press("tab", cx);
+            if focused(&s, EXPORT_PATH_ID, cx) {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "Tab reaches the Export field after the last row");
+        settle(&rt, cx);
+    }
+
+    /// The section's intro and the Keymap file note, as they read.
+    #[test]
+    fn the_section_copy_reads_plainly() {
+        use crate::workspace::preferences::keyboard::INTRO;
+        use crate::workspace::preferences::keyboard::file::FILE_NOTE;
+        assert_eq!(
+            INTRO,
+            "Change a shortcut, then press the new keys. Esc cancels. If another \
+             action already has those keys, it loses them. Save to keep your changes."
+        );
+        assert_eq!(
+            FILE_NOTE,
+            "Export saves your changed shortcuts to a file. Import loads a file in \
+             their place."
+        );
+    }
+
+    /// The chooser, much taller than the area it replaces at the foot of
+    /// the page, opens wholly in view with no further scroll: its commands
+    /// show. After Cancel the area is back in view.
+    #[gpui_kit::test]
+    fn the_chooser_opens_in_view_and_cancel_keeps_the_area_in_view(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        let choose = format!("{CHOOSER_PREFIX}-chooser-choose");
+        let cancel = format!("{CHOOSER_PREFIX}-chooser-cancel");
+        set_path(&s, true, &dir.join("mine.toml"), cx);
+        click(&s, EXPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        assert!(s.pf_shows(choose.clone(), cx), "Choose this folder shows");
+        assert!(s.pf_shows(cancel.clone(), cx), "Cancel shows");
+        s.pf_click(cancel.clone(), cx);
+        assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_none()));
+        assert!(
+            s.pf_shows(EXPORT_CHOOSE_ID, cx),
+            "the Export row is in view"
+        );
+        set_path(&s, false, &dir.join("missing.toml"), cx);
+        click(&s, IMPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        assert!(s.pf_shows(cancel.clone(), cx), "Cancel shows in files mode");
+        s.pf_click(cancel, cx);
+        assert!(
+            s.pf_shows(IMPORT_CHOOSE_ID, cx),
+            "the Import row is in view"
+        );
+        settle(&rt, cx);
+    }
+
+    /// Each chooser row names its kind for a screen reader, and the rows
+    /// keep their height.
+    #[gpui_kit::test]
+    fn chooser_rows_name_their_kind(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        set_path(&s, false, &dir.join("missing.toml"), cx);
+        click(&s, IMPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        let sub = SystemPath::try_absolute(dir.join("sub")).unwrap();
+        let file = SystemPath::try_absolute(dir.join("keys.toml")).unwrap();
+        let folder_row = folder_chooser::row_id(CHOOSER_PREFIX, &sub);
+        let file_row = folder_chooser::file_row_id(CHOOSER_PREFIX, &file);
+        assert_eq!(
+            label(&s, folder_row.clone(), cx).as_deref(),
+            Some("sub, folder")
+        );
+        assert_eq!(
+            label(&s, file_row.clone(), cx).as_deref(),
+            Some("keys.toml, file")
+        );
+        let rem = cx
+            .update_window(s.handle, |_, window, _| window.rem_size())
+            .unwrap();
+        assert_eq!(bounds(&s, folder_row, cx).size.height, rem * 1.75);
+        assert_eq!(bounds(&s, file_row, cx).size.height, rem * 1.75);
+        settle(&rt, cx);
+    }
+
+    /// `New folder…` (and its N key) is only in folder mode: Export's
+    /// chooser has it, Import's file chooser does not. Cancel stays.
+    #[gpui_kit::test]
+    fn new_folder_shows_only_in_folder_mode(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        let new = format!("{CHOOSER_PREFIX}-chooser-new");
+        let cancel = format!("{CHOOSER_PREFIX}-chooser-cancel");
+        set_path(&s, true, &dir.join("mine.toml"), cx);
+        click(&s, EXPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        assert!(s.pf_shows(new.clone(), cx), "folder mode has New folder");
+        assert!(s.pf_shows(cancel.clone(), cx));
+        s.pf_press("escape", cx);
+        set_path(&s, false, &dir.join("missing.toml"), cx);
+        click(&s, IMPORT_CHOOSE_ID, cx);
+        let files = chooser(&s, &rt, cx);
+        let drawn = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(SharedString::from(new)).is_some()
+            })
+            .unwrap();
+        assert!(!drawn, "files mode has none");
+        assert!(s.pf_shows(cancel, cx));
+        s.pf_press("n", cx);
+        assert!(
+            !cx.read(|cx| files.read(cx).new_folder_open()),
+            "N opens nothing"
+        );
+        assert!(!cx.read(|cx| files.read(cx).hints()).contains("new folder"));
+        settle(&rt, cx);
     }
 
     /// A row stops listening once the keyboard moves to a path field: its
@@ -877,16 +1438,17 @@ mod file {
         let (_v, s) = keyboard(cx, &rt);
         let (_tmp, dir, chooser) = long_chooser(&s, &rt, cx);
         let first = SystemPath::try_absolute(dir.join("d00")).unwrap();
-        // The pane a line down, so that it could scroll either way.
+        // The chooser opens with the pane at its bottom. A line up, so
+        // that the pane could scroll either way.
         let path = centre(
             &s,
             SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
             cx,
         );
         let before = chooser_top(&s, cx);
-        wheel(&s, path, -1.0, cx);
+        wheel(&s, path, 1.0, cx);
         let pane = chooser_top(&s, cx);
-        assert!(pane < before, "the pane is off its top");
+        assert!(pane > before, "the pane is off its bottom");
         let over = centre(&s, folder_chooser::row_id(CHOOSER_PREFIX, &first), cx);
         let list = |cx: &TestAppContext| cx.read(|cx| chooser.read(cx).list_scroll());
 
@@ -925,17 +1487,18 @@ mod file {
             SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
             cx,
         );
+        // The chooser opens with the pane at its bottom: up, then down.
         let pane = chooser_top(&s, cx);
-        wheel(&s, path, -1.0, cx);
-        let down = chooser_top(&s, cx);
-        assert!(down < pane, "the pane scrolls down: {pane:?} to {down:?}");
+        wheel(&s, path, 1.0, cx);
+        let up = chooser_top(&s, cx);
+        assert!(up > pane, "the pane scrolls up: {pane:?} to {up:?}");
         let path = centre(
             &s,
             SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
             cx,
         );
-        wheel(&s, path, 1.0, cx);
-        assert_eq!(chooser_top(&s, cx), pane, "the pane scrolls back up");
+        wheel(&s, path, -1.0, cx);
+        assert_eq!(chooser_top(&s, cx), pane, "the pane scrolls back down");
         assert_eq!(cx.read(|cx| chooser.read(cx).list_scroll()), px(0.));
         settle(&rt, cx);
     }
@@ -979,6 +1542,25 @@ mod file {
         settle(&rt, cx);
     }
 
+    /// Esc in the empty filter while the chooser is up closes the chooser
+    /// only, as Esc does elsewhere in the section.
+    #[gpui_kit::test]
+    fn esc_in_the_empty_filter_closes_only_the_chooser(cx: &mut TestAppContext) {
+        use crate::workspace::preferences::keyboard::FILTER_ID;
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        set_path(&s, false, &dir.join("missing.toml"), cx);
+        click(&s, IMPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        click(&s, FILTER_ID, cx);
+        s.pf_press("escape", cx);
+        assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_none()));
+        assert!(s.pf_is_open(cx), "Preferences stay open");
+        settle(&rt, cx);
+    }
+
     /// Another section shown: the chooser is gone, and the area is back on
     /// return.
     #[gpui_kit::test]
@@ -993,6 +1575,8 @@ mod file {
         s.pf_section(cx, Section::Display);
         assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_none()));
         s.pf_section(cx, Section::Keyboard);
+        // The area is under the list: scroll to it.
+        reveal(&s, IMPORT_CHOOSE_ID, cx);
         assert!(s.pf_shows(IMPORT_CHOOSE_ID, cx));
         settle(&rt, cx);
     }
@@ -1010,7 +1594,8 @@ mod file {
         click(&s, EXPORT_CHOOSE_ID, cx);
         let chooser = chooser(&s, &rt, cx);
         assert_eq!(rows(&chooser, cx), [".hidden", "sub"]);
-        assert!(s.pf_shows(format!("{CHOOSER_PREFIX}-chooser-choose"), cx));
+        let choose = format!("{CHOOSER_PREFIX}-chooser-choose");
+        assert!(s.pf_shows(choose, cx));
         s.pf_press("down", cx);
         s.pf_press("enter", cx);
         let chooser = super::file::chooser(&s, &rt, cx);
@@ -1146,6 +1731,40 @@ mod file {
                  Skipped NoSuchAction: no such action. \
                  Skipped ToggleRail = \"primary+nonsense\": unknown key `nonsense`."
             )
+        );
+        settle(&rt, cx);
+    }
+
+    /// After a chooser closes the pane rests at its bottom. The import
+    /// result that then grows the page shows whole, with no further scroll.
+    #[gpui_kit::test]
+    fn the_import_result_shows_without_a_scroll(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        let path = dir.join("keys.toml");
+        std::fs::write(
+            &path,
+            "[keys]\nNoSuchAction = [\"primary+alt+r\"]\nOtherAction = []\n\
+             ToggleRail = [\"primary+alt+j\", \"primary+nonsense\"]\n",
+        )
+        .unwrap();
+        set_path(&s, false, &path, cx);
+        click(&s, IMPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        s.pf_press("escape", cx);
+        assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_none()));
+        // No reveal: the button is in view after the chooser.
+        s.pf_click(IMPORT_ID, cx);
+        drive(&rt, cx, |cx| !s.pf_read(cx, |v| v.keyboard_file_working()));
+        let notice = label(&s, IMPORT_NOTICE_ID, cx).unwrap();
+        assert!(notice.contains("Skipped OtherAction"), "{notice}");
+        let pane = bounds(&s, CONTENT_ID, cx);
+        let lines = bounds(&s, IMPORT_NOTICE_ID, cx);
+        assert!(
+            lines.bottom() <= pane.bottom() && lines.top() >= pane.top(),
+            "the result {lines:?} is inside the pane {pane:?}"
         );
         settle(&rt, cx);
     }

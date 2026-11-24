@@ -239,6 +239,8 @@ Open Preferences and choose Keyboard. The list shows every action in groups, suc
 
 Some shortcuts work only in one place. The row says where, for example "editor only" or "search browser only".
 
+To find an action, type in the `Filter shortcuts` field above the list. Type part of its name, or its keys, for example `Ctrl+E` (`Cmd+E` on macOS). Press `Esc` to empty the field.
+
 Each row has these buttons:
 
 - `Change` sets a new shortcut.
@@ -250,7 +252,7 @@ To change a shortcut:
 1. Click `Change` on the row.
 2. Press the new keys.
 
-The row then shows the new shortcut. Press `Esc` to cancel and keep the old one. `Change` replaces all the shortcuts of the row with this one.
+The row then shows the new shortcut. While the row waits for keys, its `Change` button reads `Cancel`. Press `Esc` or click `Cancel` to keep the old shortcut. `Change` replaces all the shortcuts of the row with this one.
 
 The section refuses these keys and tells you why.
 
@@ -279,7 +281,7 @@ If no shortcut opens Preferences anymore, click CFG in the rail. Then click `Pre
 
 ### Export and import
 
-Above the list, the Keymap file area has two parts. You can save your changes to a file and load them from a file. This helps you move your shortcuts to another computer.
+Below the list, the Keymap file area has two parts. You can save your changes to a file and load them from a file. This helps you move your shortcuts to another computer.
 
 To export:
 

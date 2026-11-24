@@ -442,6 +442,14 @@ _Avoid_: custom binding, remap.
 The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding only the **shortcut overrides**, one line per action. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
 _Avoid_: keymap (that is the whole table in effect, defaults included), profile.
 
+**Folder chooser**:
+The panel the **GUI** uses to pick a folder, or in files mode a file, inside a full-window view. It is not a dialog. The setup assistant, Preferences > Workspaces and the Preferences keyboard section share it. It lists one folder at a time, and the person goes up, enters a folder or picks one. Its list grows with the window, with a floor and a ceiling.
+_Avoid_: file dialog, file picker (it is not the system dialog).
+
+**Location field**:
+The one text field of the **folder chooser**. With nothing typed, it shows the folder being browsed. Text that starts with `~`, is a full path, or holds a path separator is a path. Enter goes there. In files mode, a path to a file picks that file. Any other text is a filter. It ranks the listing by fuzzy match and selects the best match. A plain letter typed while the list has the keyboard starts the filter.
+_Avoid_: search box, address bar.
+
 ### GUI motion
 
 **Motion**:
