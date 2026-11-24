@@ -235,27 +235,31 @@ If the title bar looks wrong on your desktop, add `window_decorations = "system"
 
 ### The folder chooser
 
-The folder chooser is a panel where you pick a folder on your computer. The setup assistant opens it. Preferences > Workspaces opens it with `Choose folder…`. In Preferences > Keyboard, `Choose folder…` for Export and `Choose file…` for Import open it too.
+The folder chooser is a panel where you pick a folder on your computer. The setup assistant opens it. Preferences > Workspaces opens it with `Choose folder…`. In Preferences > Keyboard, `Choose folder…` for Export opens it too. `Choose file…` for Import opens the same folder chooser to pick a keymap file. This page calls it the Import chooser then.
 
-The cursor starts in the Location field. The panel lists the folders inside the folder it shows.
+The folder chooser lists the folders, and in the Import chooser the keymap files (`.toml`), inside the folder it shows.
 
-To narrow the list, type part of a name. The list keeps the folders that match and puts the best match first.
+The Location field is the text box at the top of the folder chooser. The cursor starts there.
 
-To go to another folder, type or paste its path in the Location field. Then press `Enter`. A path starts with `~`, is a full path, or has a path separator or `..` in it.
+To narrow the list, type part of a name in the Location field. The list keeps the names that match. It uses a fuzzy match, best first.
 
-In the Import chooser, a path to a keymap file picks that file. In a folder chooser, a path to a file shows `That is a file, not a folder`. A path that does not exist shows `That folder does not exist`. The message goes away at your next key.
+To go to another folder, type or paste its path in the Location field. Then press `Enter`. A path starts with `~`, is a full path, or has a path separator in it. The text `..` goes up one folder. A relative path starts from the folder that the folder chooser shows.
+
+If you type a path and then click `Choose this folder` or press `Ctrl+Enter`, the folder chooser chooses that folder.
+
+In the Import chooser, a path to a keymap file picks that file. A path to another kind of file shows `That is not a .toml file`. When you pick a folder, a path to a file shows `That is a file, not a folder`. A path that does not exist shows `That folder does not exist`. The message goes away at your next key.
 
 The list grows and shrinks with the height of the window.
 
-These keys work in the chooser:
+These keys work in the folder chooser:
 
-- `Up` and `Down` move the selection.
-- `Enter` opens the selected folder, or goes to the path you typed.
-- `Esc` clears the text in the Location field. When the field is empty, `Esc` closes the chooser.
+- `Up` and `Down` move the selection. They do nothing while the Location field holds a path.
+- `Enter` opens the selected folder, or goes to the path you typed. In the Import chooser, `Enter` on a selected file picks it.
+- `Esc` clears the text in the Location field. When the field is empty, `Esc` closes the folder chooser. If the new folder field is open, `Esc` closes only that field.
 - `Alt+Up` goes up one folder. On macOS, press `Cmd+Up`.
 - `Backspace` in an empty Location field also goes up one folder.
-- `Ctrl+Enter` chooses the folder the panel shows. On macOS, press `Cmd+Enter`.
-- `Ctrl+N` makes a new folder inside the folder the panel shows. On macOS, press `Cmd+N`. The Import chooser has no new folder.
+- `Ctrl+Enter` chooses the path you typed, or else the folder that the folder chooser shows. On macOS, press `Cmd+Enter`. The Import chooser has no `Ctrl+Enter` and no `Ctrl+N`.
+- `Ctrl+N` makes a new folder inside the folder that the folder chooser shows. On macOS, press `Cmd+N`.
 
 ### Keyboard shortcuts
 

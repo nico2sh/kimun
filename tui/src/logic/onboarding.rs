@@ -657,9 +657,13 @@ pub enum LocationError {
     /// Nothing is at that path.
     #[error("That folder does not exist")]
     NotFound,
-    /// A file is there, and a folder (or a file of another kind) is wanted.
+    /// A file is there, and a folder is wanted (folder mode).
     #[error("That is a file, not a folder")]
     NotAFolder,
+    /// A file of another kind is there, and a file with this extension (no
+    /// leading dot) is wanted (files mode).
+    #[error("That is not a .{0} file")]
+    WrongKind(String),
     /// The filesystem refused, with its text.
     #[error("{0}")]
     Unreadable(String),
@@ -678,7 +682,8 @@ pub enum Resolved {
 /// `current`, `.` and `..` are removed (all through core). A folder gives
 /// [`Resolved::Folder`]. A file gives [`Resolved::File`] when its extension
 /// equals `files` (no leading dot, any case), else
-/// [`LocationError::NotAFolder`]. A missing path is
+/// [`LocationError::WrongKind`] in files mode and
+/// [`LocationError::NotAFolder`] in folder mode. A missing path is
 /// [`LocationError::NotFound`].
 ///
 /// Blocking (one stat): run it off the UI thread.
@@ -699,10 +704,10 @@ pub fn resolve_location(
                     .extension()
                     .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(w))
             });
-            if matches {
-                Ok(Resolved::File(path))
-            } else {
-                Err(LocationError::NotAFolder)
+            match wanted {
+                _ if matches => Ok(Resolved::File(path)),
+                Some(w) => Err(LocationError::WrongKind(w.to_string())),
+                None => Err(LocationError::NotAFolder),
             }
         }
     }
@@ -1209,10 +1214,11 @@ mod tests {
                 "{ext}"
             );
         }
-        assert!(matches!(
-            resolve_location("./b.txt", &cur, Some("toml")),
-            Err(LocationError::NotAFolder)
-        ));
+        for ext in ["toml", ".toml"] {
+            let err = resolve_location("./b.txt", &cur, Some(ext)).unwrap_err();
+            assert!(matches!(err, LocationError::WrongKind(ref e) if e == "toml"));
+            assert_eq!(err.to_string(), "That is not a .toml file");
+        }
         assert_eq!(
             resolve_location("./d", &cur, Some("toml")).unwrap(),
             Resolved::Folder(cur.join("d"))

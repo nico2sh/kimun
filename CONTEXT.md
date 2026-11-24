@@ -447,7 +447,7 @@ The panel the **GUI** uses to pick a folder, or in files mode a file, inside a f
 _Avoid_: file dialog, file picker (it is not the system dialog).
 
 **Location field**:
-The one text field of the **folder chooser**. With nothing typed, it shows the folder being browsed. Text that starts with `~`, is a full path, or holds a path separator is a path. Enter goes there. In files mode, a path to a file picks that file. Any other text is a filter. It ranks the listing by fuzzy match and selects the best match. A plain letter typed while the list has the keyboard starts the filter.
+The one text field of the **folder chooser**. With nothing typed, it shows the folder being browsed. Text that starts with `~`, is a full path, or holds a path separator is a path. Enter goes there. In files mode, a path to a file picks that file. Any other text is a filter. It ranks the listing by fuzzy match and selects the best match. `Choose this folder` and Ctrl+Enter choose a typed path, and otherwise the folder shown. From the moment the chooser opens, the field has the keyboard. A click on a row or on the list gives it back.
 _Avoid_: search box, address bar.
 
 ### GUI motion

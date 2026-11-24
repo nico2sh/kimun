@@ -65,6 +65,13 @@ impl Render for Host {
             .flex()
             .flex_col()
             .child(self.chooser.clone())
+            // The command row, as the hosts place it in their footer.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .children(super::folder_chooser::actions(&self.chooser, cx)),
+            )
     }
 }
 
@@ -950,6 +957,205 @@ fn ctrl_enter_chooses_the_folder(cx: &mut TestAppContext) {
     f.press("ctrl-enter", cx);
     assert!(f.events().is_empty());
     assert_eq!(f.dir(cx), sys(&root));
+}
+
+// ── choosing a typed path ───────────────────────────────────────────────────
+
+const CHOOSE_ID: &str = "test-chooser-choose";
+
+impl Opened {
+    /// Drive until a typed path is looked up.
+    fn looked_up(&self, rt: &Runtime, cx: &mut TestAppContext) {
+        drive(rt, cx, |cx| self.read(cx, |c| !c.resolving()));
+    }
+
+    fn new_folder_focused(&self, cx: &mut TestAppContext) -> bool {
+        cx.update_window(self.handle, |_, window, cx| {
+            self.chooser.read(cx).new_folder_focused(window, cx)
+        })
+        .unwrap()
+    }
+}
+
+/// `Choose this folder` with a path to a folder typed in the field chooses
+/// that folder, as a system dialog does, not the folder shown.
+#[gpui_kit::test]
+fn choose_this_folder_takes_a_typed_folder_path(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.type_location(&format!("notes{MAIN_SEPARATOR}a"), cx);
+    s.click(CHOOSE_ID, cx);
+    s.looked_up(&rt, cx);
+    assert_eq!(
+        s.events(),
+        [format!(
+            "chosen:{}",
+            system::path_to_string(sys(root.join("notes").join("a")))
+        )]
+    );
+    assert_eq!(s.location_error(cx), None);
+}
+
+/// Ctrl+Enter does the same with a full path.
+#[gpui_kit::test]
+fn ctrl_enter_takes_a_typed_folder_path(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    let notes = sys(root.join("notes"));
+    s.type_location(&system::path_to_string(&notes), cx);
+    s.press("ctrl-enter", cx);
+    s.looked_up(&rt, cx);
+    assert_eq!(
+        s.events(),
+        [format!("chosen:{}", system::path_to_string(&notes))]
+    );
+}
+
+/// A typed path that is missing, or a file, shows the usual message under
+/// the field and chooses nothing.
+#[gpui_kit::test]
+fn choosing_a_missing_path_or_a_file_shows_the_message(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &["notes/a.toml"]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.type_location(&format!("gone{MAIN_SEPARATOR}away"), cx);
+    s.click(CHOOSE_ID, cx);
+    s.looked_up(&rt, cx);
+    assert_eq!(
+        s.label(LOCATION_ERROR_ID, cx).as_deref(),
+        Some("That folder does not exist")
+    );
+    assert!(s.events().is_empty(), "nothing chosen");
+    s.press("escape", cx);
+    s.type_location(&format!("notes{MAIN_SEPARATOR}a.toml"), cx);
+    s.press("ctrl-enter", cx);
+    s.looked_up(&rt, cx);
+    assert_eq!(
+        s.label(LOCATION_ERROR_ID, cx).as_deref(),
+        Some("That is a file, not a folder")
+    );
+    assert!(s.events().is_empty(), "nothing chosen");
+    assert_eq!(s.dir(cx), sys(&root));
+}
+
+/// An empty field and a filter still choose the folder shown, with the
+/// button too.
+#[gpui_kit::test]
+fn choose_this_folder_with_a_filter_or_nothing_takes_the_folder_shown(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    let shown = format!("chosen:{}", system::path_to_string(sys(&root)));
+    s.click(CHOOSE_ID, cx);
+    assert_eq!(s.events(), std::slice::from_ref(&shown));
+    s.type_location("no", cx);
+    s.click(CHOOSE_ID, cx);
+    assert_eq!(s.events(), [shown.clone(), shown]);
+}
+
+/// Ctrl+Enter right after Enter on the same path: the choose takes over the
+/// lookup, so the folder is chosen and not only opened.
+#[gpui_kit::test]
+fn choose_replaces_a_lookup_from_enter(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.type_location(&format!("notes{MAIN_SEPARATOR}"), cx);
+    s.press("enter", cx);
+    s.press("ctrl-enter", cx);
+    s.looked_up(&rt, cx);
+    s.listed(&rt, cx);
+    assert_eq!(
+        s.events(),
+        [format!(
+            "chosen:{}",
+            system::path_to_string(sys(root.join("notes")))
+        )]
+    );
+    assert_eq!(s.dir(cx), sys(&root), "the Enter lookup was dropped");
+}
+
+/// Esc in the Location field while the New folder field is open closes
+/// that field first (the keyboard stays in the Location field); the
+/// chooser stays open.
+#[gpui_kit::test]
+fn esc_in_the_location_field_closes_new_folder_first(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.press("ctrl-n", cx);
+    assert!(s.new_folder_focused(cx));
+    s.click(LOCATION_ID, cx);
+    assert!(s.location_focused(cx));
+    s.press("escape", cx);
+    assert!(!s.read(cx, |c| c.new_folder_open()));
+    assert!(s.events().is_empty(), "the chooser stays open");
+    assert!(s.location_focused(cx));
+}
+
+/// Backspace in the empty Location field while the New folder field is
+/// open does not go up: that would drop the New folder field.
+#[gpui_kit::test]
+fn backspace_in_the_empty_field_keeps_new_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a"], &[]);
+    let s = open(cx, &root.join("notes"), None);
+    s.listed(&rt, cx);
+    s.press("ctrl-n", cx);
+    s.click(LOCATION_ID, cx);
+    s.press("backspace", cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+    assert!(s.read(cx, |c| c.new_folder_open()));
+}
+
+/// Up and Down select nothing while the field holds a path: Enter goes to
+/// the path, not to a row.
+#[gpui_kit::test]
+fn up_and_down_do_nothing_with_a_path(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["archive", "notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.type_location("..", cx);
+    s.press("down", cx);
+    assert_eq!(s.read(cx, |c| c.selected()), None);
+    s.press("up", cx);
+    assert_eq!(s.read(cx, |c| c.selected()), None);
+}
+
+/// In files mode, a path to a file with another extension says which kind
+/// is wanted.
+#[gpui_kit::test]
+fn a_file_of_another_kind_says_which_kind_in_files_mode(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&[], &["b.txt"]);
+    let s = open(cx, &root, Some("toml"));
+    s.listed(&rt, cx);
+    s.type_location(&format!(".{MAIN_SEPARATOR}b.txt"), cx);
+    s.go(&rt, cx);
+    assert_eq!(
+        s.label(LOCATION_ERROR_ID, cx).as_deref(),
+        Some("That is not a .toml file")
+    );
+    assert!(s.events().is_empty());
 }
 
 /// Each key a hint line names does what it says, on both platforms and in

@@ -1,8 +1,8 @@
 //! The **folder chooser** (M8c, shared since M9b-2): a panel inside a
 //! full-window view (the setup assistant, Preferences > Workspaces), not a
 //! dialog over it. Up, the Location field, the subfolders of the folder
-//! shown (a click enters one, a double-click or `Choose this folder` takes
-//! the folder shown) and an inline `New folder…` field.
+//! shown (a click enters one, a double-click takes the folder shown) and an
+//! inline `New folder…` field.
 //!
 //! **The Location field** shows the folder as its placeholder. A name typed
 //! there ranks the rows, best first, the best selected
@@ -11,16 +11,20 @@
 //! and selects nothing. Enter there ([`FolderChooser::go_to_location`])
 //! looks the path up off the UI thread (`resolve_location`): a folder opens
 //! in the list, a file is picked in files mode, and anything else shows its
-//! message under the field until the next key. Browsing to another folder
-//! empties the field. The list's accessible name names the folder shown.
+//! message under the field until the next key. `Choose this folder`
+//! (Ctrl+Enter) with a path typed there looks it up the same way and
+//! chooses the folder found, as a system dialog does; with a name or
+//! nothing it chooses the folder shown. Browsing to another folder empties
+//! the field. The list's accessible name names the folder shown.
 //!
 //! **The keys.** The field has the keyboard from the moment the chooser
-//! opens, and drives it: Up and Down move the selection, Enter opens the
-//! row or goes to the typed path, Ctrl+Enter (Cmd+Enter) chooses the
-//! folder, Alt+Up (Cmd+Up on macOS, read from the keymap's platform) and
-//! Backspace in the empty field go up, Ctrl+N (Cmd+N) opens `New folder…`,
-//! Esc clears the text and then cancels. A click on a row leaves the
-//! keyboard in the field. Left, Right, a plain N and Backspace
+//! opens, and drives it: Up and Down move the selection (not while it holds
+//! a path), Enter opens the row or goes to the typed path, Ctrl+Enter
+//! (Cmd+Enter) chooses, Alt+Up (Cmd+Up on macOS, read from the keymap's
+//! platform) and Backspace in the empty field go up (Backspace not while
+//! `New folder…` is open), Ctrl+N (Cmd+N) opens `New folder…`, Esc closes
+//! `New folder…`, then clears the text, then cancels. A click on a row
+//! leaves the keyboard in the field. Left, Right, a plain N and Backspace
 //! with text are the field's. The chooser catches the kit's field actions
 //! (`Enter`, `Escape`, `MoveUp`, `MoveDown`, `Backspace`) on its own root
 //! in the capture phase, after the host's capture handlers and before the
@@ -133,7 +137,8 @@ fn id(prefix: &str, part: &str) -> SharedString {
 /// What the chooser tells its host.
 pub(crate) enum FolderChooserEvent {
     /// `Choose this folder` (Ctrl+Enter or Cmd+Enter, a double-click):
-    /// this folder.
+    /// this folder, the one typed in the Location field or else the one
+    /// shown.
     Chosen(SystemPath),
     /// A click or Enter on a file (files mode only): this file.
     ChosenFile(SystemPath),
@@ -489,11 +494,24 @@ impl FolderChooser {
         if self.creating() {
             return;
         }
-        let text = self.location.read(cx).value().to_string();
-        let LocationInput::Path(path) = onb::classify_location(&text) else {
-            self.enter_selected(window, cx);
-            return;
-        };
+        match self.typed_path(cx) {
+            Some(path) => self.look_up(path, false, window, cx),
+            None => self.enter_selected(window, cx),
+        }
+    }
+
+    /// The path the Location field holds, if it holds one (not a name, not
+    /// nothing).
+    fn typed_path(&self, cx: &App) -> Option<String> {
+        match onb::classify_location(&self.location.read(cx).value()) {
+            LocationInput::Path(path) => Some(path),
+            LocationInput::Empty | LocationInput::Filter(_) => None,
+        }
+    }
+
+    /// Look the typed `path` up off the UI thread, replacing a lookup under
+    /// way. With `choose`, a folder found is chosen rather than opened.
+    fn look_up(&mut self, path: String, choose: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.location_revision += 1;
         let revision = self.location_revision;
         let current = self.dir.clone();
@@ -503,7 +521,7 @@ impl FolderChooser {
         self.resolving = Some(cx.spawn_in(window, async move |this, cx| {
             let resolved = blocking(move || onb::resolve_location(&path, &current, files)).await;
             this.update_in(cx, |chooser, window, cx| {
-                chooser.resolved(revision, resolved, window, cx)
+                chooser.resolved(revision, resolved, choose, window, cx)
             })
             .ok();
         }));
@@ -514,6 +532,7 @@ impl FolderChooser {
         &mut self,
         revision: u64,
         resolved: Result<Result<onb::Resolved, onb::LocationError>, String>,
+        choose: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -522,6 +541,9 @@ impl FolderChooser {
         }
         self.resolving = None;
         match resolved {
+            Ok(Ok(onb::Resolved::Folder(dir))) if choose => {
+                cx.emit(FolderChooserEvent::Chosen(dir))
+            }
             Ok(Ok(onb::Resolved::Folder(dir))) => self.browse(dir, window, cx),
             Ok(Ok(onb::Resolved::File(path))) => cx.emit(FolderChooserEvent::ChosenFile(path)),
             Ok(Err(e)) => self.location_error = Some(e.to_string().into()),
@@ -530,9 +552,11 @@ impl FolderChooser {
         cx.notify();
     }
 
+    /// Up and Down. Nothing while the field holds a path: Enter goes to the
+    /// path then, not to a row.
     fn move_selection(&mut self, down: bool, cx: &mut Context<Self>) {
         let count = self.shown.len();
-        if count == 0 {
+        if count == 0 || self.typed_path(cx).is_some() {
             return;
         }
         let ix = match (self.selected, down) {
@@ -545,9 +569,22 @@ impl FolderChooser {
         cx.notify();
     }
 
-    /// `Choose this folder` (Ctrl+Enter, a double-click): the folder shown.
-    /// Not in files mode, which picks a file.
-    pub(crate) fn choose(&mut self, cx: &mut Context<Self>) {
+    /// `Choose this folder` (Ctrl+Enter): a path typed in the Location field,
+    /// looked up first (a missing path or a file shows its message and
+    /// chooses nothing), else the folder shown. Not in files mode, which
+    /// picks a file.
+    pub(crate) fn choose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.creating() || self.files.is_some() {
+            return;
+        }
+        match self.typed_path(cx) {
+            Some(path) => self.look_up(path, true, window, cx),
+            None => self.choose_shown(cx),
+        }
+    }
+
+    /// A double-click: the folder shown (a row's first click entered it).
+    fn choose_shown(&mut self, cx: &mut Context<Self>) {
         if self.creating() || self.files.is_some() {
             return;
         }
@@ -564,10 +601,14 @@ impl FolderChooser {
         self.location.read(cx).value().is_empty()
     }
 
-    /// Esc: the Location field's text goes first (and its message, and a
-    /// lookup under way, as at any key there); from the empty field the
-    /// chooser is cancelled.
+    /// Esc: an open New folder field closes first (the keyboard goes back to
+    /// the Location field); then the Location field's text goes (and its
+    /// message, and a lookup under way, as at any key there); from the
+    /// empty field the chooser is cancelled.
     pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_folder.is_some() {
+            return self.close_new_folder(window, cx);
+        }
         if self.location_empty(cx) {
             return self.cancel(cx);
         }
@@ -674,12 +715,12 @@ impl FolderChooser {
         let plain = key.mods == Mods::NONE;
         let primary = key.mods == Mods::CTRL || key.mods == Mods::SUPER;
         match key.key {
-            Key::Enter if primary => self.choose(cx),
+            Key::Enter if primary => self.choose(window, cx),
             Key::Enter if plain => self.go_to_location(window, cx),
             Key::Up if key.mods == Self::up_mods(cx) => self.up(window, cx),
             Key::Up if plain => self.move_selection(false, cx),
             Key::Down if plain => self.move_selection(true, cx),
-            Key::Backspace if plain && self.location_empty(cx) => self.up(window, cx),
+            Key::Backspace if plain && self.location_empty(cx) => self.backspace_up(window, cx),
             Key::Esc if plain => self.escape(window, cx),
             // No new folder in files mode: a file is picked there.
             Key::Char('n') if primary && self.files.is_none() => self.open_new_folder(window, cx),
@@ -695,7 +736,7 @@ impl FolderChooser {
             self.create_folder(window, cx);
         } else if self.location_focused(window, cx) {
             if action.secondary {
-                self.choose(cx);
+                self.choose(window, cx);
             } else {
                 self.go_to_location(window, cx);
             }
@@ -726,8 +767,16 @@ impl FolderChooser {
     /// Backspace edits the text; in the empty field it goes up.
     fn on_backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.location_focused(window, cx) && self.location_empty(cx) {
-            self.up(window, cx);
+            self.backspace_up(window, cx);
             cx.stop_propagation();
+        }
+    }
+
+    /// Backspace in the empty Location field: up, unless the New folder
+    /// field is open (going up would drop it and the name typed there).
+    fn backspace_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_folder.is_none() {
+            self.up(window, cx);
         }
     }
 
@@ -895,7 +944,7 @@ impl Render for FolderChooser {
                                             cx.emit(FolderChooserEvent::ChosenFile(dir.clone()));
                                         } else if event.click_count() >= 2 {
                                             // The first click entered it: take it.
-                                            this.choose(cx);
+                                            this.choose_shown(cx);
                                         } else if !this.creating() {
                                             this.browse(dir.clone(), window, cx);
                                         }
@@ -1049,7 +1098,7 @@ impl Render for FolderChooser {
                         // As on a row: the field keeps the keyboard.
                         this.focus_location(window, cx);
                         if event.click_count() >= 2 {
-                            this.choose(cx);
+                            this.choose_shown(cx);
                         }
                     }))
                     .child(body),
@@ -1095,7 +1144,9 @@ pub(crate) fn actions(chooser: &Entity<FolderChooser>, cx: &App) -> Vec<AnyEleme
                 .primary()
                 .label("Choose this folder")
                 .disabled(creating)
-                .on_click(move |_: &ClickEvent, _, cx| choose.update(cx, |c, cx| c.choose(cx)))
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    choose.update(cx, |c, cx| c.choose(window, cx))
+                })
                 .into_any_element(),
         );
     }
