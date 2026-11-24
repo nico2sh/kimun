@@ -1570,6 +1570,54 @@ mod remote {
         assert_eq!(lines[hit.unwrap()].0, "the needle");
     }
 
+    /// The reader never scrolled and the first match is in view: when an
+    /// allowed-host image on screen loads and the rows are made again, the
+    /// view does not move to center the match.
+    #[gpui_kit::test]
+    fn an_unscrolled_preview_with_its_first_match_in_view_does_not_move_on_a_load(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 200)))]);
+        let note = format!(
+            "![a](https://img.example.com/pic.png)\n{}the needle\n{}",
+            "line\n".repeat(20),
+            "line\n".repeat(200)
+        );
+        let (_v, s, view) = browse(cx, &rt, &note, &[HOST], "needle");
+        let count = kinds(&view, cx).len();
+        assert_eq!(top_row(&s, count, cx), 0, "the match is in view at the top");
+        let (hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+        let in_view = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find((PREVIEW_ROW_ID, hit.unwrap())).is_some()
+            })
+            .unwrap();
+        assert!(in_view, "the first match is in the first screen");
+        drive(&rt, cx, |cx| {
+            frame(&s, cx);
+            kinds(&view, cx)
+                .iter()
+                .any(|k| matches!(k, RowKind::Image { .. }))
+        });
+        frame(&s, cx);
+        let (hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+        let hit = hit.unwrap();
+        let rows = cx.read(|cx| view.read(cx).shown_images())[0].rows;
+        assert!(rows > remote_rows(), "the rows grew: {rows}");
+        let count = kinds(&view, cx).len();
+        assert_eq!(top_row(&s, count, cx), 0, "the view did not move");
+        let shown = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find((PREVIEW_ROW_ID, hit)).is_some()
+            })
+            .unwrap();
+        assert!(shown, "the first match is still in view");
+    }
+
     #[gpui_kit::test]
     fn after_a_load_the_preview_keeps_its_top_line(cx: &mut TestAppContext) {
         let rt = runtime();

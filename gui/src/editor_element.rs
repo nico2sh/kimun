@@ -606,6 +606,9 @@ impl Element for EditorElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let focused = self.view.read(cx).focus_handle.is_focused(window);
         let origin = bounds.origin;
+        // The part of the window this element shows in: a facet chunk is
+        // sized to its whole text and clipped by the facet's scroll area.
+        let visible = window.content_mask().bounds;
 
         let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
             let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
@@ -658,7 +661,12 @@ impl Element for EditorElement {
                     view.prepare_counted(cols, rows, self.view.entity_id());
                 }
                 if let Some(pane) = pane {
-                    draws = view.image_draws(pane, view_cx);
+                    // A chunk spans more than the screen: only its rows
+                    // inside the visible area count as on screen, so only
+                    // they start an auto load.
+                    let first = ((visible.top() - origin.y) / line_height).floor() as isize;
+                    let end = ((visible.bottom() - origin.y) / line_height).ceil() as isize;
+                    draws = view.image_draws(pane, Some(first..end), view_cx);
                 }
             } else {
                 // Device pixels, the unit an image's natural size is in.
@@ -669,7 +677,8 @@ impl Element for EditorElement {
                 };
                 view.prepare_images(pane, view_cx);
                 view.editor.prepare_frame(cols, rows);
-                draws = view.image_draws(pane, view_cx);
+                // The editor's spots are the pane's: all on screen.
+                draws = view.image_draws(pane, None, view_cx);
             }
             // The bar has the keyboard while open: no caret in the text.
             let bar_open = view.editor.find_open();

@@ -455,10 +455,15 @@ impl EditorView {
 
     /// After the frame is laid out: what each image on screen draws, sized
     /// for `pane`. When the set of images on screen changed since the last
-    /// frame, the decode of each one not decoded is asked for.
+    /// frame, the decode of each one not decoded is asked for. `on_screen`
+    /// is the range of lines, from the pane's top line, that the window
+    /// shows (a read-only chunk is taller than the screen); `None` when
+    /// every line of the pane is on screen. Only a placeholder that crosses
+    /// it starts an auto load.
     pub(crate) fn image_draws(
         &mut self,
         pane: ImagePane,
+        on_screen: Option<std::ops::Range<isize>>,
         cx: &mut Context<Self>,
     ) -> Vec<ImageDraw> {
         let Some(images) = self.images.as_mut() else {
@@ -499,8 +504,12 @@ impl EditorView {
                 let ImageLook::Remote(look) = look_of(embed, &mut store, &remote, pane) else {
                     continue;
                 };
+                let shown = on_screen.as_ref().is_none_or(|lines| {
+                    spot.top < lines.end && spot.top + spot.lines as isize > lines.start
+                });
                 if let (RemoteLook::Placeholder { host, actions }, Some(url)) = (&look, &url)
                     && !actions.always
+                    && shown
                 {
                     to_load.push((url.clone(), host.clone()));
                 }

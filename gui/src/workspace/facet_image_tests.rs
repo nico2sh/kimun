@@ -497,7 +497,7 @@ mod remote {
     use super::super::search::{PREVIEW_ROW_ID, SearchPreview};
     use super::{image_rows, open_note, png, rest, vault_with};
     use crate::editor_element::image_hover_id;
-    use crate::image_core::{Actions, RemoteLook};
+    use crate::image_core::{Actions, RemoteLook, remote_rows};
     use crate::remote_image::{Hop, RemoteImages, fetch_count};
     use crate::remote_placeholder::RemoteAction;
 
@@ -629,14 +629,18 @@ mod remote {
     fn a_facet_chunk_draws_the_placeholder_and_load_swaps_in_the_image(cx: &mut TestAppContext) {
         let rt = runtime();
         let _guard = rt.enter();
-        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 200)))]);
         let v = vault_with(&[("n.md", NOTE)], &[]);
         let (view, cx, events, _sub) = open_note(cx, &v, "n.md", NOTE);
         assert_eq!(measured(&view, cx), Some(4));
         let caret = chunk(&view, 0, cx).read_with(cx, |c, _| c.editor.cursor());
+        let mut heights = vec![measured(&view, cx)];
         press_button(&view, URL, RemoteAction::Load, cx);
-        let rows = image_rows(60, cx);
-        let mut heights = Vec::new();
+        let rows = image_rows(200, cx);
+        assert!(
+            rows > remote_rows(),
+            "the image is taller than the placeholder"
+        );
         drive(&rt, cx, |cx| {
             let h = measured(&view, cx);
             if heights.last() != Some(&h) {
@@ -646,13 +650,7 @@ mod remote {
         });
         assert_eq!(measured(&view, cx), Some(2 + rows), "the image's rows");
         // The chunk grew once: from the placeholder to the image.
-        assert_eq!(heights.last(), Some(&Some(2 + rows)));
-        assert!(
-            heights
-                .iter()
-                .all(|h| *h == Some(4) || *h == Some(2 + rows)),
-            "{heights:?}"
-        );
+        assert_eq!(heights, [Some(4), Some(2 + rows)], "grew once");
         assert!(looks(&view, cx).is_empty(), "no placeholder any more");
         assert_eq!(cx.update(|_, cx| fetch_count(cx)), 1);
         // The press moved no caret and followed nothing.
@@ -753,6 +751,112 @@ mod remote {
         assert!(!menu, "a read-only editor builds no remote menu");
         assert!(no_follow(&events));
         assert_eq!(cx.update(|_, cx| fetch_count(cx)), 0);
+    }
+
+    /// A chunk taller than the screen: an allowed-host embed below the
+    /// visible area starts no fetch, even though the chunk is drawn. It
+    /// loads once it scrolls into view.
+    #[gpui_kit::test]
+    fn an_allowed_embed_below_the_visible_part_of_a_chunk_starts_no_fetch(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let env = install(cx, &[(URL, Hop::Body(png(10, 20)))]);
+        allow(cx, &[HOST]);
+        let text = format!("intro\n{}![a]({URL})\nafter", "line\n".repeat(300));
+        let v = vault_with(&[("n.md", &text)], &[]);
+        let (view, cx, _events, _sub) = open_note(cx, &v, "n.md", &text);
+        for _ in 0..5 {
+            rest(cx);
+            rt.block_on(tokio::time::sleep(Duration::from_millis(2)));
+        }
+        assert_eq!(
+            view.read_with(cx, |v, _| v.chunks().len()),
+            1,
+            "one tall chunk"
+        );
+        assert!(
+            !looks(&view, cx).is_empty(),
+            "the placeholder is drawn off screen"
+        );
+        assert_eq!(
+            cx.update(|_, cx| fetch_count(cx)),
+            0,
+            "off screen: no fetch"
+        );
+        assert!(env.fake.calls().is_empty());
+        let max = super::super::facet_window_view_tests::max_offset(&view, cx);
+        super::super::facet_window_view_tests::scroll_to(&view, max, cx);
+        drive(&rt, cx, |cx| fetch_count_of(cx) >= 1);
+        assert_eq!(env.fake.calls(), [URL.to_string()], "on screen: one fetch");
+    }
+
+    fn fetch_count_of(cx: &mut VisualTestContext) -> usize {
+        cx.update(|_, cx| fetch_count(cx))
+    }
+
+    /// "Always load from" in a facet chunk, through the workspace: the host
+    /// is written to the settings and allowed, and the chunk loads the image.
+    #[gpui_kit::test]
+    fn always_load_from_in_a_facet_chunk_allows_the_host_and_loads(cx: &mut TestAppContext) {
+        use super::super::facet_tests::in_a_group::{active, facet, open_facet};
+        use super::super::start_tests::{drive as drive_ws, open_started, vault_start};
+        use gpui_kit::test::TestEventExt as _;
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let v = rt.block_on(crate::test_vault::test_vault(&[("a.md", NOTE)], &[]));
+        let s = open_started(
+            cx,
+            vault_start(
+                &v,
+                crate::startup::FirstNote::Note(kimun_core::nfs::VaultPath::new("a.md")),
+            ),
+            v.settings.clone(),
+        );
+        drive_ws(&rt, cx, |cx| s.text(cx) == NOTE && !s.indexing(cx));
+        let group = active(&s, cx);
+        open_facet(&s, &rt, group, "a.md", Vec::new(), cx);
+        let view = facet(&s, group, cx).expect("a facet view");
+        let render = |cx: &mut TestAppContext| {
+            cx.update_window(s.handle, |_, window, cx| {
+                window.refresh();
+                window.render_frame(cx)
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        render(cx);
+        render(cx);
+        let editor = cx.read(|cx| view.read(cx).chunks()[0].clone());
+        let at = cx.read(|cx| {
+            editor
+                .read(cx)
+                .remote_hits
+                .iter()
+                .flat_map(|hit| hit.buttons.iter())
+                .find(|(_, a)| *a == RemoteAction::AlwaysLoad)
+                .map(|(bounds, _)| bounds.center())
+                .expect("the Always load from button")
+        });
+        cx.update_window(s.handle, |_, window, cx| {
+            window.pointer_down(at, gpui_kit::MouseButton::Left, cx);
+            window.pointer_up(at, gpui_kit::MouseButton::Left, cx);
+        })
+        .unwrap();
+        drive_ws(&rt, cx, |cx| {
+            render(cx);
+            cx.read(|cx| {
+                editor
+                    .read(cx)
+                    .painted
+                    .as_ref()
+                    .is_some_and(|p| p.images.iter().any(|i| i.row == 1 && i.ready))
+            })
+        });
+        let hosts = v.settings.read().unwrap().remote_image_hosts.clone();
+        assert_eq!(hosts, [HOST.to_string()], "written to the settings");
+        assert!(cx.read(|cx| cx.global::<RemoteImages>().is_allowed(HOST)));
+        assert_eq!(cx.update(|cx| fetch_count(cx)), 1);
     }
 
     /// A dead address on an allowed host: the preview asks once, it fails,
