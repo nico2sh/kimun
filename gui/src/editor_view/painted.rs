@@ -59,7 +59,8 @@ pub struct Painted {
     /// coordinates.
     pub popup: Option<Bounds<Pixels>>,
     /// Where the pointer is the pointing hand: the cells of every follow
-    /// target drawn, in window coordinates. The text cursor elsewhere.
+    /// target drawn, and the buttons of every remote look, in window
+    /// coordinates. The text cursor elsewhere.
     /// Kept for tests only: the element sets the cursor from its own copy.
     #[cfg(test)]
     pub hand_areas: Vec<Bounds<Pixels>>,

@@ -61,7 +61,9 @@ use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
 use crate::image_core::{RemoteLook, device_bounds, paint_look, remote_rows};
-use crate::remote_placeholder::{PlaceholderStyle, paint_remote_look};
+use crate::remote_placeholder::{
+    PlaceholderStyle, button_areas, insert_button_hitboxes, paint_remote_look, show_hand_over,
+};
 use crate::row_cache::RowCache;
 use crate::row_paint::{RowPaint, cells_of, cluster_at};
 use crate::theme::{self, CellStyle};
@@ -506,6 +508,11 @@ pub struct EditorPrepaint {
     target_hitboxes: Vec<Hitbox>,
     text_area: Bounds<Pixels>,
     target_areas: Vec<Bounds<Pixels>>,
+    /// The buttons of the remote looks: a pointing hand there too. The
+    /// same layout as the buttons `paint_remote_look` paints and a press
+    /// finds.
+    remote_button_areas: Vec<Bounds<Pixels>>,
+    remote_button_hitboxes: Vec<Hitbox>,
     cells: CellMetrics,
     line_height: Pixels,
     /// Synthetic bold's offset at this font size.
@@ -778,6 +785,20 @@ impl Element for EditorElement {
             );
             let images = place_images(&draws, text_rows, line_height, scale);
             let remote_looks = place_remote_looks(&draws, text_rows, line_height);
+            let remote_style = PlaceholderStyle::of(theme, base_font.clone(), font_size);
+            let remote_button_areas: Vec<Bounds<Pixels>> = remote_looks
+                .iter()
+                .flat_map(|paint| {
+                    button_areas(
+                        &text_system,
+                        paint.rect,
+                        paint.clip,
+                        &paint.look,
+                        &remote_style,
+                    )
+                })
+                .map(|(area, _)| area)
+                .collect();
             #[cfg(test)]
             let mut image_notes = Vec::new();
             for draw in &draws {
@@ -994,7 +1015,11 @@ impl Element for EditorElement {
                 find_bar: bar_paint,
                 popup: None,
                 #[cfg(test)]
-                hand_areas: target_areas.clone(),
+                hand_areas: target_areas
+                    .iter()
+                    .chain(&remote_button_areas)
+                    .copied()
+                    .collect(),
                 #[cfg(test)]
                 images: images
                     .iter()
@@ -1043,10 +1068,12 @@ impl Element for EditorElement {
                 image_hovers: Vec::new(),
                 image_menus,
                 remote_looks,
-                remote_style: PlaceholderStyle::of(theme, base_font.clone(), font_size),
+                remote_style,
                 text_hitbox: None,
                 target_hitboxes: Vec::new(),
                 target_areas,
+                remote_button_areas,
+                remote_button_hitboxes: Vec::new(),
                 text_area: if mode_line.is_some() || bar_rows > 0 {
                     Bounds::new(origin, size(bounds.size.width, px(cells.y_of(rows))))
                 } else {
@@ -1072,6 +1099,8 @@ impl Element for EditorElement {
             .iter()
             .map(|b| window.insert_hitbox(*b, HitboxBehavior::Normal))
             .collect();
+        prepaint.remote_button_hitboxes =
+            insert_button_hitboxes(window, &prepaint.remote_button_areas);
         // Above the text's hitboxes: the image's tooltip under the pointer.
         prepaint.image_hovers = prepaint
             .images
@@ -1116,6 +1145,8 @@ impl Element for EditorElement {
         for target in &prepaint.target_hitboxes {
             window.set_cursor_style(CursorStyle::PointingHand, target);
         }
+        // And over each button of a remote look.
+        show_hand_over(window, &prepaint.remote_button_hitboxes);
 
         let line_height = prepaint.line_height;
         let faux_offset = prepaint.faux_offset;

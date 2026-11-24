@@ -118,7 +118,8 @@ use crate::image_core::{
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins};
 use crate::remote_image::RemoteImages;
 use crate::remote_placeholder::{
-    PlaceholderStyle, RemoteAction, action_at, paint_remote_look, run_action,
+    PlaceholderStyle, RemoteAction, action_at, button_areas, insert_button_hitboxes,
+    paint_remote_look, run_action, show_hand_over,
 };
 use crate::theme;
 
@@ -990,16 +991,36 @@ fn render_row(
             // over the placeholder's rows, clipped to the row, through the
             // one placeholder piece. A left press on a button it painted runs
             // the button and goes no further: the result is not selected.
+            // The whole look, of which the row `bounds` is the slice `index`.
+            let look_rect = move |bounds: Bounds<Pixels>| {
+                Bounds::new(
+                    point(
+                        bounds.origin.x,
+                        bounds.origin.y - bounds.size.height * index as f32,
+                    ),
+                    size(bounds.size.width, bounds.size.height * remote_rows() as f32),
+                )
+            };
+            let (hand_look, hand_style) = (look.clone(), style.clone());
             let paint = canvas(
-                |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-                move |bounds, hitbox, window, cx| {
-                    let rect = Bounds::new(
-                        point(
-                            bounds.origin.x,
-                            bounds.origin.y - bounds.size.height * index as f32,
-                        ),
-                        size(bounds.size.width, bounds.size.height * remote_rows() as f32),
-                    );
+                move |bounds, window, _| {
+                    let row = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+                    // The buttons in this row show the pointing hand.
+                    let areas: Vec<Bounds<Pixels>> = button_areas(
+                        window.text_system(),
+                        look_rect(bounds),
+                        bounds,
+                        &hand_look,
+                        &hand_style,
+                    )
+                    .into_iter()
+                    .map(|(area, _)| area)
+                    .collect();
+                    (row, insert_button_hitboxes(window, &areas))
+                },
+                move |bounds, (hitbox, hands), window, cx| {
+                    let rect = look_rect(bounds);
+                    show_hand_over(window, &hands);
                     let hits = paint_remote_look(window, cx, rect, bounds, &look, &style);
                     #[cfg(test)]
                     log.remote.borrow_mut().push(PaintedRemote {
@@ -1010,6 +1031,7 @@ fn render_row(
                         url: url.clone(),
                         look: look.clone(),
                         buttons: hits.clone(),
+                        hands: hands.iter().map(|hitbox| hitbox.bounds).collect(),
                     });
                     if hits.is_empty() {
                         return;
@@ -1058,6 +1080,8 @@ pub(crate) struct PaintedRemote {
     pub(crate) look: RemoteLook,
     /// The buttons inside the row, from the placeholder piece.
     pub(crate) buttons: Vec<(Bounds<Pixels>, RemoteAction)>,
+    /// Where the row shows the pointing hand: a hitbox over each button.
+    pub(crate) hands: Vec<Bounds<Pixels>>,
 }
 
 /// One image row's slice as painted (tests).
