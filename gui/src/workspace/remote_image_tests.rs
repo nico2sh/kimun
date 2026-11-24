@@ -82,6 +82,17 @@ pub(super) struct Env {
     _dir: tempfile::TempDir,
     pub(super) cache: ImageCache,
     pub(super) fake: Arc<Fake>,
+    store: RemoteImages,
+}
+
+impl Drop for Env {
+    /// The test ends here, and its runtime and temp cache go with it. GPUI's
+    /// teardown still draws a dirty window, and with the cache gone an embed
+    /// on an allowed host asks for its fetch again, with no runtime to run
+    /// it. The store starts nothing from now on.
+    fn drop(&mut self) {
+        self.store.retire_for_test();
+    }
 }
 
 /// Install a fake fetcher that answers `script` and a temp cache in the
@@ -107,6 +118,7 @@ pub(super) fn install(cx: &mut TestAppContext, script: &[(&str, Hop)]) -> Env {
         _dir: dir,
         cache,
         fake,
+        store: store(cx),
     }
 }
 
@@ -447,6 +459,25 @@ fn always_load_adds_the_host_then_loads_and_a_second_embed_of_that_host_loads_on
     let mut calls = env.fake.calls();
     calls.sort();
     assert_eq!(calls, vec![OTHER.to_string(), URL.to_string()]);
+}
+
+/// GPUI's teardown draws a dirty window after the test function returns,
+/// when the test's runtime and temp cache are gone. With the copies gone, an
+/// embed on an allowed host asks for its fetch again. The fixture's drop
+/// makes the store start nothing, so the draw does not reach tokio.
+#[gpui_kit::test]
+fn a_draw_after_the_fixture_drops_starts_no_fetch(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let guard = rt.enter();
+    let env = install(cx, &[(URL, Hop::Body(png(10, 40)))]);
+    let (_v, s) = open(cx, &rt, NOTE, &[HOST]);
+    drive(&rt, cx, |cx| ready(&s, 1, cx));
+    let fake = env.fake.clone();
+    drop(env);
+    drop(guard);
+    let view = editor(&s, cx);
+    cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
+    assert_eq!(fake.calls(), vec![URL.to_string()]);
 }
 
 #[gpui_kit::test]

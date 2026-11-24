@@ -447,6 +447,12 @@ struct Inner {
     /// thread, so no test reaches the network or the real cache.
     #[cfg(test)]
     stand_in: bool,
+    /// The test that installed the fake has ended: a fetch does nothing.
+    /// GPUI's test teardown still draws a dirty window after the test
+    /// function returns, when its runtime and its temp cache are gone, so
+    /// an embed on an allowed host would ask for a fetch again.
+    #[cfg(test)]
+    retired: bool,
 }
 
 /// The state of every remote address for the session. A clone shares the
@@ -503,6 +509,8 @@ impl RemoteImages {
                 running: 0,
                 #[cfg(test)]
                 stand_in: false,
+                #[cfg(test)]
+                retired: false,
             })),
         }
     }
@@ -611,6 +619,10 @@ impl RemoteImages {
                 "a test asked to fetch {url} with the default store: install a fake \
                  fetcher and a temp cache first (set_fetcher and set_cache)"
             );
+            #[cfg(test)]
+            if inner.retired {
+                return;
+            }
             if let Some(callers) = inner.in_flight.get_mut(&key) {
                 callers.push(on_done);
                 return;
@@ -784,6 +796,7 @@ pub(crate) fn set_fetcher(cx: &mut App, fetcher: Arc<dyn Fetcher>) {
     let mut inner = store.inner.borrow_mut();
     inner.fetcher = fetcher;
     inner.stand_in = false;
+    inner.retired = false;
 }
 
 /// Installs `cache` in the app's store.
@@ -793,6 +806,14 @@ pub(crate) fn set_cache(cx: &mut App, cache: ImageCache) {
 }
 
 impl RemoteImages {
+    /// Ends the test that installed the fake fetcher: the store starts no
+    /// fetch from now on. A test's fixture calls it when it drops, before
+    /// GPUI's teardown draws the window one last time.
+    #[cfg(test)]
+    pub(crate) fn retire_for_test(&self) {
+        self.inner.borrow_mut().retired = true;
+    }
+
     /// Puts `url` in `state` with no fetch: `Failed`, `RedirectBlocked`,
     /// or `Loading`. Other states come from the cache and the scheme.
     #[cfg(test)]
