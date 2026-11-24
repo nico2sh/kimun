@@ -240,15 +240,10 @@ impl PreferencesView {
 
     // ---- acting ------------------------------------------------------------
 
-    /// Enter in one of the section's fields: Create in the new folder
-    /// field, Export or Import in theirs, nothing in the filter.
+    /// Enter in one of the section's own fields: Export or Import in
+    /// theirs, nothing in the filter (a chooser field's Enter is the
+    /// chooser's).
     pub(crate) fn keyboard_field_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.keyboard_chooser()
-            && chooser.read(cx).new_folder_focused(window, cx)
-        {
-            chooser.update(cx, |c, cx| c.create_folder(window, cx));
-            return;
-        }
         let file = &self.keyboard.file;
         let on = |input: &Entity<InputState>| input.read(cx).focus_handle(cx).is_focused(window);
         if on(&file.export_input) {
@@ -258,23 +253,18 @@ impl PreferencesView {
         }
     }
 
-    /// Esc in one of the section's fields: the filter's text goes, the new
-    /// folder field closes, the chooser closes (from the empty filter), else
-    /// (a path field, the empty filter) it cancels the view, as Esc does
-    /// everywhere in it.
+    /// Esc in one of the section's own fields: the filter's text goes, the
+    /// chooser closes (from the empty filter), else (a path field, the
+    /// empty filter) it cancels the view, as Esc does everywhere in it. A
+    /// chooser field's Esc is the chooser's.
     pub(crate) fn keyboard_field_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.keyboard_filter_focused(window, cx) && self.keyboard_filter_escape(window, cx) {
             return;
         }
-        if let Some(chooser) = self.keyboard_chooser() {
-            if chooser.read(cx).new_folder_focused(window, cx) {
-                chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
-            } else {
-                // The empty filter or the chooser's Location field, with
-                // the chooser up: Esc closes the chooser, as it does
-                // elsewhere in the section.
-                self.keyboard_close_chooser(window, cx);
-            }
+        if self.keyboard_chooser().is_some() {
+            // The empty filter with the chooser up: Esc closes the chooser,
+            // never the view.
+            self.keyboard_close_chooser(window, cx);
             return;
         }
         self.cancel(false, window, cx);
@@ -307,9 +297,8 @@ impl PreferencesView {
             cx.notify();
             return;
         };
-        let host = self.focus.clone();
         let chooser = cx.new(|cx| {
-            let chooser = FolderChooser::new(CHOOSER_PREFIX, start, host, window, cx);
+            let chooser = FolderChooser::new(CHOOSER_PREFIX, start, window, cx);
             match target {
                 Target::Export => chooser,
                 Target::Import => chooser.files(EXTENSION),
@@ -322,7 +311,7 @@ impl PreferencesView {
         // taller: scroll to the bottom so that its commands and hints show.
         // Closing it shrinks the page, and the offset clamps there.
         self.content_scroll.scroll_to_bottom();
-        window.focus(&self.focus, cx);
+        // The chooser's Location field has the keyboard now.
         cx.notify();
     }
 
@@ -602,7 +591,7 @@ impl PreferencesView {
                 .child(text)
         };
         if let Some((target, chooser)) = self.keyboard.file.chooser.clone() {
-            let hints = chooser.read(cx).hints();
+            let hints = chooser.read(cx).hints(cx);
             return div()
                 .flex()
                 .flex_col()

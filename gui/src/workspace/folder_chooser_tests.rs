@@ -6,6 +6,9 @@
 //! GPUI's `run_until_parked` (`start_tests::drive`): the listings run on
 //! tokio's blocking pool, and land only while the runtime is driven.
 //!
+//! The keys go through the window (`press`, `input`), as a person's do:
+//! Enter, Esc and the arrows reach the chooser as the kit's field actions.
+//!
 //! [`folder_chooser`]: super::folder_chooser
 #![cfg(test)]
 
@@ -25,13 +28,14 @@ use tokio::runtime::Runtime;
 use super::folder_chooser::{FolderChooser, FolderChooserEvent, Listing, file_row_id, row_id};
 use super::start_tests::{drive, runtime};
 use crate::input;
+use crate::keymap::{self, Keymap, Platform};
 
 const PREFIX: &str = "test";
 const LOCATION_ID: &str = "test-chooser-location";
 const LOCATION_ERROR_ID: &str = "test-chooser-location-error";
 
-/// A bare host, as the real ones: its root holds the keyboard and hands
-/// the keys to the chooser, unless a chooser field has them.
+/// A bare host, as the real ones: its root hands the keys to the chooser
+/// when it has the keyboard, never while a chooser field has them.
 struct Host {
     chooser: Entity<FolderChooser>,
     focus: FocusHandle,
@@ -69,22 +73,23 @@ struct Opened {
 /// A window with a chooser on `start` (files mode with `files`), not yet
 /// listed. Enter the runtime first.
 fn open(cx: &mut TestAppContext, start: &Path, files: Option<&'static str>) -> Opened {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keymap::init(cx, Keymap::defaults(Platform::LinuxWindows));
+    });
     let start = SystemPath::try_absolute(start).unwrap();
     let (handle, host) = cx
         .update(|cx| {
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| {
                     let focus = cx.focus_handle();
-                    let host_focus = focus.clone();
                     let chooser = cx.new(|cx| {
-                        let chooser = FolderChooser::new(PREFIX, start, host_focus, window, cx);
+                        let chooser = FolderChooser::new(PREFIX, start, window, cx);
                         match files {
                             Some(ext) => chooser.files(ext),
                             None => chooser,
                         }
                     });
-                    window.focus(&focus, cx);
                     Host { chooser, focus }
                 })
             })
@@ -156,16 +161,24 @@ impl Opened {
         cx.run_until_parked();
     }
 
-    /// Enter on the Location field's value (the keys come later: called
-    /// directly), then drive until the location is gone to.
+    /// Enter in the Location field (the real key, through the window),
+    /// then drive until the location is gone to.
     fn go(&self, rt: &Runtime, cx: &mut TestAppContext) {
-        cx.update_window(self.handle, |_, window, cx| {
-            self.chooser
-                .update(cx, |c, cx| c.go_to_location(window, cx))
-        })
-        .unwrap();
+        assert!(self.location_focused(cx), "Enter is pressed in the field");
+        self.press("enter", cx);
         drive(rt, cx, |cx| self.read(cx, |c| !c.resolving()));
         self.listed(rt, cx);
+    }
+
+    fn location_focused(&self, cx: &mut TestAppContext) -> bool {
+        cx.update_window(self.handle, |_, window, cx| {
+            self.chooser.read(cx).location_focused(window, cx)
+        })
+        .unwrap()
+    }
+
+    fn events(&self) -> Vec<String> {
+        self.events.borrow().clone()
     }
 
     fn location_error(&self, cx: &TestAppContext) -> Option<String> {
@@ -612,4 +625,277 @@ fn the_list_label_names_the_folder(cx: &mut TestAppContext) {
         f.label("test-chooser-rows", cx),
         Some(format!("Folders and files in {path}"))
     );
+}
+
+// ── the keys ────────────────────────────────────────────────────────────────
+
+/// The chooser takes the keyboard as it opens: the Location field has it,
+/// so a name typed at once filters.
+#[gpui_kit::test]
+fn the_location_field_has_the_keyboard_on_open(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["archive", "notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    assert!(s.location_focused(cx));
+    s.press("n", cx);
+    assert_eq!(s.location_text(cx), "n");
+    assert_eq!(s.shown(cx), names(&["notes"]));
+}
+
+/// Up and Down move the selection from inside the field, and keep its text.
+#[gpui_kit::test]
+fn up_and_down_move_the_selection_from_the_field(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["archive", "notes", "zebra"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    assert_eq!(s.read(cx, |c| c.selected()), Some(0));
+    s.press("down", cx);
+    s.press("down", cx);
+    assert_eq!(s.read(cx, |c| c.selected()), Some(2));
+    s.press("down", cx);
+    assert_eq!(s.read(cx, |c| c.selected()), Some(2), "stays at the end");
+    s.press("up", cx);
+    assert_eq!(s.read(cx, |c| c.selected()), Some(1));
+    assert!(s.location_focused(cx));
+    // Enter opens the row selected.
+    s.press("enter", cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+    assert!(s.events().is_empty(), "nothing chosen");
+}
+
+/// Esc with text clears it (the whole listing is back); Esc from the empty
+/// field closes the chooser.
+#[gpui_kit::test]
+fn esc_clears_the_text_then_closes_the_chooser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["archive", "notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.type_location("zz", cx);
+    assert!(s.shown(cx).is_empty());
+    s.press("escape", cx);
+    assert_eq!(s.location_text(cx), "");
+    assert_eq!(s.shown(cx), names(&["archive", "notes"]));
+    assert_eq!(s.read(cx, |c| c.selected()), Some(0));
+    assert!(s.events().is_empty(), "not closed yet");
+    // A message goes with the text.
+    s.type_location(&format!("gone{MAIN_SEPARATOR}"), cx);
+    s.go(&rt, cx);
+    assert!(s.location_error(cx).is_some());
+    s.press("escape", cx);
+    assert_eq!(s.location_error(cx), None);
+    assert!(s.events().is_empty());
+    s.press("escape", cx);
+    assert_eq!(s.events(), ["cancelled"]);
+}
+
+/// Backspace with text deletes a character; only in the empty field does
+/// it go up one folder.
+#[gpui_kit::test]
+fn backspace_edits_text_and_goes_up_only_when_empty(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a"], &[]);
+    let s = open(cx, &root.join("notes"), None);
+    s.listed(&rt, cx);
+    s.type_location("ab", cx);
+    s.press("backspace", cx);
+    assert_eq!(s.location_text(cx), "a");
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+    s.press("backspace", cx);
+    assert_eq!(s.location_text(cx), "");
+    assert_eq!(s.dir(cx), sys(root.join("notes")), "the text went first");
+    s.press("backspace", cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(&root));
+    assert!(s.location_focused(cx), "the field keeps the keyboard");
+}
+
+/// Alt+Up goes up one folder, with text in the field too (it empties).
+/// Left and Right stay the caret's.
+#[gpui_kit::test]
+fn alt_up_goes_up_one_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a/deep"], &[]);
+    let s = open(cx, &root.join("notes").join("a"), None);
+    s.listed(&rt, cx);
+    s.type_location("de", cx);
+    s.press("left", cx);
+    s.press("right", cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes").join("a")), "the caret's");
+    assert_eq!(s.location_text(cx), "de");
+    s.press("alt-up", cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+    assert_eq!(s.location_text(cx), "");
+    assert!(s.location_focused(cx));
+}
+
+/// On macOS (the keymap's platform) it is Cmd+Up; Alt+Up does nothing.
+#[gpui_kit::test]
+fn cmd_up_goes_up_on_macos(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a"], &[]);
+    let s = open(cx, &root.join("notes").join("a"), None);
+    cx.update(|cx| keymap::init(cx, Keymap::defaults(Platform::MacOs)));
+    s.listed(&rt, cx);
+    s.press("alt-up", cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes").join("a")));
+    s.press("cmd-up", cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+}
+
+/// A plain N in the field types an `n`: it opens no New folder field.
+#[gpui_kit::test]
+fn typing_n_types_an_n(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.press("n", cx);
+    s.type_location("ew", cx);
+    assert_eq!(s.location_text(cx), "new");
+    assert!(!s.read(cx, |c| c.new_folder_open()));
+}
+
+/// Ctrl+N opens the New folder field (it takes the keyboard) in folder
+/// mode only; Esc there closes it and gives the keyboard back to the
+/// Location field.
+#[gpui_kit::test]
+fn ctrl_n_opens_new_folder_in_folder_mode_only(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &["a.toml"]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.press("ctrl-n", cx);
+    assert!(s.read(cx, |c| c.new_folder_open()));
+    assert_eq!(s.location_text(cx), "", "no `n` typed");
+    let typing = cx
+        .update_window(s.handle, |_, window, cx| {
+            s.chooser.read(cx).new_folder_focused(window, cx)
+        })
+        .unwrap();
+    assert!(typing, "the new folder field has the keyboard");
+    s.press("escape", cx);
+    assert!(!s.read(cx, |c| c.new_folder_open()));
+    assert!(s.location_focused(cx));
+    assert!(s.events().is_empty(), "Esc closed only the field");
+    let f = open(cx, &root, Some("toml"));
+    f.listed(&rt, cx);
+    f.press("ctrl-n", cx);
+    assert!(!f.read(cx, |c| c.new_folder_open()));
+}
+
+/// Ctrl+Enter chooses the folder shown, from the field, with text in it;
+/// files mode chooses no folder.
+#[gpui_kit::test]
+fn ctrl_enter_chooses_the_folder(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &["a.toml"]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.type_location("no", cx);
+    s.press("ctrl-enter", cx);
+    assert_eq!(
+        s.events(),
+        [format!("chosen:{}", system::path_to_string(sys(&root)))]
+    );
+    let f = open(cx, &root, Some("toml"));
+    f.listed(&rt, cx);
+    f.press("ctrl-enter", cx);
+    assert!(f.events().is_empty());
+    assert_eq!(f.dir(cx), sys(&root));
+}
+
+/// Each key a hint line names does what it says, on both platforms and in
+/// both modes, and each line names exactly the keys tried here.
+#[gpui_kit::test]
+fn the_hints_match_the_keys(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a/deep", "notes/b"], &["notes/a/k.toml"]);
+    for (platform, files) in [
+        (Platform::LinuxWindows, None),
+        (Platform::LinuxWindows, Some("toml")),
+        (Platform::MacOs, None),
+        (Platform::MacOs, Some("toml")),
+    ] {
+        let s = open(cx, &root.join("notes"), files);
+        cx.update(|cx| keymap::init(cx, Keymap::defaults(platform)));
+        s.listed(&rt, cx);
+        let hints = cx.read(|cx| s.chooser.read(cx).hints(cx));
+        let keys: Vec<&str> = hints
+            .split(" · ")
+            .map(|part| part.split_once(": ").expect("key: what it does").0)
+            .collect();
+        let (up, choose) = match platform {
+            Platform::MacOs => ("Cmd+Up", "Cmd+Enter"),
+            Platform::LinuxWindows => ("Alt+Up", "Ctrl+Enter"),
+        };
+        let mut want = vec!["Up and Down", "Enter", up];
+        if files.is_none() {
+            want.extend([choose, "Ctrl+N"]);
+        }
+        want.push("Esc");
+        assert_eq!(keys, want, "{platform:?} {files:?}: {hints}");
+        let notes = sys(root.join("notes"));
+        // Up and Down: select.
+        s.press("down", cx);
+        assert_eq!(s.read(cx, |c| c.selected()), Some(1));
+        s.press("up", cx);
+        assert_eq!(s.read(cx, |c| c.selected()), Some(0));
+        // Enter: open (the row selected) or go to the path.
+        s.press("enter", cx);
+        s.listed(&rt, cx);
+        assert_eq!(s.dir(cx), sys(root.join("notes").join("a")));
+        // Alt+Up (Cmd+Up): up.
+        s.press(&up.to_lowercase().replace('+', "-"), cx);
+        s.listed(&rt, cx);
+        assert_eq!(s.dir(cx), notes);
+        s.type_location(&format!("b{MAIN_SEPARATOR}"), cx);
+        s.go(&rt, cx);
+        assert_eq!(s.dir(cx), sys(root.join("notes").join("b")));
+        s.press("backspace", cx);
+        s.listed(&rt, cx);
+        assert_eq!(s.dir(cx), notes);
+        if files.is_some() {
+            // Enter: pick a file (the path to one).
+            s.type_location(&format!("a{MAIN_SEPARATOR}k.toml"), cx);
+            s.go(&rt, cx);
+            assert_eq!(s.events().len(), 1, "{:?}", s.events());
+            assert!(s.events()[0].starts_with("file:"));
+            s.events.borrow_mut().clear();
+        } else {
+            // Ctrl+N: new folder, then Esc closes the field.
+            s.press("ctrl-n", cx);
+            assert!(s.read(cx, |c| c.new_folder_open()));
+            s.press("escape", cx);
+            // Ctrl+Enter (Cmd+Enter): choose.
+            s.press(&choose.to_lowercase().replace('+', "-"), cx);
+            assert_eq!(
+                s.events(),
+                [format!("chosen:{}", system::path_to_string(&notes))]
+            );
+            s.events.borrow_mut().clear();
+        }
+        // Esc: clear, then back.
+        s.type_location("x", cx);
+        s.press("escape", cx);
+        assert_eq!(s.location_text(cx), "");
+        assert!(s.events().is_empty());
+        s.press("escape", cx);
+        assert_eq!(s.events(), ["cancelled"]);
+    }
 }

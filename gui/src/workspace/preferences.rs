@@ -1149,8 +1149,21 @@ impl PreferencesView {
 
     // ---- keys -------------------------------------------------------------
 
+    /// Whether a field of a chooser up (Workspaces, Keyboard) has the
+    /// keyboard: its Enter and Esc are the chooser's, which sees them after
+    /// these capture handlers.
+    pub(crate) fn chooser_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        [self.ws_chooser(), self.keyboard_chooser()]
+            .into_iter()
+            .flatten()
+            .any(|c| c.read(cx).field_focused(window, cx))
+    }
+
     /// Enter in the server field (the kit's action, seen first): Save.
     fn on_field_enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chooser_field_focused(window, cx) {
+            return;
+        }
         if self.server_focused(window, cx) {
             self.save(window, cx);
             cx.stop_propagation();
@@ -1165,6 +1178,9 @@ impl PreferencesView {
 
     /// Esc in the server field: Cancel, as everywhere in the view.
     fn on_field_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chooser_field_focused(window, cx) {
+            return;
+        }
         if self.server_focused(window, cx) {
             self.cancel(false, window, cx);
             cx.stop_propagation();
@@ -1262,15 +1278,19 @@ impl PreferencesView {
             Section::Keyboard => self.keyboard_chooser(),
             _ => None,
         };
-        if let Some(chooser) = chooser
-            && on_root
-        {
-            return chooser.update(cx, |c, cx| c.key(key, window, cx));
+        if let Some(chooser) = chooser {
+            if on_root {
+                return chooser.update(cx, |c, cx| c.key(key, window, cx));
+            }
+            // Elsewhere (a chooser button): Esc is still the chooser's, which
+            // clears its text, then closes. Never the form or the view.
+            if key.key == Key::Esc {
+                chooser.update(cx, |c, cx| c.escape(window, cx));
+                return true;
+            }
         }
         if key.key == Key::Esc {
-            if self.section == Section::Keyboard && self.keyboard_chooser().is_some() {
-                self.keyboard_close_chooser(window, cx);
-            } else if on_workspaces && self.ws.form.is_some() {
+            if on_workspaces && self.ws.form.is_some() {
                 self.ws_close_form(window, cx);
             } else {
                 self.cancel(false, window, cx);

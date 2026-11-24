@@ -14,6 +14,17 @@
 //! message under the field until the next key. Browsing to another folder
 //! empties the field. The list's accessible name names the folder shown.
 //!
+//! **The keys.** The field has the keyboard from the moment the chooser
+//! opens, and drives it: Up and Down move the selection, Enter opens the
+//! row or goes to the typed path, Ctrl+Enter (Cmd+Enter) chooses the
+//! folder, Alt+Up (Cmd+Up on macOS, read from the keymap's platform) and
+//! Backspace in the empty field go up, Ctrl+N opens `New folder…`, Esc
+//! clears the text and then cancels. Left, Right, a plain N and Backspace
+//! with text are the field's. The chooser catches the kit's field actions
+//! (`Enter`, `Escape`, `MoveUp`, `MoveDown`, `Backspace`) on its own root
+//! in the capture phase, after the host's capture handlers and before the
+//! field's own, and stops them there.
+//!
 //! **Behaviour owner.** The chooser entity: the folder shown, its listing,
 //! the rows shown and the selection, the fields and the work under way.
 //! Listings and the new folder run on tokio's blocking pool
@@ -21,20 +32,20 @@
 //! stale listing is dropped by revision.
 //!
 //! **Its host** draws it ([`FolderChooser`] renders the panel, [`actions`]
-//! the command row the host places in its footer), keeps the keyboard on
-//! its own root and hands the keys over ([`FolderChooser::key`]), never
-//! while a chooser field has the keyboard
-//! ([`FolderChooser::field_focused`]). Enter and Esc in the new folder
-//! field come through the host's field actions
-//! ([`FolderChooser::new_folder_focused`]). The chooser says what was picked
-//! with [`FolderChooserEvent`]. Element ids carry the host's prefix
+//! the command row the host places in its footer and
+//! [`FolderChooser::hints`] the key hints). The host's field actions and
+//! keys leave a chooser field alone ([`FolderChooser::field_focused`]):
+//! the chooser handles Enter and Esc in both of its fields. When the
+//! host's own root has the keyboard (after a click outside the fields), it
+//! hands the keys over ([`FolderChooser::key`]). The chooser says what was
+//! picked with [`FolderChooserEvent`]. Element ids carry the host's prefix
 //! (`onboarding-chooser`, `preferences-chooser`).
 //!
 //! **Files mode** ([`FolderChooser::files`], off by default): the list also
 //! shows the files with one extension (`logic::onboarding::list_files`:
 //! hidden folders listed, hidden files left out). A folder works as before; a click or Enter on
 //! a file picks it ([`FolderChooserEvent::ChosenFile`]). There is no
-//! `Choose this folder` then, and no `New folder…` (nor its N key).
+//! `Choose this folder` then, and no `New folder…` (nor its Ctrl+N key).
 //!
 //! Each row shows a folder or file icon before its name, and its label
 //! names the kind, so the kind is not told by colour alone.
@@ -45,11 +56,13 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{
+    Backspace, Enter, Escape, Input, InputEvent, InputState, MoveDown, MoveToStart, MoveUp,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
-    Focusable as _, InteractiveElement, IntoElement, ParentElement, Render, Role, ScrollStrategy,
+    AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, Focusable as _,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role, ScrollStrategy,
     SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
     Window, div, rems, uniform_list,
 };
@@ -59,6 +72,7 @@ use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::onboarding::{self as onb, LocationInput};
 use kimun_notes::settings::themes::Theme;
 
+use crate::keymap::{self, Platform};
 use crate::theme;
 
 /// The last component of `dir`, as shown in the chooser.
@@ -96,11 +110,12 @@ fn id(prefix: &str, part: &str) -> SharedString {
 
 /// What the chooser tells its host.
 pub(crate) enum FolderChooserEvent {
-    /// `Choose this folder` (Ctrl+Enter, a double-click): this folder.
+    /// `Choose this folder` (Ctrl+Enter or Cmd+Enter, a double-click):
+    /// this folder.
     Chosen(SystemPath),
     /// A click or Enter on a file (files mode only): this file.
     ChosenFile(SystemPath),
-    /// `Cancel` (Esc): nothing chosen.
+    /// `Cancel` (Esc in the empty field): nothing chosen.
     Cancelled,
 }
 
@@ -123,9 +138,6 @@ struct NewFolder {
 pub(crate) struct FolderChooser {
     /// The host's id prefix.
     prefix: &'static str,
-    /// Where the keyboard goes back to when the new folder field closes:
-    /// the host's root.
-    host_focus: FocusHandle,
     dir: SystemPath,
     listing: Listing,
     /// The rows shown, as indexes into the listing: all of them in order,
@@ -160,12 +172,11 @@ impl EventEmitter<FolderChooserEvent> for FolderChooser {}
 
 impl FolderChooser {
     /// A chooser showing `start` (listed in the background), its ids under
-    /// `prefix`, the keyboard going back to `host_focus`. Needs the tokio
+    /// `prefix`. Its Location field takes the keyboard. Needs the tokio
     /// runtime entered.
     pub(crate) fn new(
         prefix: &'static str,
         start: SystemPath,
-        host_focus: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -182,7 +193,6 @@ impl FolderChooser {
         });
         let mut chooser = Self {
             prefix,
-            host_focus,
             dir: start.clone(),
             listing: Listing::Loading,
             shown: Vec::new(),
@@ -200,7 +210,14 @@ impl FolderChooser {
             location_revision: 0,
         };
         chooser.browse(start, window, cx);
+        chooser.focus_location(window, cx);
         chooser
+    }
+
+    /// Give the Location field the keyboard.
+    fn focus_location(&self, window: &mut Window, cx: &mut App) {
+        let handle = self.location.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
     }
 
     /// Files mode: the files with `extension` (`toml`) are listed too, and
@@ -259,7 +276,7 @@ impl FolderChooser {
     }
 
     /// Whether the new folder field has the keyboard (its keys are its own;
-    /// the host hands its Enter and Esc here).
+    /// the chooser takes its Enter and Esc).
     pub(crate) fn new_folder_focused(&self, window: &Window, cx: &App) -> bool {
         self.new_folder
             .as_ref()
@@ -409,7 +426,8 @@ impl FolderChooser {
         cx.notify();
     }
 
-    /// `Up` (Left, Backspace): the parent folder.
+    /// `Up` (Alt+Up or Cmd+Up, Backspace in the empty field): the parent
+    /// folder.
     pub(crate) fn up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Not while a folder is being made: leaving drops the task, and
         // with it a failure the user should see.
@@ -421,9 +439,9 @@ impl FolderChooser {
         }
     }
 
-    /// Enter (Right): into the selected subfolder. Enter on a file (files
-    /// mode) picks it; Right does nothing there.
-    fn enter_selected(&mut self, pick: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Enter on a name or an empty field: into the selected subfolder, or
+    /// pick the selected file (files mode).
+    fn enter_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.creating() {
             return;
         }
@@ -433,10 +451,10 @@ impl FolderChooser {
         let Some(target) = self.row(ix).cloned() else {
             return;
         };
-        if !self.is_file(ix) {
-            self.browse(target, window, cx);
-        } else if pick {
+        if self.is_file(ix) {
             cx.emit(FolderChooserEvent::ChosenFile(target));
+        } else {
+            self.browse(target, window, cx);
         }
     }
 
@@ -445,17 +463,13 @@ impl FolderChooser {
     /// the list (it is not chosen), a file with the files-mode extension is
     /// picked, anything else shows why under the field. A name or an empty
     /// field opens the selected row, as Enter on the list does.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Enter in the Location field calls it from Task 4")
-    )]
     pub(crate) fn go_to_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.creating() {
             return;
         }
         let text = self.location.read(cx).value().to_string();
         let LocationInput::Path(path) = onb::classify_location(&text) else {
-            self.enter_selected(true, window, cx);
+            self.enter_selected(window, cx);
             return;
         };
         self.location_revision += 1;
@@ -518,12 +532,33 @@ impl FolderChooser {
         cx.emit(FolderChooserEvent::Chosen(self.dir.clone()));
     }
 
-    /// `Cancel` (Esc): nothing chosen.
+    /// `Cancel` (Esc in the empty field): nothing chosen.
     pub(crate) fn cancel(&mut self, cx: &mut Context<Self>) {
         cx.emit(FolderChooserEvent::Cancelled);
     }
 
-    /// `New folder…` (n): the inline name field, focused.
+    /// Whether the Location field holds no text.
+    fn location_empty(&self, cx: &App) -> bool {
+        self.location.read(cx).value().is_empty()
+    }
+
+    /// Esc: the Location field's text goes first (and its message, and a
+    /// lookup under way, as at any key there); from the empty field the
+    /// chooser is cancelled.
+    pub(crate) fn escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.location_empty(cx) {
+            return self.cancel(cx);
+        }
+        // `set_value` sends no Change event: do what a key there does.
+        self.location
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.location_error = None;
+        self.location_revision += 1;
+        self.resolving = None;
+        self.refilter(false, cx);
+    }
+
+    /// `New folder…` (Ctrl+N): the inline name field, focused.
     pub(crate) fn open_new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.new_folder.is_none() {
             let input = cx.new(|cx| InputState::new(window, cx).placeholder("New folder name"));
@@ -541,10 +576,10 @@ impl FolderChooser {
     }
 
     /// Esc in the new folder field: it closes; the keyboard goes back to the
-    /// host.
+    /// Location field.
     pub(crate) fn close_new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_folder = None;
-        window.focus(&self.host_focus, cx);
+        self.focus_location(window, cx);
         cx.notify();
     }
 
@@ -580,7 +615,7 @@ impl FolderChooser {
     ) {
         match made {
             Ok(dir) => {
-                window.focus(&self.host_focus, cx);
+                self.focus_location(window, cx);
                 self.browse(dir, window, cx);
             }
             Err(e) => {
@@ -593,8 +628,21 @@ impl FolderChooser {
         cx.notify();
     }
 
-    /// The chooser's keys, handed over by the host (never while the new
-    /// folder field has the keyboard). True when taken.
+    /// The modifiers of the key that goes up with Up: Cmd on macOS, Alt
+    /// elsewhere, read from the keymap in effect (its platform), as the
+    /// hints are.
+    fn up_mods(cx: &App) -> Mods {
+        match keymap::platform(cx) {
+            Platform::MacOs => Mods::SUPER,
+            Platform::LinuxWindows => Mods::ALT,
+        }
+    }
+
+    /// The chooser's keys: those the kit's field gives no action for (Alt+Up,
+    /// Ctrl+N, Ctrl+Enter or Cmd+Enter where the kit binds the other), seen
+    /// on the chooser's root while the Location field has the keyboard, and
+    /// every key the host hands over while its root has it. True when
+    /// taken. A plain character is never taken: it is typed.
     pub(crate) fn key(
         &mut self,
         key: KeyInput,
@@ -602,35 +650,112 @@ impl FolderChooser {
         cx: &mut Context<Self>,
     ) -> bool {
         let plain = key.mods == Mods::NONE;
+        let primary = key.mods == Mods::CTRL || key.mods == Mods::SUPER;
         match key.key {
-            Key::Enter if key.mods.ctrl || key.mods.sup => self.choose(cx),
-            Key::Enter if plain => self.enter_selected(true, window, cx),
-            Key::Right if plain => self.enter_selected(false, window, cx),
-            Key::Left | Key::Backspace if plain => self.up(window, cx),
+            Key::Enter if primary => self.choose(cx),
+            Key::Enter if plain => self.go_to_location(window, cx),
+            Key::Up if key.mods == Self::up_mods(cx) => self.up(window, cx),
             Key::Up if plain => self.move_selection(false, cx),
             Key::Down if plain => self.move_selection(true, cx),
-            Key::Esc => self.cancel(cx),
+            Key::Backspace if plain && self.location_empty(cx) => self.up(window, cx),
+            Key::Esc if plain => self.escape(window, cx),
             // No new folder in files mode: a file is picked there.
-            Key::Char('n') if plain && self.files.is_none() => self.open_new_folder(window, cx),
+            Key::Char('n') if primary && self.files.is_none() => self.open_new_folder(window, cx),
             _ => return false,
         }
         true
     }
 
-    /// The key hints a host shows while the chooser is up.
-    pub(crate) const HINTS: &'static str =
-        "↑/↓: select · Enter: open · ←: up · Ctrl+Enter: choose · N: new folder · Esc: back";
-
-    /// [`Self::HINTS`] in files mode.
-    pub(crate) const FILE_HINTS: &'static str =
-        "↑/↓: select · Enter: open a folder or pick a file · ←: up · Esc: back";
-
-    /// The key hints for this chooser's mode.
-    pub(crate) fn hints(&self) -> &'static str {
-        if self.files.is_some() {
-            Self::FILE_HINTS
+    /// The kit's field actions in the chooser's fields (see the module
+    /// docs). Each acts and stops the action, or lets it go on to the field.
+    fn on_enter(&mut self, action: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_folder_focused(window, cx) {
+            self.create_folder(window, cx);
+        } else if self.location_focused(window, cx) {
+            if action.secondary {
+                self.choose(cx);
+            } else {
+                self.go_to_location(window, cx);
+            }
         } else {
-            Self::HINTS
+            return;
+        }
+        cx.stop_propagation();
+    }
+
+    fn on_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.new_folder_focused(window, cx) {
+            self.close_new_folder(window, cx);
+        } else if self.location_focused(window, cx) {
+            self.escape(window, cx);
+        } else {
+            return;
+        }
+        cx.stop_propagation();
+    }
+
+    fn on_move(&mut self, down: bool, window: &Window, cx: &mut Context<Self>) {
+        if self.location_focused(window, cx) {
+            self.move_selection(down, cx);
+            cx.stop_propagation();
+        }
+    }
+
+    /// Backspace edits the text; in the empty field it goes up.
+    fn on_backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.location_focused(window, cx) && self.location_empty(cx) {
+            self.up(window, cx);
+            cx.stop_propagation();
+        }
+    }
+
+    /// The kit binds Cmd+Up on macOS to the field's caret (start of the
+    /// text): in the chooser it goes up, as Alt+Up does elsewhere.
+    fn on_move_to_start(&mut self, _: &MoveToStart, window: &mut Window, cx: &mut Context<Self>) {
+        let cmd = window.modifiers().platform;
+        if cmd && self.location_focused(window, cx) && keymap::platform(cx) == Platform::MacOs {
+            self.up(window, cx);
+            cx.stop_propagation();
+        }
+    }
+
+    /// A key in the Location field that is not a kit action there.
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.location_focused(window, cx) {
+            return;
+        }
+        let Some(key) = crate::input::key_down_input(event) else {
+            return;
+        };
+        if self.key(key, window, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    /// The key hints a host shows while a folder chooser is up.
+    pub(crate) const HINTS: &'static str = "Up and Down: select · Enter: open or go to the path \
+         · Alt+Up: up · Ctrl+Enter: choose · Ctrl+N: new folder · Esc: clear or back";
+
+    /// [`Self::HINTS`] on macOS.
+    pub(crate) const HINTS_MAC: &'static str = "Up and Down: select · Enter: open or go to the \
+         path · Cmd+Up: up · Cmd+Enter: choose · Ctrl+N: new folder · Esc: clear or back";
+
+    /// [`Self::HINTS`] in files mode: no choose, no new folder.
+    pub(crate) const FILE_HINTS: &'static str = "Up and Down: select · Enter: open a folder, \
+         pick a file or go to the path · Alt+Up: up · Esc: clear or back";
+
+    /// [`Self::FILE_HINTS`] on macOS.
+    pub(crate) const FILE_HINTS_MAC: &'static str = "Up and Down: select · Enter: open a folder, \
+         pick a file or go to the path · Cmd+Up: up · Esc: clear or back";
+
+    /// The key hints for this chooser's mode, on the keymap's platform.
+    pub(crate) fn hints(&self, cx: &App) -> &'static str {
+        let mac = keymap::platform(cx) == Platform::MacOs;
+        match (self.files.is_some(), mac) {
+            (false, false) => Self::HINTS,
+            (false, true) => Self::HINTS_MAC,
+            (true, false) => Self::FILE_HINTS,
+            (true, true) => Self::FILE_HINTS_MAC,
         }
     }
 }
@@ -802,6 +927,20 @@ impl Render for FolderChooser {
             .id(id(prefix, ""))
             .test_support()
             .role(Role::Group)
+            // Capture: ahead of the field's own handlers (it would take the
+            // arrows to its caret), after the host's (which leave a chooser
+            // field alone).
+            .capture_action(cx.listener(Self::on_enter))
+            .capture_action(cx.listener(Self::on_escape))
+            .capture_action(
+                cx.listener(|this, _: &MoveUp, window, cx| this.on_move(false, window, cx)),
+            )
+            .capture_action(
+                cx.listener(|this, _: &MoveDown, window, cx| this.on_move(true, window, cx)),
+            )
+            .capture_action(cx.listener(Self::on_backspace))
+            .capture_action(cx.listener(Self::on_move_to_start))
+            .on_key_down(cx.listener(Self::on_key_down))
             .aria_label(if self.files.is_some() {
                 "Choose a file"
             } else {
