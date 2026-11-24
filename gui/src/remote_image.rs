@@ -408,16 +408,28 @@ fn transport_failure(t: &ureq::Transport) -> FetchFailure {
     }
     // `ureq` also reports a failed TLS handshake as a failed connection. The
     // reader must not read "not reachable" for a certificate or protocol
-    // problem: name it, with its cause.
-    let secure = t.to_string().to_ascii_lowercase().contains("tls");
+    // problem: name it, with its cause. Only the message of `t` tells: its
+    // text starts with the address, which can hold "tls" anywhere.
+    if is_tls_failure(t) {
+        return FetchFailure::Other(format!("secure connection failed: {}", root_cause(t)));
+    }
     match t.kind() {
-        ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed if secure => {
-            FetchFailure::Other(format!("secure connection failed: {}", root_cause(t)))
-        }
         ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed => FetchFailure::Offline,
         // Not `t` itself: its text starts with the whole address.
         _ => FetchFailure::Other(root_cause(t)),
     }
+}
+
+/// The messages `ureq` 2 gives a failed TLS step: the handshake, and the
+/// creation of the TLS client.
+const TLS_MESSAGES: [&str; 2] = [
+    "tls connection init failed",
+    "tls connection creation failed",
+];
+
+/// Whether `t` is a failed TLS step, from its message only.
+fn is_tls_failure(t: &ureq::Transport) -> bool {
+    t.message().is_some_and(|m| TLS_MESSAGES.contains(&m))
 }
 
 /// The innermost cause of `t` on one line: what a reader or a bug report
@@ -2575,6 +2587,56 @@ mod tests {
             RealFetcher::with_limits(MAX_BYTES, Duration::from_secs(5), Duration::from_secs(10));
         assert_eq!(
             fetcher.get(&format!("https://127.0.0.1:{port}/a.png")),
+            Hop::Failed(FetchFailure::Offline)
+        );
+    }
+
+    #[test]
+    fn tls_in_the_address_does_not_make_a_refused_connection_a_secure_failure() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let fetcher =
+            RealFetcher::with_limits(MAX_BYTES, Duration::from_secs(5), Duration::from_secs(10));
+        assert_eq!(
+            fetcher.get(&format!("https://127.0.0.1:{port}/tls/logo.png?tls=1")),
+            Hop::Failed(FetchFailure::Offline)
+        );
+    }
+
+    #[test]
+    fn tls_in_the_host_name_does_not_make_a_failed_lookup_or_connection_a_secure_failure() {
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        // A resolver of the test's own: the host names never reach a real
+        // name server. `tls.example.com` points at a closed port, and
+        // `tls-missing.example.com` has no address.
+        let mut fetcher =
+            RealFetcher::with_limits(MAX_BYTES, Duration::from_secs(5), Duration::from_secs(10));
+        fetcher.agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .redirects(0)
+            .resolver(move |host: &str| {
+                if host.starts_with("tls.example.com") {
+                    Ok(vec![closed])
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "no such host",
+                    ))
+                }
+            })
+            .build();
+        assert_eq!(
+            fetcher.get(&format!("https://tls.example.com:{}/a.png", closed.port())),
+            Hop::Failed(FetchFailure::Offline)
+        );
+        assert_eq!(
+            fetcher.get("https://tls-missing.example.com/tls.png"),
             Hop::Failed(FetchFailure::Offline)
         );
     }
