@@ -104,7 +104,7 @@ To read all the results as one document, click `Open as collection` in the tool 
 The desktop app shows an image inside the note. Put the image on a line of its own with `![alt](path)` or with `![[name]]`. The image shows below that line. The terminal app shows no images.
 
 - When the cursor is on the line, the line shows as plain text and the image shows below it. Move the cursor away and the line gives way to the image.
-- The image must be in your vault. A web address does not work. A line with a web address stays a styled line and shows no image.
+- The image can be in your vault or on the web. A web image does not load until you ask. See [Remote images](#remote-images).
 - Kimün shows PNG, JPEG, GIF, WebP, and SVG files. A GIF shows its first frame only.
 - An image shows at its natural size. It is never wider than the text. It is never taller than 60% of the height of the pane.
 - If the image is missing or Kimün cannot read it, a short note shows in its place.
@@ -118,6 +118,46 @@ Images also show in other views. They use the same sizes and formats as in the n
 - The search preview and the Ask source reader keep the raw text of the note. An image line becomes the picture. If the line holds a search match, the raw line shows first and the picture shows below it. In the source reader, the marked section plays the part of the match.
 - Only the first 100 images of a note show in a preview. A facet chunk also shows only its first 100 images. A preview reads only the first 256 KB of a note.
 - Point at a picture to see its alt text. There is no click and no menu on a picture in these views.
+
+### Remote images
+
+A note can embed an image from the web with `![alt](https://host/path)`. A remote image can tell its server that you opened the note. For this reason Kimün loads nothing until you ask.
+
+Each remote image first shows a placeholder. The placeholder names the host and has two actions.
+
+- **Load** fetches this one image.
+- **Always load from** fetches this image and allows the host. An allowed host is a host whose images load on their own.
+
+The placeholder looks the same in the note, the facet view, the search preview, and the Ask source reader. You can use both actions in all four places.
+
+How it works:
+
+- An allowed host is one exact name. `cdn.example.com` does not allow `example.com` or `tracker.example.com`.
+- An image on an allowed host loads on its own once it is on screen. In the note, the image on the line that you edit waits until you leave that line.
+- Kimün saves each loaded image in a cache in its own folder, never in your vault. A saved image shows with no network request, so it also shows offline. A changed image keeps its old saved copy until you reload it.
+- The cache can hold 200 MB. When it is full, the oldest copies go first.
+- A redirect to a host that is not allowed stops and names the new host. **Load** there lets that one address follow the redirect until you close the app. **Always load from** allows the new host.
+- Kimün never loads an `http` address. The note says "Not loaded: http is not secure".
+- A remote address can point at a device on your own network. Click **Load** only for addresses that you trust.
+- Kimün draws PNG, JPEG, GIF (first frame), and WebP. It does not draw an SVG or any other format.
+- An image can be at most 20 MB. A load stops after 15 seconds without data, and after 60 seconds in total.
+- If a load fails, the placeholder gives a short reason and a Retry action. Kimün does not save the failure.
+
+In the note, right-click a loaded remote image to open its menu.
+
+- **Open in browser** opens the address in your default browser.
+- **Copy image address** copies the address.
+- **Reload** fetches the image again. The new image replaces the saved copy. If the fetch fails, Kimün keeps the old saved copy and shows it.
+- **Clear image cache** removes the saved copy of this image only. On an allowed host, the image loads again at once.
+
+Double-click a remote image, or press `Ctrl+Enter` on its line, to open the address in your browser. The facet view and the preview show a loaded image with its tooltip only.
+
+If a saved copy is damaged, the note shows a failure note and the image has no menu. Use **Clear cached images** in Preferences to remove it.
+
+Open Preferences and choose Remote images to manage this feature.
+
+- The list shows each allowed host. **Remove** takes a host off the list. The saved copies of that host stay.
+- **Clear cached images** removes every saved copy. The cache size shows next to it. Every address starts again from its placeholder. Images on allowed hosts load again once they are on screen.
 
 ### Images in the attachment view
 

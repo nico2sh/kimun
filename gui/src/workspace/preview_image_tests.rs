@@ -1245,3 +1245,616 @@ fn a_new_selection_during_a_reread_lands_at_its_own_first_match(cx: &mut TestApp
         "its own first match in view, not n.md's place: top row {top}"
     );
 }
+
+// ---- Remote images ----------------------------------------------------------------
+
+mod remote {
+    //! A **Remote image** (CONTEXT.md) in the Preview pane and the Source
+    //! reader: the placeholder's two rows through the one placeholder piece,
+    //! its buttons, the load and the rows made again, a saved copy, and the
+    //! embeds that load on their own. The fetcher is a fake and the image
+    //! cache a temp folder: no test uses the network.
+
+    use gpui_kit::test::{ClickOptions, TestWindowExt as _};
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, px};
+    use tokio::runtime::Runtime;
+
+    use super::super::remote_image_tests::{Env, install};
+    use super::super::search::{
+        Mark, PREVIEW_ID, PREVIEW_IMAGE_ID, PREVIEW_ROW_ID, PaintedRemote, RowKind, SearchPreview,
+        SectionMark, marked_text_cached,
+    };
+    use super::super::start_tests::{Started, drive, open_started, runtime, vault_start};
+    use super::{
+        NOTE, PANE, TALL, frame, image_rows, laid_out, needles, path, png, preview, rows_in,
+        search, settle, slices, snapshot, text_rows, top_row, until_ready, vault_with,
+    };
+    use crate::image_core::{Actions, RemoteLook, remote_rows};
+    use crate::remote_image::{Hop, RemoteImages, fetch_count};
+    use crate::remote_placeholder::RemoteAction;
+    use crate::startup::FirstNote;
+    use crate::test_vault::{TestVault, test_vault};
+
+    const HOST: &str = "img.example.com";
+    const URL: &str = "https://img.example.com/pic.png";
+    /// A remote embed between two lines, a needle on the first.
+    const REMOTE: &str = "needle\n![a cat](https://img.example.com/pic.png)\nafter";
+
+    fn remote_rows_of(image: usize) -> Vec<RowKind> {
+        (0..remote_rows())
+            .map(|index| RowKind::Remote { image, index })
+            .collect()
+    }
+
+    fn both() -> RemoteLook {
+        RemoteLook::Placeholder {
+            host: HOST.to_string(),
+            actions: Actions {
+                load: true,
+                always: true,
+            },
+        }
+    }
+
+    /// The search browser on `query` over a vault holding `n.md` (`note`),
+    /// with `hosts` allowed, its preview landed.
+    fn browse(
+        cx: &mut TestAppContext,
+        rt: &Runtime,
+        note: &str,
+        hosts: &[&str],
+        query: &str,
+    ) -> (TestVault, Started, Entity<SearchPreview>) {
+        let v = rt.block_on(test_vault(&[("a.md", "alpha"), ("n.md", note)], &[]));
+        v.settings.write().unwrap().remote_image_hosts =
+            hosts.iter().map(|h| h.to_string()).collect();
+        let s = open_started(
+            cx,
+            vault_start(&v, FirstNote::Note(path("a.md"))),
+            v.settings.clone(),
+        );
+        drive(rt, cx, |cx| s.text(cx) == "alpha" && !s.indexing(cx));
+        search(&s, rt, query, cx);
+        settle(&s, rt, cx);
+        let view = preview(&s, cx);
+        (v, s, view)
+    }
+
+    fn painted(
+        s: &Started,
+        view: &Entity<SearchPreview>,
+        cx: &mut TestAppContext,
+    ) -> Vec<PaintedRemote> {
+        frame(s, cx);
+        cx.read(|cx| view.read(cx).painted_remote())
+    }
+
+    fn kinds(view: &Entity<SearchPreview>, cx: &TestAppContext) -> Vec<RowKind> {
+        cx.read(|cx| view.read(cx).shown_kinds())
+    }
+
+    fn fetches(cx: &mut TestAppContext) -> usize {
+        cx.update(|cx| fetch_count(cx))
+    }
+
+    /// A left press at window position `at` on the preview.
+    fn press_at(s: &Started, at: gpui_kit::Point<gpui_kit::Pixels>, cx: &mut TestAppContext) {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            let pane = window.find(PREVIEW_ID).bounds();
+            window.click_with_options(
+                PREVIEW_ID,
+                ClickOptions::new().with_offset(at - pane.origin),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// Press the `action` button of the placeholder of `url`.
+    fn press_button(
+        s: &Started,
+        view: &Entity<SearchPreview>,
+        url: &str,
+        action: RemoteAction,
+        cx: &mut TestAppContext,
+    ) {
+        let at = painted(s, view, cx)
+            .iter()
+            .filter(|p| p.url == url)
+            .flat_map(|p| p.buttons.iter())
+            .find(|(_, a)| *a == action)
+            .map(|(bounds, _)| bounds.center())
+            .unwrap_or_else(|| panic!("no {action:?} button for {url}"));
+        press_at(s, at, cx);
+    }
+
+    /// Drive until the image of the remote embed is drawn with its pixels.
+    fn until_loaded(
+        s: &Started,
+        view: &Entity<SearchPreview>,
+        rt: &Runtime,
+        cx: &mut TestAppContext,
+    ) {
+        drive(rt, cx, |cx| {
+            frame(s, cx);
+            kinds(view, cx)
+                .iter()
+                .any(|k| matches!(k, RowKind::Image { .. }))
+        });
+        until_ready(s, view, rt, cx);
+    }
+
+    #[test]
+    fn the_preview_draws_a_placeholder_in_two_rows_for_a_remote_embed() {
+        let (v, list) = vault_with(REMOTE, &[]);
+        // No hit on the embed line: only the placeholder's rows.
+        let shown = laid_out(&v, &list, REMOTE, &needles(&["after"]), PANE);
+        let want = [text_rows(1), remote_rows_of(0), text_rows(1)].concat();
+        assert_eq!(shown.kinds(), want);
+        let image = &shown.images()[0];
+        assert_eq!(
+            (image.rows, image.first_row, image.file.clone()),
+            (2, 1, None)
+        );
+        assert!(
+            shown.lines_and_hits()[1..3]
+                .iter()
+                .all(|(t, h)| t.is_empty() && h.is_empty())
+        );
+        // A hit on the embed line: its raw line first, then the placeholder.
+        let shown = laid_out(&v, &list, REMOTE, &needles(&["cat"]), PANE);
+        let want = [text_rows(2), remote_rows_of(0), text_rows(1)].concat();
+        assert_eq!(shown.kinds(), want);
+        assert_eq!(
+            shown.summary().1,
+            Some(1),
+            "the first match is the raw line"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_paints_the_placeholder_over_its_two_rows_with_no_fetch(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let env: Env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let (_v, s, view) = browse(cx, &rt, REMOTE, &[], "needle");
+        assert_eq!(
+            kinds(&view, cx),
+            [text_rows(1), remote_rows_of(0), text_rows(1)].concat()
+        );
+        let painted = painted(&s, &view, cx);
+        assert_eq!(painted.len(), 2, "{painted:?}");
+        let rows: Vec<_> = painted.iter().map(|p| (p.row, p.index)).collect();
+        assert_eq!(rows, [(1, 0), (2, 1)]);
+        for p in &painted {
+            assert_eq!(p.look, both());
+            let bounds = s_row_bounds(&s, p.row, cx);
+            assert_eq!(p.clip, bounds, "clipped to its own row");
+            assert_eq!(
+                p.rect.origin.y,
+                bounds.origin.y - bounds.size.height * p.index as f32
+            );
+            assert_eq!(p.rect.size.height, bounds.size.height * 2.);
+        }
+        // The buttons are in the second row only.
+        assert!(painted[0].buttons.is_empty());
+        let actions: Vec<_> = painted[1].buttons.iter().map(|(_, a)| *a).collect();
+        assert_eq!(actions, [RemoteAction::Load, RemoteAction::AlwaysLoad]);
+        for _ in 0..3 {
+            frame(&s, cx);
+        }
+        // A fetch that started shows Loading, so this holds with no timing.
+        frame(&s, cx);
+        let looks: Vec<_> = cx.read(|cx| view.read(cx).painted_remote());
+        let looks: Vec<_> = looks.into_iter().map(|p| p.look).collect();
+        assert_eq!(looks, [both(), both()], "still the placeholder");
+        assert_eq!(fetches(cx), 0, "an unallowed host loads nothing");
+        assert!(env.fake.calls().is_empty());
+    }
+
+    fn s_row_bounds(
+        s: &Started,
+        ix: usize,
+        cx: &mut TestAppContext,
+    ) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find((PREVIEW_ROW_ID, ix)).bounds()
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn a_press_on_a_preview_placeholder_button_loads_and_does_not_select_the_result(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let (_v, s, view) = browse(cx, &rt, REMOTE, &[], "needle");
+        let before = snapshot(&s, cx);
+        press_button(&s, &view, URL, RemoteAction::Load, cx);
+        until_loaded(&s, &view, &rt, cx);
+        let after = snapshot(&s, cx);
+        assert_eq!(
+            (&after.0, &after.1, &after.2),
+            (&before.0, &before.1, &before.2),
+            "the browser, its query and selection, and the open note stay"
+        );
+        assert_eq!(fetches(cx), 1);
+        let image = cx.read(|cx| view.read(cx).shown_images())[0].clone();
+        assert_eq!(image.rows, rows_in((10, 60), cx_pane(&view, cx)));
+        assert!(painted(&s, &view, cx).is_empty(), "no placeholder any more");
+    }
+
+    fn cx_pane(view: &Entity<SearchPreview>, cx: &TestAppContext) -> crate::image_core::ImagePane {
+        cx.read(|cx| view.read(cx).panes().0.expect("wrapped"))
+    }
+
+    #[gpui_kit::test]
+    fn a_press_elsewhere_in_the_preview_still_selects(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let (_v, s, view) = browse(cx, &rt, REMOTE, &[], "needle");
+        let before = snapshot(&s, cx);
+        assert_eq!(before.0.as_deref(), Some("Search"));
+        let painted = painted(&s, &view, cx);
+        // The placeholder's text row, the second row right of the buttons,
+        // and a text row: each press keeps its meaning, no load.
+        let text = s_row_bounds(&s, 1, cx).center();
+        let second = s_row_bounds(&s, 2, cx);
+        let past = painted[1].buttons.last().unwrap().0.right() + px(40.);
+        let beside = gpui_kit::point(past, second.center().y);
+        let line = s_row_bounds(&s, 0, cx).center();
+        for at in [text, beside, line] {
+            press_at(&s, at, cx);
+            assert_eq!(snapshot(&s, cx), before, "a press at {at:?}");
+        }
+        for _ in 0..3 {
+            frame(&s, cx);
+        }
+        assert_eq!(fetches(cx), 0, "nothing loads");
+        assert_eq!(
+            kinds(&view, cx),
+            [text_rows(1), remote_rows_of(0), text_rows(1)].concat()
+        );
+    }
+
+    #[gpui_kit::test]
+    fn always_load_from_in_the_preview_allows_the_host_and_loads(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let (v, s, view) = browse(cx, &rt, REMOTE, &[], "needle");
+        press_button(&s, &view, URL, RemoteAction::AlwaysLoad, cx);
+        until_loaded(&s, &view, &rt, cx);
+        let hosts = v.settings.read().unwrap().remote_image_hosts.clone();
+        assert_eq!(hosts, [HOST.to_string()], "written to the settings");
+        assert!(cx.read(|cx| cx.global::<RemoteImages>().is_allowed(HOST)));
+        assert_eq!(fetches(cx), 1);
+    }
+
+    #[gpui_kit::test]
+    fn after_a_load_the_preview_keeps_its_first_match_in_view(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 2000)))]);
+        let note = format!(
+            "intro\n![a](https://img.example.com/pic.png)\n{}the needle\n{}",
+            "line\n".repeat(5),
+            "line\n".repeat(200)
+        );
+        let (_v, s, view) = browse(cx, &rt, &note, &[], "needle");
+        let (hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+        assert_eq!(hit, Some(1 + 2 + 5), "after the placeholder's two rows");
+        let replans = cx.read(|cx| view.read(cx).replans);
+        view.update(cx, |p, cx| {
+            p.run_remote_action(URL.into(), None, RemoteAction::Load, cx)
+        });
+        until_loaded(&s, &view, &rt, cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).replans),
+            replans + 1,
+            "made again once"
+        );
+        let rows = cx.read(|cx| view.read(cx).shown_images())[0].rows;
+        assert!(rows > 8, "a tall image: {rows} rows");
+        let (hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+        assert_eq!(hit, Some(1 + rows + 5), "the first match moved down");
+        let shown = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find((PREVIEW_ROW_ID, hit.unwrap())).is_some()
+            })
+            .unwrap();
+        assert!(shown, "the first match is still in view");
+        let lines = cx.read(|cx| view.read(cx).shown_lines());
+        assert_eq!(lines[hit.unwrap()].0, "the needle");
+    }
+
+    /// The reader never scrolled and the first match is in view: when an
+    /// allowed-host image on screen loads and the rows are made again, the
+    /// view does not move to center the match.
+    #[gpui_kit::test]
+    fn an_unscrolled_preview_with_its_first_match_in_view_does_not_move_on_a_load(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 200)))]);
+        let note = format!(
+            "![a](https://img.example.com/pic.png)\n{}the needle\n{}",
+            "line\n".repeat(20),
+            "line\n".repeat(200)
+        );
+        let (_v, s, view) = browse(cx, &rt, &note, &[HOST], "needle");
+        let count = kinds(&view, cx).len();
+        assert_eq!(top_row(&s, count, cx), 0, "the match is in view at the top");
+        let (hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+        let in_view = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find((PREVIEW_ROW_ID, hit.unwrap())).is_some()
+            })
+            .unwrap();
+        assert!(in_view, "the first match is in the first screen");
+        drive(&rt, cx, |cx| {
+            frame(&s, cx);
+            kinds(&view, cx)
+                .iter()
+                .any(|k| matches!(k, RowKind::Image { .. }))
+        });
+        frame(&s, cx);
+        let (hit, _, _) = cx.read(|cx| view.read(cx).wrap_state());
+        let hit = hit.unwrap();
+        let rows = cx.read(|cx| view.read(cx).shown_images())[0].rows;
+        assert!(rows > remote_rows(), "the rows grew: {rows}");
+        let count = kinds(&view, cx).len();
+        assert_eq!(top_row(&s, count, cx), 0, "the view did not move");
+        let shown = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find((PREVIEW_ROW_ID, hit)).is_some()
+            })
+            .unwrap();
+        assert!(shown, "the first match is still in view");
+    }
+
+    #[gpui_kit::test]
+    fn after_a_load_the_preview_keeps_its_top_line(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 2000)))]);
+        let note = format!(
+            "needle\n![a](https://img.example.com/pic.png)\n{}",
+            (0..200)
+                .map(|i| format!("line {i:03}\n"))
+                .collect::<String>()
+        );
+        let (_v, s, view) = browse(cx, &rt, &note, &[], "needle");
+        let count = kinds(&view, cx).len();
+        view.update(cx, |p, cx| p.scroll_rows(40, cx));
+        frame(&s, cx);
+        let top = top_row(&s, count, cx);
+        let line = cx.read(|cx| view.read(cx).row_lines())[top];
+        assert!(line > 10, "scrolled past the embed: {line}");
+        view.update(cx, |p, cx| {
+            p.run_remote_action(URL.into(), None, RemoteAction::Load, cx)
+        });
+        drive(&rt, cx, |cx| {
+            frame(&s, cx);
+            kinds(&view, cx)
+                .iter()
+                .any(|k| matches!(k, RowKind::Image { .. }))
+        });
+        frame(&s, cx);
+        let count = kinds(&view, cx).len();
+        let top = top_row(&s, count, cx);
+        assert_eq!(
+            cx.read(|cx| view.read(cx).row_lines())[top],
+            line,
+            "the same note line leads the pane"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_preview_of_a_note_with_a_saved_copy_draws_the_image_with_no_fetch(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let env = install(cx, &[]);
+        env.cache.save(URL, &png(TALL.0, TALL.1)).unwrap();
+        let saved = env.cache.find(URL).unwrap();
+        // The model: the copy's rows from its header, before any frame.
+        let (v, list) = vault_with(REMOTE, &[]);
+        let shown = marked_text_cached(
+            path("n.md"),
+            REMOTE.to_string(),
+            &needles(&["after"]),
+            80,
+            PANE,
+            Some((&v.vault, &list)),
+            Some(&env.cache),
+        );
+        let want = [text_rows(1), image_rows(0, 6), text_rows(1)].concat();
+        assert_eq!(shown.kinds(), want);
+        assert_eq!(shown.images()[0].file.as_ref(), Some(&saved));
+        // On screen: drawn with its pixels and its tooltip, nothing asked.
+        let (_v, s, view) = browse(cx, &rt, REMOTE, &[HOST], "needle");
+        let images = cx.read(|cx| view.read(cx).shown_images());
+        assert_eq!(
+            images[0].file.as_ref(),
+            Some(&saved),
+            "the first read found it"
+        );
+        assert!(kinds(&view, cx).contains(&RowKind::Image { image: 0, index: 0 }));
+        until_ready(&s, &view, &rt, cx);
+        let label = cx
+            .update_window(s.handle, |_, window, cx| {
+                window.render_frame(cx);
+                let ix = images[0].first_row;
+                window
+                    .within((PREVIEW_ROW_ID, ix))
+                    .find(PREVIEW_IMAGE_ID)
+                    .label()
+                    .map(str::to_string)
+            })
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("a cat"), "the tooltip only");
+        assert_eq!(fetches(cx), 0);
+        assert!(!slices(&s, &view, cx).is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_does_not_fetch_for_an_embed_past_the_first_100_or_off_screen(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let off = "https://img.example.com/off.png";
+        let past = "https://img.example.com/past.png";
+        let env = install(cx, &[(off, Hop::Body(png(10, 20)))]);
+        // The first embed is far below the first match; 99 more fill the
+        // hundred; the hundred-and-first stays text.
+        let note = format!(
+            "needle\n{}![o]({off})\n{}![p]({past})\n",
+            "line\n".repeat(300),
+            "![[gone.png]]\n".repeat(99)
+        );
+        let (_v, s, view) = browse(cx, &rt, &note, &[HOST], "needle");
+        for _ in 0..3 {
+            frame(&s, cx);
+        }
+        assert_eq!(fetches(cx), 0, "the embed is off screen");
+        let kinds_now = kinds(&view, cx);
+        assert_eq!(
+            *kinds_now.last().unwrap(),
+            RowKind::Text,
+            "the 101st is text"
+        );
+        let first = cx.read(|cx| view.read(cx).shown_images())[0].first_row;
+        super::scroll_to_row(&s, &view, first, cx);
+        drive(&rt, cx, |cx| {
+            frame(&s, cx);
+            fetches(cx) >= 1
+        });
+        view.update(cx, |p, cx| p.scroll_rows(100_000, cx));
+        for _ in 0..3 {
+            frame(&s, cx);
+        }
+        assert_eq!(
+            env.fake.calls(),
+            [off.to_string()],
+            "only the one on screen"
+        );
+    }
+
+    /// Another view (an editor, a facet chunk) loads the copy: the preview
+    /// asked for nothing, and makes its rows again at its next frame.
+    #[gpui_kit::test]
+    fn a_copy_loaded_elsewhere_makes_the_preview_rows_again(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let (_v, s, view) = browse(cx, &rt, REMOTE, &[], "needle");
+        let mut store = cx.read(|cx| cx.global::<RemoteImages>().clone());
+        cx.update(|cx| store.load(URL, cx, |_| {}));
+        until_loaded(&s, &view, &rt, cx);
+        assert_eq!(cx.read(|cx| view.read(cx).replans), 1);
+        assert_eq!(fetches(cx), 1);
+    }
+
+    #[test]
+    fn the_source_reader_draws_the_placeholder_and_keeps_the_section_rule() {
+        let text = "# a\n![x](https://img.example.com/x.png)\n# b\nbody b\n![y](https://img.example.com/y.png)\n";
+        let (v, list) = vault_with(text, &[]);
+        let mark = Mark::Section(SectionMark {
+            ordinal: 0,
+            heading: "b".into(),
+            chunk: "# b\nbody b\n![y](https://img.example.com/y.png)".into(),
+        });
+        let shown = laid_out(&v, &list, text, &mark, PANE);
+        // `x` is outside the section: only its placeholder. `y` is inside:
+        // its raw line, then its placeholder.
+        let want = [
+            text_rows(1),
+            remote_rows_of(0),
+            text_rows(3),
+            remote_rows_of(1),
+        ]
+        .concat();
+        assert_eq!(shown.kinds(), want);
+        assert_eq!(shown.summary().1, Some(3), "the section's first line");
+        assert_eq!(
+            shown.lines_and_hits()[5].0,
+            "![y](https://img.example.com/y.png)"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_source_reader_paints_the_placeholder(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[]);
+        let text = "# b\nbody b\n![y](https://img.example.com/pic.png)\nend\n";
+        let v = rt.block_on(test_vault(&[("n.md", text)], &[]));
+        let vault = v.vault.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::editor_view::init(cx);
+        });
+        let window = cx.add_window(|_, cx| SearchPreview::new(vault, cx));
+        let reader = window.root(cx).unwrap();
+        reader.update(cx, |p, cx| {
+            p.show_marked(
+                Some(path("n.md")),
+                Mark::Section(SectionMark {
+                    ordinal: 0,
+                    heading: "b".into(),
+                    chunk: "# b\nbody b".into(),
+                }),
+                cx,
+            )
+        });
+        let draw = |cx: &mut TestAppContext| {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                window.render_frame(cx)
+            })
+            .unwrap();
+        };
+        drive(&rt, cx, |cx| {
+            draw(cx);
+            cx.executor().advance_clock(super::PREVIEW_DEBOUNCE);
+            cx.run_until_parked();
+            !cx.read(|cx| reader.read(cx).painted_remote()).is_empty()
+        });
+        let want = [text_rows(2), remote_rows_of(0), text_rows(1)].concat();
+        assert_eq!(kinds(&reader, cx), want, "outside the section: no raw line");
+        let painted = cx.read(|cx| reader.read(cx).painted_remote());
+        assert!(painted.iter().all(|p| p.look == both()), "{painted:?}");
+        assert_eq!(fetches(cx), 0);
+    }
+
+    #[test]
+    fn vault_images_in_the_read_only_views_are_unchanged() {
+        let alone = NOTE;
+        let both_kinds = format!("{NOTE}\n![r](https://img.example.com/pic.png)");
+        let (v, list) = vault_with(&both_kinds, &[("pic.png", png(TALL.0, TALL.1))]);
+        let one = laid_out(&v, &list, alone, &needles(&["after"]), PANE);
+        let two = laid_out(&v, &list, &both_kinds, &needles(&["after"]), PANE);
+        let n = one.kinds().len();
+        assert_eq!(
+            two.kinds()[..n],
+            one.kinds()[..],
+            "the vault image's rows as before"
+        );
+        assert_eq!(two.kinds()[n..], remote_rows_of(1)[..]);
+        assert_eq!(two.images()[0], one.images()[0], "the same vault image");
+        assert_eq!(two.images()[0].rows, rows_in(TALL, PANE));
+    }
+}

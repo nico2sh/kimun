@@ -50,7 +50,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels,
     Render, RenderImage, Rgba, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, canvas, div, point, px, rems, size, uniform_list,
+    UniformListScrollHandle, Window, canvas, div, point, px, rems, uniform_list,
 };
 use kimun_core::nfs::VaultPath;
 use kimun_core::{AttachmentContent, NoteVault};
@@ -65,7 +65,7 @@ use kimun_notes::settings::themes::Theme;
 use super::Workspace;
 use super::files::ellipsis;
 use super::note::{Closing, LeavingFor, NoteLeft};
-use crate::image_core::paint_look;
+use crate::image_core::{device_bounds, paint_look};
 use crate::inline_image::{ImageState, ImageStore, Pins, can_draw, fit_to};
 use crate::input;
 use crate::tasks;
@@ -259,9 +259,10 @@ fn centered(area: Bounds<Pixels>, fitted: (f32, f32), scale: f32) -> Bounds<Pixe
     let gap = |room: Pixels, used: f32| ((f32::from(room) * scale - used) / 2.0).floor().max(0.0);
     let dx = gap(area.size.width, fitted.0) / scale;
     let dy = gap(area.size.height, fitted.1) / scale;
-    Bounds::new(
+    device_bounds(
         point(area.origin.x + px(dx), area.origin.y + px(dy)),
-        size(px(fitted.0 / scale), px(fitted.1 / scale)),
+        fitted,
+        scale,
     )
 }
 

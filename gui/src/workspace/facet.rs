@@ -160,6 +160,13 @@ pub enum FacetEvent {
     PicksChanged,
     /// A collection asks for its query to run again (`r`, `Refresh`).
     Refresh,
+    /// "Always load from" `host` on a remote image placeholder in `chunk`:
+    /// the host adds `host` to the allowed hosts, then `chunk` loads `url`.
+    AlwaysLoadFrom {
+        chunk: Entity<EditorView>,
+        host: String,
+        url: String,
+    },
 }
 
 /// Which list is open.
