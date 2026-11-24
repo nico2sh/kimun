@@ -1951,11 +1951,17 @@ impl SearchPreview {
         }
         shown.plan = plan;
         shown.wrapped = wrapped;
-        // Strict: the anchor row is often still in view, and a plain scroll
-        // to an item in view does not move, so the text would shift.
+        // Once the reader scrolled, the top line must lead again: strict,
+        // since a plain scroll to a row in view does not move. Before that,
+        // the first match stays where it is when it is still in view (a
+        // plain scroll), as when the note landed.
         if let Some((line, at, strategy)) = anchor {
-            self.scroll
-                .scroll_to_item_strict(row_of(&shown.wrapped.rows, line, at), strategy);
+            let row = row_of(&shown.wrapped.rows, line, at);
+            if self.scrolled {
+                self.scroll.scroll_to_item_strict(row, strategy);
+            } else {
+                self.scroll.scroll_to_item(row, strategy);
+            }
         }
         self.rewrap(cx);
         cx.notify();
