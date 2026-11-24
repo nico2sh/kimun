@@ -753,19 +753,18 @@ impl RemoteImages {
         }
     }
 
-    /// Loads each address of `urls`, pairs of the address and its host, that
-    /// is on an allowed host, with no saved copy, no fetch, and no failure
-    /// of the session. The host check uses the host the store reads from the
-    /// address. It starts nothing else. `on_done` runs once for each fetch
+    /// Loads each address of `urls` that is on an allowed host, with no saved
+    /// copy, no fetch, and no failure of the session. The host check uses
+    /// the host the store reads from the address. It starts nothing else. `on_done` runs once for each fetch
     /// that ends.
     pub(crate) fn auto_load(
         &mut self,
-        urls: &[(String, String)],
+        urls: &[String],
         cx: &mut App,
         on_done: impl Fn(&mut App) + 'static,
     ) {
         let on_done = Rc::new(on_done);
-        for (url, _) in urls {
+        for url in urls {
             let RemoteState::Blocked { host } = self.state(url) else {
                 continue;
             };
@@ -1013,12 +1012,9 @@ mod tests {
     }
 
     fn auto(env: &Env, cx: &mut TestAppContext, urls: &[&str]) {
-        let pairs: Vec<(String, String)> = urls
-            .iter()
-            .map(|u| (u.to_string(), host_of(u).unwrap_or_default()))
-            .collect();
+        let urls: Vec<String> = urls.iter().map(|u| u.to_string()).collect();
         let _guard = env.rt().enter();
-        cx.update(|cx| store_of(cx).auto_load(&pairs, cx, |_| {}));
+        cx.update(|cx| store_of(cx).auto_load(&urls, cx, |_| {}));
     }
 
     fn host(h: &str) -> RemoteState {

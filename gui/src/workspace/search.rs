@@ -1751,7 +1751,7 @@ impl SearchPreview {
         let mut failed = Vec::new();
         // The placeholders on screen whose host is allowed and that wait for
         // their first load.
-        let mut to_load: Vec<(String, String)> = Vec::new();
+        let mut to_load: Vec<String> = Vec::new();
         // The remote embeds on screen, by their index in the plan.
         let mut on_screen: Vec<usize> = Vec::new();
         if let Some(shown) = &self.shown {
@@ -1775,12 +1775,12 @@ impl SearchPreview {
                         .get(image)
                         .and_then(|i| shown.plan.embed(i.embed))
                     && let Some(r) = &embed.remote
-                    && let ImageLook::Remote(RemoteLook::Placeholder { host, actions }) =
+                    && let ImageLook::Remote(RemoteLook::Placeholder { actions, .. }) =
                         look_of(embed, &mut store, &remote, shown.wrapped.pane)
                     && !actions.always
-                    && !to_load.iter().any(|(url, _)| *url == r.url)
+                    && !to_load.contains(&r.url)
                 {
-                    to_load.push((r.url.clone(), host));
+                    to_load.push(r.url.clone());
                 }
                 let RowKind::Image { image, .. } = row.kind else {
                     continue;
