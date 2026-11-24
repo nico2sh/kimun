@@ -139,8 +139,10 @@ How it works:
 - A redirect to a host that is not allowed stops and names the new host. **Load** there lets that one address follow the redirect until you close the app. **Always load from** allows the new host.
 - Kimün never loads an `http` address. The note says "Not loaded: http is not secure".
 - A remote address can point at a device on your own network. Click **Load** only for addresses that you trust.
+- Kimün never checks where a host name points, so it also loads from an allowed host whose name points at an address in your own network.
+- Kimün checks the certificate of the server with the certificate store of your system. On a network that inspects HTTPS traffic, remote images load when the certificate of that network is installed in your system. On Linux, the `SSL_CERT_FILE` environment variable replaces the system store with the certificates in that file.
 - Kimün draws PNG, JPEG, GIF (first frame), and WebP. It does not draw an SVG or any other format.
-- An image can be at most 20 MB. A load stops after 15 seconds without data, and after 60 seconds in total.
+- An image can be at most 20 MB and at most 64 megapixels. A load stops after 15 seconds without data, and after 60 seconds in total.
 - Kimün loads at most 2 images at a time from one host. If a server answers that it is busy or gets too many requests, Kimün waits a few seconds and tries once more.
 - If a load fails, the placeholder gives a short reason and a Retry action. Kimün does not save the failure.
 
