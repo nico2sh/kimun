@@ -54,7 +54,7 @@ use kimun_core::nfs::VaultPath;
 use kimun_notes::logic::editor::display::ImageLine;
 
 use super::EditorView;
-use crate::attachment_index::AttachmentIndex;
+use crate::attachment_index::{AttachmentIndex, list_sorted};
 use crate::image_core::{
     Embed, ImageLook, ImagePane, RemoteLook, Source, embeds_of, image_file, look_from,
     natural_of_file, remote_rows, source_of,
@@ -380,11 +380,7 @@ impl EditorView {
         } else if note.is_some() && images.listed_for != note {
             images.listed_for = note.clone();
             let vault = images.vault.clone();
-            let listing = cx.background_spawn(async move {
-                let mut found = vault.list_attachments();
-                found.sort();
-                found
-            });
+            let listing = cx.background_spawn(async move { list_sorted(&vault) });
             images._listing = Some(cx.spawn(async move |this, cx| {
                 let found = listing.await;
                 let _ = this.update(cx, |view, cx| {
