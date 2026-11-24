@@ -545,31 +545,19 @@ impl AppSettings {
     /// Whether the reader allowed remote images from `host`. The rule is the
     /// core one: an exact match, so a parent domain never allows a subdomain.
     pub fn host_allowed(&self, host: &str) -> bool {
-        self.remote_image_hosts
-            .iter()
-            .any(|allowed| kimun_core::note::host_matches(allowed, host))
+        kimun_core::note::host_listed(&self.remote_image_hosts, host)
     }
 
     /// Allow remote images from `host`. Stores the normalized name. Returns
     /// true when the list changed. A blank or invalid host is ignored.
     pub fn allow_host(&mut self, host: &str) -> bool {
-        let Some(name) = kimun_core::note::host_of(&format!("https://{}", host.trim())) else {
-            return false;
-        };
-        if self.remote_image_hosts.contains(&name) {
-            return false;
-        }
-        self.remote_image_hosts.push(name);
-        true
+        kimun_core::note::allow_host(&mut self.remote_image_hosts, host)
     }
 
     /// Stop allowing remote images from `host`. Returns true when the list
     /// changed.
     pub fn forget_host(&mut self, host: &str) -> bool {
-        let before = self.remote_image_hosts.len();
-        self.remote_image_hosts
-            .retain(|allowed| !kimun_core::note::host_matches(allowed, host));
-        self.remote_image_hosts.len() != before
+        kimun_core::note::forget_host(&mut self.remote_image_hosts, host)
     }
 
     pub fn theme_list(&self) -> Vec<Theme> {
