@@ -67,6 +67,8 @@ impl FetchFailure {
         let reason = match self {
             FetchFailure::TimedOut => "timed out".to_string(),
             FetchFailure::Offline => "server not reachable".to_string(),
+            FetchFailure::Status(429) => "too many requests, try again later".to_string(),
+            FetchFailure::Status(503) => "server busy, try again later".to_string(),
             FetchFailure::Status(code) => format!("HTTP {code}"),
             FetchFailure::TooLarge => "image over 20 MB".to_string(),
             FetchFailure::NotAnImage => "not an image".to_string(),
@@ -1929,6 +1931,15 @@ mod tests {
     fn the_failure_notes_are_one_line() {
         assert_eq!(FetchFailure::TimedOut.note(), "Load failed: timed out");
         assert_eq!(FetchFailure::Status(404).note(), "Load failed: HTTP 404");
+        assert_eq!(
+            FetchFailure::Status(429).note(),
+            "Load failed: too many requests, try again later"
+        );
+        assert_eq!(
+            FetchFailure::Status(503).note(),
+            "Load failed: server busy, try again later"
+        );
+        assert_eq!(FetchFailure::Status(500).note(), "Load failed: HTTP 500");
         for f in [
             FetchFailure::Offline,
             FetchFailure::TooLarge,
