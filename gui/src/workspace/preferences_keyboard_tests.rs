@@ -1442,7 +1442,7 @@ mod file {
         // that the pane could scroll either way.
         let path = centre(
             &s,
-            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-location")),
             cx,
         );
         let before = chooser_top(&s, cx);
@@ -1484,7 +1484,7 @@ mod file {
         let (_tmp, _dir, chooser) = long_chooser(&s, &rt, cx);
         let path = centre(
             &s,
-            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-location")),
             cx,
         );
         // The chooser opens with the pane at its bottom: up, then down.
@@ -1494,7 +1494,7 @@ mod file {
         assert!(up > pane, "the pane scrolls up: {pane:?} to {up:?}");
         let path = centre(
             &s,
-            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-location")),
             cx,
         );
         wheel(&s, path, -1.0, cx);

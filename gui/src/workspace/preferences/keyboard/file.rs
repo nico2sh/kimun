@@ -224,7 +224,7 @@ impl PreferencesView {
     }
 
     /// Whether one of the section's fields has the keyboard (the filter, a
-    /// path field, the chooser's new folder).
+    /// path field, a chooser field).
     pub(crate) fn keyboard_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         let file = &self.keyboard.file;
         let focused =
@@ -235,7 +235,7 @@ impl PreferencesView {
             || file
                 .chooser
                 .as_ref()
-                .is_some_and(|(_, c)| c.read(cx).new_folder_focused(window, cx))
+                .is_some_and(|(_, c)| c.read(cx).field_focused(window, cx))
     }
 
     // ---- acting ------------------------------------------------------------
@@ -270,8 +270,9 @@ impl PreferencesView {
             if chooser.read(cx).new_folder_focused(window, cx) {
                 chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
             } else {
-                // The empty filter, with the chooser up: Esc closes the
-                // chooser, as it does elsewhere in the section.
+                // The empty filter or the chooser's Location field, with
+                // the chooser up: Esc closes the chooser, as it does
+                // elsewhere in the section.
                 self.keyboard_close_chooser(window, cx);
             }
             return;

@@ -4086,6 +4086,8 @@ mod files_tests;
 #[cfg(test)]
 mod find_tests;
 #[cfg(test)]
+mod folder_chooser_tests;
+#[cfg(test)]
 mod follow_tests;
 #[cfg(test)]
 mod footer_tests;

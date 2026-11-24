@@ -415,7 +415,7 @@ impl PreferencesView {
     }
 
     /// Whether one of the section's text fields has the keyboard (the New
-    /// name, the Rename field, the chooser's new folder).
+    /// name, the Rename field, a chooser field).
     pub(crate) fn ws_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         let focused =
             |input: &Entity<InputState>| input.read(cx).focus_handle(cx).is_focused(window);
@@ -424,10 +424,10 @@ impl PreferencesView {
                 focused(&f.input)
                     || f.chooser
                         .as_ref()
-                        .is_some_and(|c| c.read(cx).new_folder_focused(window, cx))
+                        .is_some_and(|c| c.read(cx).field_focused(window, cx))
             }
             Some(Form::Rename { input, .. }) => focused(input),
-            Some(Form::Path { chooser, .. }) => chooser.read(cx).new_folder_focused(window, cx),
+            Some(Form::Path { chooser, .. }) => chooser.read(cx).field_focused(window, cx),
             _ => false,
         }
     }
@@ -894,13 +894,17 @@ impl PreferencesView {
         cx.notify();
     }
 
-    /// Enter in one of the section's fields.
+    /// Enter in one of the section's fields. Nothing in the chooser's
+    /// Location field: it must not create the workspace.
     pub(crate) fn ws_field_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.ws_chooser()
-            && chooser.read(cx).new_folder_focused(window, cx)
-        {
-            chooser.update(cx, |c, cx| c.create_folder(window, cx));
-            return;
+        if let Some(chooser) = self.ws_chooser() {
+            if chooser.read(cx).new_folder_focused(window, cx) {
+                chooser.update(cx, |c, cx| c.create_folder(window, cx));
+                return;
+            }
+            if chooser.read(cx).location_focused(window, cx) {
+                return;
+            }
         }
         match self.ws.form.as_ref() {
             Some(Form::New(_)) => self.ws_create(window, cx),
@@ -909,13 +913,19 @@ impl PreferencesView {
         }
     }
 
-    /// Esc in one of the section's fields.
+    /// Esc in one of the section's fields. In the chooser's Location field
+    /// it closes the chooser only, as Esc on the section does, not the New
+    /// form around it.
     pub(crate) fn ws_field_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.ws_chooser()
-            && chooser.read(cx).new_folder_focused(window, cx)
-        {
-            chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
-            return;
+        if let Some(chooser) = self.ws_chooser() {
+            if chooser.read(cx).new_folder_focused(window, cx) {
+                chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
+                return;
+            }
+            if chooser.read(cx).location_focused(window, cx) {
+                chooser.update(cx, |c, cx| c.cancel(cx));
+                return;
+            }
         }
         self.ws_close_form(window, cx);
     }

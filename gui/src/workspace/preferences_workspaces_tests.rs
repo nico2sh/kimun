@@ -501,6 +501,70 @@ fn a_new_workspace_is_checked_chosen_and_saved(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
+/// The chooser's Location field keeps its keys in the New form: `n` types
+/// an `n` (no New folder), Enter does not create the workspace, and Esc
+/// closes the chooser only, not the form.
+#[gpui_kit::test]
+fn the_new_form_chooser_location_field_keeps_its_keys(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let base = root(&p).join("browse");
+    std::fs::create_dir_all(base.join("notes")).unwrap();
+    std::fs::create_dir_all(base.join("zebra")).unwrap();
+    let s = on_a_with_prefs(cx, &rt, &p);
+    s.pw_list_focus(cx);
+    s.pw_press("n", cx);
+    type_new_name(&s, "third", cx);
+    s.pw_press("enter", cx);
+    s.pw_browse(&rt, &base, cx);
+    let chooser = s.pw_chooser(cx).expect("the chooser is up");
+
+    s.pw_click("preferences-chooser-location", cx);
+    s.pw_typed("n", cx);
+    let text = cx.read(|cx| {
+        chooser
+            .read(cx)
+            .location_input()
+            .read(cx)
+            .value()
+            .to_string()
+    });
+    assert_eq!(text, "n");
+    assert!(!cx.read(|cx| chooser.read(cx).new_folder_open()));
+    let shown = cx.read(|cx| chooser.read(cx).shown_rows().len());
+    assert_eq!(shown, 1, "the filter keeps `notes` only");
+
+    s.pw_press("enter", cx);
+    // Create with no folder would open a fresh chooser: the same one stays,
+    // its text too.
+    assert_eq!(
+        s.pw_chooser(cx).map(|c| c.entity_id()),
+        Some(chooser.entity_id()),
+        "Enter takes nothing yet"
+    );
+    let text = cx.read(|cx| {
+        chooser
+            .read(cx)
+            .location_input()
+            .read(cx)
+            .value()
+            .to_string()
+    });
+    assert_eq!(text, "n");
+    assert!(s.pw_read(cx, |v| v.ws_new_input().is_some()));
+    assert!(!names(&p.settings.read().unwrap()).contains(&"third".to_string()));
+
+    s.pw_press("escape", cx);
+    assert!(s.pw_chooser(cx).is_none(), "Esc closes the chooser");
+    assert!(
+        s.pw_read(cx, |v| v.ws_new_input().is_some()),
+        "and only the chooser"
+    );
+    assert!(s.pw_is_open(cx));
+    settle(&rt, cx);
+}
+
 /// A write that fails (the config on disk does not parse) shows why in the
 /// section and registers nothing.
 #[gpui_kit::test]

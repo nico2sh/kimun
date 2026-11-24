@@ -730,6 +730,35 @@ fn the_chooser_lists_subfolders_and_walks_them(cx: &mut TestAppContext) {
     assert_eq!(s.ob_step(cx), OnbStep::Workspace);
 }
 
+/// The chooser's Location field keeps its keys: `n` and `b` type (no New
+/// folder, no new chooser), Enter goes nowhere, and Esc closes the chooser
+/// only.
+#[gpui_kit::test]
+fn the_chooser_location_field_keeps_its_keys(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let f = fresh();
+    let base = f.root.join("browse");
+    mkdirs(&base, &["bin", "notes"]);
+    let s = first_run(cx, &rt, &f);
+    s.ob_go_to(OnbStep::Workspace, cx);
+    s.ob_browse(&rt, &base, cx);
+    s.ob_click("onboarding-chooser-location", cx);
+    s.ob_typed("nb", cx);
+    let text = s
+        .ob_chooser(cx, |c| c.location_input())
+        .map(|input| cx.read(|cx| input.read(cx).value().to_string()));
+    assert_eq!(text.as_deref(), Some("nb"));
+    assert_eq!(s.ob_chooser(cx, |c| c.new_folder_open()), Some(false));
+    s.ob_press("enter", cx);
+    assert_eq!(s.ob_chooser_dir(cx), base, "Enter goes nowhere yet");
+    assert_eq!(s.ob_step(cx), OnbStep::Workspace);
+    s.ob_press("escape", cx);
+    assert!(s.ob_read_view(cx, |v| v.chooser().is_none()));
+    assert!(s.ob_is_open(cx), "the assistant stays");
+    assert_eq!(s.ob_step(cx), OnbStep::Workspace);
+}
+
 /// `New folder…` makes the folder (through core) and enters it; a name no
 /// system accepts is refused in the field.
 #[gpui_kit::test]
