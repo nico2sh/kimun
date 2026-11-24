@@ -1019,6 +1019,10 @@ impl Workspace {
                     self.open_link_menu_in_editor(group, *at, target.clone(), window, cx);
                 }
             }
+            EditorEvent::OpenRemoteImage { url } => self.open_remote_image(url, cx),
+            EditorEvent::AlwaysLoadFrom { host, url } => {
+                self.always_load_in_editor(editor.clone(), host.clone(), url.clone(), cx)
+            }
         }
     }
 
@@ -1037,6 +1041,7 @@ impl Workspace {
         self.config
             .update(cx, |view, cx| view.set_settings(settings.clone(), cx));
         self.settings = Some(settings);
+        self.sync_remote_hosts(cx);
         self.set_channel(tx, rx, cx);
         self.enter(start, window, cx);
     }
@@ -1382,6 +1387,15 @@ impl Workspace {
         self.ensure_files_listing(cx);
         self.refresh_views(cx);
         cx.notify();
+    }
+
+    /// The vault of `group`'s note host: what a view shown there draws its
+    /// images from.
+    pub(crate) fn group_vault(&self, group: GroupId) -> Option<Arc<NoteVault>> {
+        self.state(group)?
+            .notes
+            .as_ref()
+            .map(|h| h.session.vault().clone())
     }
 
     /// The open workspace's vault; `None` before one opens.
@@ -4036,6 +4050,8 @@ mod facet_chrome_tests;
 #[cfg(test)]
 mod facet_gap_rows_tests;
 #[cfg(test)]
+mod facet_image_tests;
+#[cfg(test)]
 mod facet_line_tests;
 #[cfg(test)]
 mod facet_motion_edge_tests;
@@ -4108,17 +4124,23 @@ mod pinned_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
+mod preferences_remote_images_tests;
+#[cfg(test)]
 mod preferences_tests;
 #[cfg(test)]
 mod preferences_workspaces_tests;
 #[cfg(test)]
 mod preset_tests;
 #[cfg(test)]
+mod preview_image_tests;
+#[cfg(test)]
 mod properties_tests;
 #[cfg(test)]
 mod query_builder_tests;
 #[cfg(test)]
 mod rail_tests;
+#[cfg(test)]
+mod remote_image_tests;
 #[cfg(test)]
 mod reopen_tests;
 #[cfg(test)]

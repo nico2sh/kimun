@@ -82,7 +82,7 @@ pub use nfs::pinned_notes::{PinOutcome, PinToggle, PINNED_NOTES_CAP};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
 pub use nfs::EntryKind;
-pub use system::{Host, SystemPath};
+pub use system::{image_extension, Host, ImageCache, SystemPath, IMAGE_CACHE_CAP};
 pub use vault_browse::{NotesValidation, VaultBrowseOptions, VaultBrowseOptionsBuilder};
 pub use vault_config::{
     VaultConfig, DEFAULT_ASSETS_PATH, DEFAULT_INBOX_PATH, DEFAULT_JOURNAL_PATH,

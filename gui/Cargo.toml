@@ -23,6 +23,11 @@ tokio = { workspace = true }
 toml = { workspace = true }
 tracing = "0.1"
 unicode-segmentation = "1"
+# Remote images (`remote_image`): the one HTTP client, as in the terminal
+# crate (rustls TLS, no OpenSSL, no system TLS library). Blocking, run on
+# tokio's blocking pool. `url` resolves a redirect's `Location`.
+ureq = "2"
+url = "2"
 
 # Inline images (`inline_image`): header sizes for raster files, plus the
 # X11 window icon (`WindowOptions::icon`, an `image::RgbaImage`). GPUI's own

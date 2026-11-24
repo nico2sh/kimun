@@ -28,15 +28,21 @@
 //! target opens the attachment's **Entry menu**, which the editor's owner
 //! builds ([`EditorView::set_entry_menu`]); a left press goes to the text,
 //! as on any other line.
+//!
+//! A **Remote image** with no saved copy paints its placeholder over its two
+//! lines through the one placeholder piece ([`paint_remote_look`]). The
+//! paint step hands the view the bounds of its buttons, where a press acts.
+//! A loaded remote image paints as a vault image. A right press on it opens
+//! the remote menu in place of the Entry menu.
 
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::base::TestSupportExt as _;
-use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, Corners, CursorStyle, Element, ElementId,
+    AnyElement, AnyView, App, AvailableSpace, Bounds, ContentMask, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId,
     InteractiveElement as _, IntoElement, LayoutId, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Pixels, Point, RenderImage, Rgba, Role, ScrollEvent, ShapedLine, SharedString,
@@ -49,11 +55,13 @@ use kimun_notes::settings::themes::Theme;
 use crate::autocomplete::{PopupStyle, place, popup_cells, popup_element, popup_size};
 use crate::editor_font;
 use crate::editor_view::{
-    CaretShape, EditorView, EntryMenu, ImageDraw, ImageLook, ImagePane, Painted,
+    CaretShape, EditorView, ImageDraw, ImageLook, ImagePane, Painted, RemoteHit, RemoteMenu,
 };
 use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
+use crate::image_core::{RemoteLook, device_bounds, paint_look, remote_rows};
+use crate::remote_placeholder::{PlaceholderStyle, paint_remote_look};
 use crate::row_cache::RowCache;
 use crate::row_paint::{RowPaint, cells_of, cluster_at};
 use crate::theme::{self, CellStyle};
@@ -244,6 +252,51 @@ pub(crate) struct ImagePaint {
     pub(crate) image: Option<Arc<RenderImage>>,
     /// The attachment it draws.
     pub(crate) path: Option<VaultPath>,
+    /// The web address of a loaded remote image.
+    pub(crate) url: Option<String>,
+}
+
+/// A remote look as placed: its embed's row and address, its full box
+/// (the [`remote_rows`] lines), and the part of the pane it may paint in.
+pub(crate) struct RemotePaint {
+    #[cfg(test)]
+    pub(crate) row: usize,
+    pub(crate) url: String,
+    pub(crate) rect: Bounds<Pixels>,
+    pub(crate) clip: Bounds<Pixels>,
+    pub(crate) look: RemoteLook,
+}
+
+/// Where each remote look in `draws` paints, for the text rows
+/// `text_rows` of lines `line_height` tall. A look wholly outside the text
+/// rows is left out.
+fn place_remote_looks(
+    draws: &[ImageDraw],
+    text_rows: Bounds<Pixels>,
+    line_height: Pixels,
+) -> Vec<RemotePaint> {
+    draws
+        .iter()
+        .filter_map(|draw| {
+            let (ImageLook::Remote(look), Some(url)) = (&draw.look, &draw.url) else {
+                return None;
+            };
+            let top = text_rows.origin.y + line_height * draw.top as f32;
+            let rect = Bounds::new(
+                point(text_rows.origin.x, top),
+                size(text_rows.size.width, line_height * remote_rows() as f32),
+            );
+            let clip = rect.intersect(&text_rows);
+            (clip.size.width > px(0.) && clip.size.height > px(0.)).then(|| RemotePaint {
+                #[cfg(test)]
+                row: draw.row,
+                url: url.clone(),
+                rect,
+                clip,
+                look: look.clone(),
+            })
+        })
+        .collect()
 }
 
 /// Where each image in `draws` paints, for the text rows `text_rows`
@@ -262,7 +315,7 @@ fn place_images(
             let (image, (w, h)) = match &draw.look {
                 ImageLook::Ready(image, fitted) => (Some(image.clone()), *fitted),
                 ImageLook::Pending(fitted) => (None, *fitted),
-                ImageLook::Note(_) => return None,
+                ImageLook::Note(_) | ImageLook::Remote(_) => return None,
             };
             let top = text_rows.origin.y + line_height * draw.top as f32;
             let region = Bounds::new(
@@ -270,8 +323,7 @@ fn place_images(
                 size(text_rows.size.width, line_height * draw.lines as f32),
             );
             let clip = region.intersect(&text_rows);
-            // Device pixels to logical ones: pixel exact.
-            let rect = Bounds::new(region.origin, size(px(w / scale), px(h / scale)));
+            let rect = device_bounds(region.origin, (w, h), scale);
             let shown = rect.intersect(&clip);
             (shown.size.width > px(0.) && shown.size.height > px(0.)).then(|| ImagePaint {
                 row: draw.row,
@@ -280,6 +332,7 @@ fn place_images(
                 clip,
                 image,
                 path: draw.path.clone(),
+                url: draw.url.clone(),
             })
         })
         .collect()
@@ -387,15 +440,28 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The tooltip over an inline image, showing `tip` (the alt text, else
+/// the file name): the editor's and the read-only previews'.
+pub(crate) fn image_tooltip(
+    tip: SharedString,
+) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |window, cx| {
+        #[cfg(test)]
+        BUILT_TIPS.with(|built| built.borrow_mut().push(tip.clone()));
+        Tooltip::new(tip.clone()).build(window, cx)
+    }
+}
+
 /// The hover target over an inline image: as big as its visible part, it
 /// paints nothing and shows `tip` as a tooltip. Its accessible name is the
-/// same text, the image's alternative text. With a `menu` (the builder and
-/// the image's attachment) a right press on it opens that **Entry menu**.
+/// same text, the image's alternative text. With a `menu` a right press on
+/// it opens that menu: the attachment's **Entry menu**, or the remote menu
+/// of a loaded remote image.
 fn image_hover(
     row: usize,
     tip: SharedString,
     at: gpui_kit::Size<Pixels>,
-    menu: Option<(EntryMenu, VaultPath)>,
+    menu: Option<RemoteMenu>,
 ) -> AnyElement {
     let hover = div()
         .id(image_hover_id(row))
@@ -403,15 +469,11 @@ fn image_hover(
         .aria_label(tip.clone())
         .w(at.width)
         .h(at.height)
-        .tooltip(move |window, cx| {
-            #[cfg(test)]
-            BUILT_TIPS.with(|built| built.borrow_mut().push(tip.clone()));
-            Tooltip::new(tip.clone()).build(window, cx)
-        })
+        .tooltip(image_tooltip(tip))
         .test_support();
     match menu {
-        Some((menu, path)) => hover
-            .context_menu(move |popup, window, cx| menu(popup, path.clone(), window, cx))
+        Some(menu) => hover
+            .context_menu(move |popup, window, cx| menu(popup, window, cx))
             .into_any_element(),
         None => hover.into_any_element(),
     }
@@ -469,9 +531,14 @@ pub struct EditorPrepaint {
     placeholder: Rgba,
     /// A hover target over each image, carrying its tooltip.
     image_hovers: Vec<AnyElement>,
-    /// What a right press on an image opens, when it opens anything
-    /// ([`EditorView::image_menu`]).
-    image_menu: Option<EntryMenu>,
+    /// What a right press on each image opens, when it opens anything
+    /// ([`EditorView::image_menu`], [`EditorView::remote_menu`]), in the
+    /// order of `images`.
+    image_menus: Vec<Option<RemoteMenu>>,
+    /// Remote looks, over their two lines.
+    remote_looks: Vec<RemotePaint>,
+    /// How a remote look paints.
+    remote_style: PlaceholderStyle,
 }
 
 /// An open autocomplete popup waiting to be handed to the window: its size in
@@ -538,6 +605,9 @@ impl Element for EditorElement {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let focused = self.view.read(cx).focus_handle.is_focused(window);
         let origin = bounds.origin;
+        // The part of the window this element shows in: a facet chunk is
+        // sized to its whole text and clipped by the facet's scroll area.
+        let visible = window.content_mask().bounds;
 
         let (mut prepaint, popup) = self.view.update(cx, |view, view_cx| {
             let fonts = view.editor_fonts(&inputs, &text_system, view_cx);
@@ -577,12 +647,25 @@ impl Element for EditorElement {
             let rows = pane_rows - chrome - bar_rows;
             let mut draws = Vec::new();
             if view.sized_to_text {
+                // A read-only chunk's images, from its own source.
+                let pane = view.read_only_pane(cols, cells.width(), f32::from(line_height), scale);
                 // When the measure prepared this frame at these columns, with
                 // a viewport that shows every row, nothing is left to do. The
                 // guard assumes no edit since the measure: see
                 // `measured_this_frame`.
                 if !view.measured_this_frame(cols) {
+                    if let Some(pane) = pane {
+                        view.prepare_images(pane, view_cx);
+                    }
                     view.prepare_counted(cols, rows, self.view.entity_id());
+                }
+                if let Some(pane) = pane {
+                    // A chunk spans more than the screen: only its rows
+                    // inside the visible area count as on screen, so only
+                    // they start an auto load.
+                    let first = ((visible.top() - origin.y) / line_height).floor() as isize;
+                    let end = ((visible.bottom() - origin.y) / line_height).ceil() as isize;
+                    draws = view.image_draws(pane, Some(first..end), view_cx);
                 }
             } else {
                 // Device pixels, the unit an image's natural size is in.
@@ -593,7 +676,8 @@ impl Element for EditorElement {
                 };
                 view.prepare_images(pane, view_cx);
                 view.editor.prepare_frame(cols, rows);
-                draws = view.image_draws(pane, view_cx);
+                // The editor's spots are the pane's: all on screen.
+                draws = view.image_draws(pane, None, view_cx);
             }
             // The bar has the keyboard while open: no caret in the text.
             let bar_open = view.editor.find_open();
@@ -693,6 +777,7 @@ impl Element for EditorElement {
                 size(px(cells.width() * f32::from(cols)), px(cells.y_of(rows))),
             );
             let images = place_images(&draws, text_rows, line_height, scale);
+            let remote_looks = place_remote_looks(&draws, text_rows, line_height);
             #[cfg(test)]
             let mut image_notes = Vec::new();
             for draw in &draws {
@@ -725,7 +810,21 @@ impl Element for EditorElement {
                 image_notes.push((r, note.clone()));
             }
 
-            let image_menu = view.image_menu();
+            let entry_menu = view.image_menu();
+            let image_menus: Vec<Option<RemoteMenu>> = images
+                .iter()
+                .map(|paint| match (&paint.url, &paint.path, &entry_menu) {
+                    (Some(url), _, _) => view.remote_menu(url, view_cx),
+                    (None, Some(path), Some(menu)) => {
+                        let (menu, path) = (menu.clone(), path.clone());
+                        let built: RemoteMenu = Rc::new(move |popup: PopupMenu, window, cx| {
+                            menu(popup, path.clone(), window, cx)
+                        });
+                        Some(built)
+                    }
+                    _ => None,
+                })
+                .collect();
             let caret_at = frame.cursor.filter(|&(_, r)| r < rows);
             let caret_cell = caret_at.map(|(c, r)| cell_bounds(c, r, 1));
             let preedit = view.preedit.as_deref().zip(caret_cell).map(|(text, at)| {
@@ -909,6 +1008,15 @@ impl Element for EditorElement {
                     .collect(),
                 #[cfg(test)]
                 image_notes,
+                #[cfg(test)]
+                remote_looks: remote_looks
+                    .iter()
+                    .map(|paint| crate::editor_view::PaintedRemote {
+                        row: paint.row,
+                        rect: paint.rect,
+                        look: paint.look.clone(),
+                    })
+                    .collect(),
             });
             // The popup hangs from the caret's cell: nowhere to hang from
             // (scrolled off, the find bar has the keyboard), nothing drawn.
@@ -933,7 +1041,9 @@ impl Element for EditorElement {
                 placeholder: theme::image_placeholder(theme),
                 images,
                 image_hovers: Vec::new(),
-                image_menu,
+                image_menus,
+                remote_looks,
+                remote_style: PlaceholderStyle::of(theme, base_font.clone(), font_size),
                 text_hitbox: None,
                 target_hitboxes: Vec::new(),
                 target_areas,
@@ -966,9 +1076,10 @@ impl Element for EditorElement {
         prepaint.image_hovers = prepaint
             .images
             .iter()
-            .map(|paint| {
+            .zip(&prepaint.image_menus)
+            .map(|(paint, menu)| {
                 let at = paint.rect.intersect(&paint.clip);
-                let menu = prepaint.image_menu.clone().zip(paint.path.clone());
+                let menu = menu.clone();
                 let mut hover = image_hover(paint.row, paint.tip.clone(), at.size, menu);
                 hover.prepaint_as_root(
                     at.origin,
@@ -1034,26 +1145,34 @@ impl Element for EditorElement {
                 paint_line(placed, window, cx);
             }
             for image in &prepaint.images {
-                match &image.image {
-                    // A frame the GPU cannot take is skipped, not fatal.
-                    Some(pixels) => {
-                        let _ = window.paint_image(
-                            image.clip,
-                            image.rect,
-                            Corners::default(),
-                            pixels.clone(),
-                            0,
-                            false,
-                        );
-                    }
-                    None => {
-                        window.paint_quad(fill(
-                            image.rect.intersect(&image.clip),
-                            prepaint.placeholder,
-                        ));
-                    }
-                }
+                paint_look(
+                    window,
+                    image.rect,
+                    image.clip,
+                    image.image.as_ref(),
+                    prepaint.placeholder,
+                );
             }
+            // The remote looks, each through the one placeholder piece. Their
+            // buttons are where a press acts.
+            let mut hits = Vec::new();
+            for paint in &prepaint.remote_looks {
+                let buttons = paint_remote_look(
+                    window,
+                    cx,
+                    paint.rect,
+                    paint.clip,
+                    &paint.look,
+                    &prepaint.remote_style,
+                );
+                hits.push(RemoteHit {
+                    url: paint.url.clone(),
+                    host: paint.look.always_host(),
+                    area: paint.rect.intersect(&paint.clip),
+                    buttons,
+                });
+            }
+            self.view.update(cx, |view, _| view.remote_hits = hits);
             if let Some((covered, backing, line)) = &prepaint.preedit {
                 window.paint_quad(fill(*covered, *backing));
                 line.paint(

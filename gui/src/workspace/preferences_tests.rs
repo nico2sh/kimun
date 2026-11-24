@@ -455,7 +455,7 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
     let v = vault(&rt);
     let s = with_prefs(cx, &rt, &v);
     let mut seen = vec![s.pf_read(cx, |v| v.section())];
-    for _ in 0..7 {
+    for _ in 0..8 {
         s.pf_press("down", cx);
         seen.push(s.pf_read(cx, |v| v.section()));
     }
@@ -469,14 +469,15 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
             Section::Indexing,
             Section::Editor,
             Section::Server,
-            Section::Server,
+            Section::RemoteImages,
+            Section::RemoteImages,
         ]
     );
     for section in Section::ALL {
         assert!(s.pf_shows(section_id(section), cx), "{section:?} is listed");
     }
     s.pf_press("up", cx);
-    assert_eq!(s.pf_read(cx, |v| v.section()), Section::Editor);
+    assert_eq!(s.pf_read(cx, |v| v.section()), Section::Server);
     s.pf_section(cx, Section::Display);
     assert!(s.pf_shows(UPDATE_CHECK_ID, cx));
     assert!(
