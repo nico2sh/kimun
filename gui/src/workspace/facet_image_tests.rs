@@ -614,13 +614,15 @@ mod remote {
         for _ in 0..3 {
             rest(cx);
         }
+        // Two text rows and the placeholder's two rows.
+        assert_eq!(measured(&view, cx), Some(4));
+        // Last: a fetch that started shows Loading, so this holds with no
+        // timing.
         assert_eq!(
             looks(&view, cx),
             [(1, both())],
             "the placeholder, both actions"
         );
-        // Two text rows and the placeholder's two rows.
-        assert_eq!(measured(&view, cx), Some(4));
         assert_eq!(cx.update(|_, cx| fetch_count(cx)), 0, "no fetch");
         assert!(env.fake.calls().is_empty());
     }

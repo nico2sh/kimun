@@ -23,11 +23,12 @@ use super::preferences::remote_images::{
 };
 use super::preferences::{CANCEL_ID, Section};
 use super::preferences_tests::{config, on_disk, open, settle};
-use super::remote_image_tests::{Env, install};
+use super::remote_image_tests::{Env, install, press_button};
 use super::start_tests::{Started, drive, runtime};
 use crate::editor_view::EditorView;
 use crate::image_core::{Actions, RemoteLook};
 use crate::remote_image::{FetchFailure, Hop, RemoteImages, RemoteState, fetch_count};
+use crate::remote_placeholder::RemoteAction;
 use crate::startup::{FirstNote, Start, VaultStart};
 use crate::test_vault::{NAME, TestVault, test_vault};
 use kimun_notes::settings::themes::Theme;
@@ -277,6 +278,32 @@ fn a_failed_remove_keeps_the_list_and_the_store(cx: &mut TestAppContext) {
         message.contains("Couldn't save the allowed hosts"),
         "{message}"
     );
+    assert_eq!(
+        std::fs::read_to_string(config(&v)).unwrap(),
+        "this is [not toml"
+    );
+    settle(&rt, cx);
+}
+
+/// "Always load from" when the settings write fails (the config on disk does
+/// not parse): the host is not allowed, in the settings or in the store, the
+/// error flashes, and the one image the reader asked for still loads.
+#[gpui_kit::test]
+fn a_failed_always_load_write_leaves_the_host_unallowed_and_still_loads_the_image(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let _env = install(cx, &[(URL, Hop::Body(png(10, 10)))]);
+    let (v, s) = open_note(cx, &rt, NOTE, &[]);
+    std::fs::write(config(&v), "this is [not toml").unwrap();
+    press_button(&s, URL, RemoteAction::AlwaysLoad, cx);
+    drive(&rt, cx, |cx| ready(&s, 1, cx));
+    assert_eq!(fetches(cx), 1, "this one image loads");
+    assert!(hosts_in_memory(&v).is_empty(), "the settings stay");
+    assert!(!store(cx).is_allowed(HOST), "the store does not allow it");
+    let flash = s.flash(cx).expect("the error flashes");
+    assert!(flash.contains("Couldn't save the settings"), "{flash}");
     assert_eq!(
         std::fs::read_to_string(config(&v)).unwrap(),
         "this is [not toml"

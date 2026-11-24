@@ -207,7 +207,7 @@ fn both(host: &str) -> RemoteLook {
 
 /// Press the button of `action` of the placeholder of the remote embed
 /// `url`, where the last frame painted it.
-fn press_button(s: &Started, url: &str, action: RemoteAction, cx: &mut TestAppContext) {
+pub(super) fn press_button(s: &Started, url: &str, action: RemoteAction, cx: &mut TestAppContext) {
     render(s, cx);
     let view = editor(s, cx);
     let at = cx.read(|cx| {
@@ -332,7 +332,8 @@ fn a_note_with_a_remote_embed_on_an_unallowed_host_starts_no_fetch(cx: &mut Test
             true
         });
     }
-    drive(&rt, cx, |cx| look(&s, 1, cx).is_some());
+    // A fetch that started shows Loading, so this holds with no timing.
+    assert_eq!(look(&s, 1, cx), Some(both(HOST)), "still the placeholder");
     assert_eq!(fetches(cx), 0);
     assert!(env.fake.calls().is_empty());
 }
@@ -706,6 +707,10 @@ fn open_in_browser_double_click_and_followlink_use_the_handler_with_the_address(
     assert_eq!(fetches(cx), 0);
 }
 
+/// Reload keeps the saved copy drawn while it fetches. A failed Reload
+/// keeps the copy and the image. New bytes replace the copy, and the line
+/// takes the new image's rows. "Clear image cache" then gives the line back
+/// its placeholder.
 #[gpui_kit::test]
 fn clear_image_cache_returns_the_line_to_the_placeholder_and_reload_fetches_again(
     cx: &mut TestAppContext,
@@ -713,19 +718,36 @@ fn clear_image_cache_returns_the_line_to_the_placeholder_and_reload_fetches_agai
     let rt = runtime();
     let _guard = rt.enter();
     let (env, _v, s) = opened_with_copy(cx, &rt);
-    env.fake.answer(URL, Hop::Body(png(10, 200)));
+    let tall = lines_of(&s, 1, cx);
 
+    // The fake answers 404: the old copy and its image stay.
     right_click_image(&s, cx);
     pick(&s, "Reload", cx);
+    assert_eq!(look(&s, 1, cx), None, "no placeholder during the fetch");
     drive(&rt, cx, |cx| fetches(cx) == 1 && ready(&s, 1, cx));
-    assert!(env.cache.find(URL).is_some());
+    assert!(
+        env.cache.find(URL).is_some(),
+        "the failed Reload keeps the copy"
+    );
+    assert_eq!(look(&s, 1, cx), None, "no failure note");
+    assert_eq!(lines_of(&s, 1, cx), tall, "the text does not move");
+
+    // New bytes, a shorter image: they replace the copy.
+    env.fake.answer(URL, Hop::Body(png(10, 40)));
+    right_click_image(&s, cx);
+    pick(&s, "Reload", cx);
+    drive(&rt, cx, |cx| {
+        fetches(cx) == 2 && ready(&s, 1, cx) && lines_of(&s, 1, cx) < tall
+    });
+    let saved = std::fs::read(env.cache.find(URL).unwrap()).unwrap();
+    assert_eq!(saved, png(10, 40), "the new bytes replaced the copy");
 
     right_click_image(&s, cx);
     pick_clear(&s, cx);
     drive(&rt, cx, |cx| look(&s, 1, cx) == Some(both(HOST)));
     assert!(env.cache.find(URL).is_none(), "the copy is gone");
     assert_eq!(lines_of(&s, 1, cx), 2, "the placeholder's two lines");
-    assert_eq!(fetches(cx), 1, "clearing asks nothing");
+    assert_eq!(fetches(cx), 2, "clearing asks nothing");
 }
 
 #[gpui_kit::test]
@@ -796,4 +818,54 @@ fn a_copy_loaded_or_cleared_elsewhere_resizes_the_line_here(cx: &mut TestAppCont
     drive(&rt, cx, |cx| {
         look(&s, 1, cx) == Some(both(HOST)) && lines_of(&s, 1, cx) == 2
     });
+}
+
+/// Type `text` into the focused editor.
+fn type_in(s: &Started, text: &str, cx: &mut TestAppContext) {
+    cx.update_window(s.handle, |_, window, cx| window.input(text, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+/// Typing the address of an embed on an allowed host asks nothing while the
+/// caret stays on its line: each keystroke makes a new address, which would
+/// fail and flash. The image loads once the caret leaves the line.
+#[gpui_kit::test]
+fn an_address_typed_on_an_allowed_host_loads_only_after_the_caret_leaves_the_line(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let env = install(cx, &[(URL, Hop::Body(png(10, 40)))]);
+    let text = "![a](https://img.example.com/p)\nafter";
+    let (_v, s) = open(cx, &rt, text, &[HOST]);
+    hit(&s, "end", cx);
+    hit(&s, "left", cx);
+    let mut typed = Vec::new();
+    for ch in ["i", "c", ".", "p", "n", "g"] {
+        type_in(&s, ch, cx);
+        typed.push(s.text(cx));
+        drive(&rt, cx, |cx| {
+            render(&s, cx);
+            true
+        });
+    }
+    assert_eq!(s.text(cx), "![a](https://img.example.com/pic.png)\nafter");
+    // A fetch that started shows Loading or a failure: no timing involved.
+    for partial in [
+        "/p", "/pi", "/pic", "/pic.", "/pic.p", "/pic.pn", "/pic.png",
+    ] {
+        let url = format!("https://{HOST}{partial}");
+        assert_eq!(
+            store(cx).state(&url),
+            crate::remote_image::RemoteState::Blocked {
+                host: HOST.to_string()
+            },
+            "{url} was not asked"
+        );
+    }
+    assert_eq!(fetches(cx), 0, "no fetch while the caret is on the line");
+    hit(&s, "down", cx);
+    drive(&rt, cx, |cx| ready(&s, 0, cx));
+    assert_eq!(env.fake.calls(), vec![URL.to_string()], "one fetch");
 }

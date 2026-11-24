@@ -411,6 +411,15 @@ fn other_image_format(bytes: &[u8]) -> bool {
 /// A call to run when a fetch ends.
 type OnDone = Box<dyn FnOnce(&mut App)>;
 
+/// A fetch that waits for a free slot.
+struct Queued {
+    key: String,
+    url: String,
+    /// A Reload: it fetches although a saved copy exists, and a failure
+    /// keeps that copy.
+    force: bool,
+}
+
 /// A state of the session that is not a saved copy.
 enum Session {
     Failed(FetchFailure),
@@ -430,10 +439,14 @@ struct Inner {
     permits: HashMap<String, Vec<String>>,
     /// The addresses with a fetch running or queued, with their callers.
     in_flight: HashMap<String, Vec<OnDone>>,
-    /// The fetches that wait for a free slot: the key and the address.
-    queue: VecDeque<(String, String)>,
+    /// The fetches that wait for a free slot.
+    queue: VecDeque<Queued>,
     /// The fetches that run now.
     running: usize,
+    /// A test store with no fake installed: a fetch panics on the UI
+    /// thread, so no test reaches the network or the real cache.
+    #[cfg(test)]
+    stand_in: bool,
 }
 
 /// The state of every remote address for the session. A clone shares the
@@ -444,17 +457,32 @@ pub(crate) struct RemoteImages {
 }
 
 impl Default for RemoteImages {
-    /// A store with the real fetcher, so the one HTTP client, and the cache
-    /// in the app folder.
+    /// The app's store: [`Self::in_app_folder`].
+    #[cfg(not(test))]
     fn default() -> Self {
-        let cache = match ImageCache::in_app_dir() {
-            Ok(cache) => Some(cache),
-            Err(e) => {
-                tracing::warn!("no image cache, remote images cannot load: {e}");
-                None
-            }
-        };
-        Self::new(Arc::new(RealFetcher::new()), cache)
+        Self::in_app_folder()
+    }
+
+    /// A test store: no cache, and a fetcher that panics. A fetch panics on
+    /// the UI thread first. A test installs a fake fetcher and a temp cache
+    /// (`set_fetcher` and `set_cache`), so no test reaches the network or
+    /// the developer's own cache.
+    #[cfg(test)]
+    fn default() -> Self {
+        let store = Self::new(Arc::new(NoFetcher), None);
+        store.inner.borrow_mut().stand_in = true;
+        store
+    }
+}
+
+/// The fetcher of a test store with no fake installed.
+#[cfg(test)]
+struct NoFetcher;
+
+#[cfg(test)]
+impl Fetcher for NoFetcher {
+    fn get(&self, url: &str) -> Hop {
+        panic!("a test fetched {url} with no fake fetcher installed (set_fetcher)")
     }
 }
 
@@ -473,8 +501,24 @@ impl RemoteImages {
                 in_flight: HashMap::new(),
                 queue: VecDeque::new(),
                 running: 0,
+                #[cfg(test)]
+                stand_in: false,
             })),
         }
+    }
+
+    /// The store of the app: the real fetcher, so the one HTTP client, and
+    /// the cache in the app folder. With no app folder, it has no cache and
+    /// remote images cannot load.
+    fn in_app_folder() -> Self {
+        let cache = match ImageCache::in_app_dir() {
+            Ok(cache) => Some(cache),
+            Err(e) => {
+                tracing::warn!("no image cache, remote images cannot load: {e}");
+                None
+            }
+        };
+        Self::new(Arc::new(RealFetcher::new()), cache)
     }
 
     /// Keeps a copy of the allowed hosts. The workspace calls it when the
@@ -543,22 +587,51 @@ impl RemoteImages {
         cx: &mut App,
         on_done: impl FnOnce(&mut App) + 'static,
     ) {
+        self.fetch(url, false, cx, Box::new(on_done));
+    }
+
+    /// Fetches `url` again, as [`Self::load`] does, also when it has a saved
+    /// copy. The old copy stays, and stays drawn, until the new bytes
+    /// arrive. Core's save then replaces it in one step. A failed fetch keeps
+    /// the old copy and records no failure, so the old image stays. With no
+    /// saved copy it is a Load.
+    pub(crate) fn reload(
+        &mut self,
+        url: &str,
+        cx: &mut App,
+        on_done: impl FnOnce(&mut App) + 'static,
+    ) {
+        self.fetch(url, true, cx, Box::new(on_done));
+    }
+
+    /// Queues the fetch of `url`. `force` fetches past a saved copy.
+    fn fetch(&mut self, url: &str, force: bool, cx: &mut App, on_done: OnDone) {
         let key = key_of(url);
         {
             let mut inner = self.inner.borrow_mut();
+            #[cfg(test)]
+            assert!(
+                !inner.stand_in,
+                "a test asked to fetch {url} with the default store: install a fake \
+                 fetcher and a temp cache first (set_fetcher and set_cache)"
+            );
             if let Some(callers) = inner.in_flight.get_mut(&key) {
-                callers.push(Box::new(on_done));
+                callers.push(on_done);
                 return;
             }
             if scheme_of(url) != Scheme::Https || host_of(url).is_none() {
                 return;
             }
-            if inner.cache.as_ref().and_then(|c| c.find(url)).is_some() {
+            if !force && inner.cache.as_ref().and_then(|c| c.find(url)).is_some() {
                 return;
             }
             inner.sessions.remove(&key);
-            inner.in_flight.insert(key.clone(), vec![Box::new(on_done)]);
-            inner.queue.push_back((key, url.trim().to_string()));
+            inner.in_flight.insert(key.clone(), vec![on_done]);
+            inner.queue.push_back(Queued {
+                key,
+                url: url.trim().to_string(),
+                force,
+            });
         }
         self.start_queued(cx);
     }
@@ -566,12 +639,12 @@ impl RemoteImages {
     /// Starts the queued fetches while a slot is free.
     fn start_queued(&self, cx: &mut App) {
         loop {
-            let (key, job) = {
+            let (key, url, force, job) = {
                 let mut inner = self.inner.borrow_mut();
                 if inner.running >= MAX_RUNNING {
                     return;
                 }
-                let Some((key, url)) = inner.queue.pop_front() else {
+                let Some(Queued { key, url, force }) = inner.queue.pop_front() else {
                     return;
                 };
                 inner.running += 1;
@@ -581,10 +654,10 @@ impl RemoteImages {
                     cache: inner.cache.clone(),
                     allowed: inner.allowed.clone(),
                     permits: inner.permits.get(&key).cloned().unwrap_or_default(),
-                    url,
+                    url: url.clone(),
                     total: TOTAL_LIMIT,
                 };
-                (key, job)
+                (key, url, force, job)
             };
             let work = crate::tasks::blocking(move || job.run());
             let this = self.clone();
@@ -592,19 +665,22 @@ impl RemoteImages {
                 let outcome = work
                     .await
                     .unwrap_or_else(|e| Outcome::Failed(FetchFailure::Other(e)));
-                cx.update(|cx| this.finish(key, outcome, cx));
+                cx.update(|cx| this.finish(key, &url, force, outcome, cx));
             })
             .detach();
         }
     }
 
     /// Records how a fetch ended, starts the next queued fetch, and calls the
-    /// callers of the address.
-    fn finish(&self, key: String, outcome: Outcome, cx: &mut App) {
+    /// callers of the address. A forced fetch that failed while a saved copy
+    /// is still there records nothing: the old copy stays drawn.
+    fn finish(&self, key: String, url: &str, force: bool, outcome: Outcome, cx: &mut App) {
         let callers = {
             let mut inner = self.inner.borrow_mut();
             inner.running -= 1;
+            let kept = force && inner.cache.as_ref().and_then(|c| c.find(url)).is_some();
             match outcome {
+                _ if kept => {}
                 Outcome::Saved => {}
                 Outcome::RedirectBlocked(host) => {
                     inner
@@ -649,17 +725,6 @@ impl RemoteImages {
         inner.permits.remove(&key);
     }
 
-    /// Removes the saved copy of `url` and loads it again.
-    pub(crate) fn reload(
-        &mut self,
-        url: &str,
-        cx: &mut App,
-        on_done: impl FnOnce(&mut App) + 'static,
-    ) {
-        self.remove_copy(url);
-        self.load(url, cx, on_done);
-    }
-
     /// Removes the saved copy of `url` and its session state. The address
     /// shows its placeholder again.
     pub(crate) fn clear_copy(&mut self, url: &str) {
@@ -671,6 +736,11 @@ impl RemoteImages {
     /// permission of the session. Fetches under way go on. The Preferences
     /// "Clear cached images" calls it after core empties the cache, so each
     /// cleared address starts over from its placeholder.
+    ///
+    /// It drops every session failure, so a dead address on an allowed host
+    /// gets one more request once it is on screen again. It drops every
+    /// one-address redirect permission, so a redirect that the reader
+    /// approved once asks again.
     pub(crate) fn forget_sessions(&mut self) {
         let mut inner = self.inner.borrow_mut();
         inner.sessions.clear();
@@ -715,10 +785,10 @@ impl RemoteImages {
 /// Installs `fetcher` in the app's store.
 #[cfg(test)]
 pub(crate) fn set_fetcher(cx: &mut App, fetcher: Arc<dyn Fetcher>) {
-    cx.default_global::<RemoteImages>()
-        .inner
-        .borrow_mut()
-        .fetcher = fetcher;
+    let store = cx.default_global::<RemoteImages>();
+    let mut inner = store.inner.borrow_mut();
+    inner.fetcher = fetcher;
+    inner.stand_in = false;
 }
 
 /// Installs `cache` in the app's store.
@@ -786,6 +856,11 @@ mod tests {
         fn release(&self) {
             *self.open.lock().unwrap() = true;
             self.cv.notify_all();
+        }
+
+        /// Holds the next calls again.
+        fn close(&self) {
+            *self.open.lock().unwrap() = false;
         }
     }
 
@@ -957,14 +1032,39 @@ mod tests {
     }
 
     /// The store the app makes on first use holds the cache in the app
-    /// folder, so a saved copy shows in production with no test seam.
+    /// folder, so a saved copy shows in production with no test seam. On a
+    /// host with no app folder it has no cache.
     #[test]
     fn the_default_store_uses_the_cache_in_the_app_folder() {
-        let store = RemoteImages::default();
+        let store = RemoteImages::in_app_folder();
         let inner = store.inner.borrow();
-        let cache = inner.cache.as_ref().expect("a cache");
-        let want = ImageCache::in_app_dir().expect("the app folder");
-        assert_eq!(cache.root(), want.root());
+        match ImageCache::in_app_dir() {
+            Ok(want) => assert_eq!(inner.cache.as_ref().expect("a cache").root(), want.root()),
+            Err(_) => assert!(inner.cache.is_none()),
+        }
+    }
+
+    /// The store a test gets when it installs nothing has no cache, and a
+    /// fetch panics before it reaches the network.
+    #[test]
+    fn the_test_default_store_has_no_cache_and_refuses_to_fetch() {
+        let store = RemoteImages::default();
+        assert!(store.cache().is_none());
+        assert!(store.inner.borrow().stand_in);
+        let caught = std::panic::catch_unwind(|| NoFetcher.get(A));
+        assert!(caught.is_err());
+    }
+
+    /// A Load with the store a test gets when it installs nothing panics on
+    /// the UI thread, before any fetch starts.
+    #[gpui_kit::test]
+    #[should_panic(expected = "install a fake fetcher")]
+    fn a_load_with_no_fake_installed_panics(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.default_global::<RemoteImages>()
+                .clone()
+                .load(A, cx, |_| {})
+        });
     }
 
     #[gpui_kit::test]
@@ -1300,25 +1400,103 @@ mod tests {
         }
     }
 
+    /// Reloads `url` and waits for its `on_done`.
+    fn reload(env: &Env, cx: &mut TestAppContext, url: &str) {
+        let done = Rc::new(std::cell::Cell::new(false));
+        let d = done.clone();
+        {
+            let _guard = env.rt().enter();
+            cx.update(|cx| store_of(cx).reload(url, cx, move |_| d.set(true)));
+        }
+        settle(env, cx, |_| done.get());
+    }
+
+    /// The bytes of the saved copy of `url`.
+    fn saved_bytes(cx: &mut TestAppContext, url: &str) -> Vec<u8> {
+        let RemoteState::Saved(path) = state(cx, url) else {
+            panic!("expected a saved copy, got {:?}", state(cx, url));
+        };
+        std::fs::read(path).unwrap()
+    }
+
+    const JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3];
+
+    /// The old copy stays, and stays drawn, while the new bytes come. A
+    /// second Reload in that time adds its call and starts nothing. The new
+    /// bytes then replace the copy.
     #[gpui_kit::test]
-    fn reload_removes_the_copy_and_fetches_again(cx: &mut TestAppContext) {
+    fn a_reload_replaces_the_copy_when_the_new_bytes_arrive(cx: &mut TestAppContext) {
+        let fake = Fake::gated(&[(A, Hop::Body(PNG.to_vec()))]);
+        let env = env(cx, &fake);
+        let gate = fake.gate.as_ref().unwrap();
+        gate.release();
+        load(&env, cx, A);
+        gate.close();
+        fake.answer(A, Hop::Body(JPEG.to_vec()));
+        let done = Rc::new(std::cell::Cell::new(0));
+        {
+            let _guard = env.rt().enter();
+            for _ in 0..2 {
+                let d = done.clone();
+                cx.update(|cx| store_of(cx).reload(A, cx, move |_| d.set(d.get() + 1)));
+            }
+        }
+        settle(&env, cx, |_| gate.entered.load(Ordering::SeqCst) == 2);
+        assert_eq!(
+            saved_bytes(cx, A),
+            PNG,
+            "the old copy stays during the fetch"
+        );
+        gate.release();
+        settle(&env, cx, |_| done.get() == 2);
+        assert_eq!(count(cx), 2, "the second Reload started nothing");
+        assert_eq!(saved_bytes(cx, A), JPEG);
+    }
+
+    #[gpui_kit::test]
+    fn an_offline_reload_keeps_the_saved_copy(cx: &mut TestAppContext) {
         let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
         let env = env(cx, &fake);
         load(&env, cx, A);
-        let other = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3];
-        fake.answer(A, Hop::Body(other.to_vec()));
+        fake.answer(A, Hop::Failed(FetchFailure::Offline));
+        reload(&env, cx, A);
+        assert_eq!(count(cx), 2);
+        assert!(env.cache.find(A).is_some(), "the copy is still found");
+        assert_eq!(saved_bytes(cx, A), PNG);
+        // The failure is not kept: once the copy goes, the address shows
+        // its placeholder, not a failure that the reader never saw.
+        env.cache.remove(A).unwrap();
+        assert_eq!(state(cx, A), host("img.example.com"));
+    }
+
+    #[gpui_kit::test]
+    fn a_reload_with_a_non_image_body_keeps_the_old_copy(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
+        let env = env(cx, &fake);
+        load(&env, cx, A);
+        fake.answer(A, Hop::Body(b"<html>gone</html>".to_vec()));
+        reload(&env, cx, A);
+        assert_eq!(count(cx), 2);
+        assert_eq!(saved_bytes(cx, A), PNG);
+    }
+
+    /// A Reload with no saved copy is a Load: the placeholder shows
+    /// "Loading", then the copy is saved.
+    #[gpui_kit::test]
+    fn a_reload_with_no_saved_copy_loads_as_load_does(cx: &mut TestAppContext) {
+        let fake = Fake::gated(&[(A, Hop::Body(PNG.to_vec()))]);
+        let env = env(cx, &fake);
         let done = Rc::new(std::cell::Cell::new(false));
         let d = done.clone();
         {
             let _guard = env.rt().enter();
             cx.update(|cx| store_of(cx).reload(A, cx, move |_| d.set(true)));
         }
+        assert_eq!(state(cx, A), RemoteState::Loading);
+        fake.gate.as_ref().unwrap().release();
         settle(&env, cx, |_| done.get());
-        assert_eq!(count(cx), 2);
-        let RemoteState::Saved(path) = state(cx, A) else {
-            panic!("expected a saved copy");
-        };
-        assert_eq!(std::fs::read(path).unwrap(), other);
+        assert_eq!(count(cx), 1);
+        assert_eq!(saved_bytes(cx, A), PNG);
     }
 
     #[gpui_kit::test]
