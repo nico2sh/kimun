@@ -383,12 +383,28 @@ fn load_fetches_then_the_image_takes_the_rows_of_its_height_and_the_text_shifts_
     let loaded = lines_of(&s, 1, cx);
     assert!(loaded > 2, "the image takes {loaded} lines");
     let view = editor(&s, cx);
-    let finds = cx.read(|cx| view.read(cx).image_finds());
+    // The first frames after the load may find the lines once more: the
+    // pane can settle (the column width changes when the taller text
+    // brings a scrollbar), and a platform lays that out a frame later than
+    // another. Let it settle, then no frame may find again.
+    let mut finds = cx.read(|cx| view.read(cx).image_finds());
+    for _ in 0..5 {
+        drive(&rt, cx, |cx| ready(&s, 1, cx));
+        let now = cx.read(|cx| view.read(cx).image_finds());
+        if now == finds {
+            break;
+        }
+        finds = now;
+    }
     for _ in 0..3 {
         drive(&rt, cx, |cx| ready(&s, 1, cx));
         assert_eq!(lines_of(&s, 1, cx), loaded, "no change on later frames");
     }
-    assert_eq!(cx.read(|cx| view.read(cx).image_finds()), finds);
+    assert_eq!(
+        cx.read(|cx| view.read(cx).image_finds()),
+        finds,
+        "a settled pane finds nothing again"
+    );
     assert_eq!(fetches(cx), 1);
     assert_eq!(look(&s, 1, cx), None, "no placeholder");
     // The saved copy is the file the editor pins.
