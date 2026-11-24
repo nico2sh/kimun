@@ -131,13 +131,15 @@ impl ImageCache {
         self.copies().iter().map(|c| c.len).sum()
     }
 
-    /// Removes every file in the cache folder. The folder stays.
+    /// Removes every file in the cache folder but the young temporary
+    /// files: a save that runs now owns them, and renames one into a copy
+    /// next. The folder stays.
     pub fn clear(&self) -> Result<(), SystemError> {
         if !self.root.is_dir() {
             return Ok(());
         }
         for entry in read_dir(&self.root)? {
-            if entry.as_path().is_file() {
+            if entry.as_path().is_file() && !is_young_temporary(entry.as_path()) {
                 remove_file(entry.as_path())?;
             }
         }
@@ -152,7 +154,7 @@ impl ImageCache {
             return Ok(());
         }
         for entry in read_dir(&self.root)? {
-            if is_temporary(entry.as_path()) && is_stale(entry.as_path()) {
+            if is_temporary(entry.as_path()) && !is_young_temporary(entry.as_path()) {
                 remove_file(entry.as_path())?;
             }
         }
@@ -202,7 +204,14 @@ fn is_temporary(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "tmp")
 }
 
-/// Whether a temporary file is old enough that no save can still own it.
+/// Whether `path` is a temporary file young enough that a save can still
+/// own it, between its write and its rename. Eviction and clear both keep
+/// it. A temporary file with no readable age counts as young.
+fn is_young_temporary(path: &Path) -> bool {
+    is_temporary(path) && !is_stale(path)
+}
+
+/// Whether a file is old enough that no save can still own it.
 fn is_stale(path: &Path) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -384,6 +393,25 @@ mod tests {
         assert!(c.root().is_dir());
         c.save("https://a.com/0.png", &png(b"again")).unwrap();
         assert!(c.find("https://a.com/0.png").is_some());
+    }
+
+    #[test]
+    fn clear_keeps_a_young_temporary_file_and_removes_an_old_one_and_every_copy() {
+        let (_d, c) = cache();
+        let copy = c.save("https://a.com/x.png", &png(b"1")).unwrap();
+        let old_copy = c.save("https://a.com/y.png", &png(b"2")).unwrap();
+        age(&old_copy, 2 * 60 * 60);
+        let young = c.root().join("aaaa.png.1.0.tmp").into_path_buf();
+        let old = c.root().join("bbbb.png.1.1.tmp").into_path_buf();
+        std::fs::write(&young, b"in flight").unwrap();
+        std::fs::write(&old, b"abandoned").unwrap();
+        age(&old, 2 * 60 * 60);
+        c.clear().unwrap();
+        assert!(young.exists(), "the temporary file of a running save");
+        assert!(!old.exists());
+        assert!(!copy.exists());
+        assert!(!old_copy.exists());
+        assert_eq!(names(&c), vec!["aaaa.png.1.0.tmp".to_string()]);
     }
 
     #[test]
