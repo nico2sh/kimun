@@ -948,6 +948,9 @@ impl Workspace {
         let redraw = redraw_callback(tx.clone());
         let list = DrawerList::spawn(FIND_LIST_ID, "Results", tx, cx);
         let view = cx.new(|cx| FindView::new(vault, list.clone(), redraw, window, cx));
+        let preview = view.read(cx).preview.clone();
+        let watch = self.watch_preview(&preview, cx);
+        self._views_events.push(watch);
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_find_list_event));
         self._views_events

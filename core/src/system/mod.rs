@@ -23,6 +23,9 @@
 //!   OS itself — `std::path` parses per target — stay behind `cfg` and are
 //!   verified on that OS's CI leg.
 
+mod image_cache;
+pub use image_cache::{image_extension, ImageCache, IMAGE_CACHE_CAP};
+
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 

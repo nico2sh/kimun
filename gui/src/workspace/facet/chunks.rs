@@ -7,8 +7,8 @@
 use gpui_kit::{AppContext as _, Context};
 use kimun_core::note::Reveal;
 
-use super::FacetView;
 use super::members::chunk_plan;
+use super::{FacetEvent, FacetView};
 use crate::editor_view::{EditorEvent, EditorView};
 
 impl FacetView {
@@ -57,6 +57,16 @@ impl FacetView {
                             }
                             EditorEvent::LinkMenu { at, target } => {
                                 this.link_menu(i, *at, target.clone(), cx)
+                            }
+                            // "Always load from" on a placeholder in the
+                            // chunk: the host writes the setting, then the
+                            // chunk loads the image.
+                            EditorEvent::AlwaysLoadFrom { host, url } => {
+                                cx.emit(FacetEvent::AlwaysLoadFrom {
+                                    chunk: editor.clone(),
+                                    host: host.clone(),
+                                    url: url.clone(),
+                                })
                             }
                             _ => {}
                         }

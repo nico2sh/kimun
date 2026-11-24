@@ -58,6 +58,14 @@ pub(crate) struct AttachmentIndex {
 
 impl Global for AttachmentIndex {}
 
+/// The vault's attachments, sorted: the walk both the shared list and an
+/// editor that lists for itself run, off the main thread.
+pub(crate) fn list_sorted(vault: &NoteVault) -> Vec<VaultPath> {
+    let mut found = vault.list_attachments();
+    found.sort();
+    found
+}
+
 fn key(vault: &Arc<NoteVault>) -> usize {
     Arc::as_ptr(vault) as usize
 }
@@ -163,11 +171,7 @@ impl AttachmentIndex {
         };
         let listing = {
             let vault = vault.clone();
-            cx.background_spawn(async move {
-                let mut found = vault.list_attachments();
-                found.sort();
-                found
-            })
+            cx.background_spawn(async move { list_sorted(&vault) })
         };
         let this = self.clone();
         let weak = Arc::downgrade(vault);
