@@ -25,8 +25,12 @@ tracing = "0.1"
 unicode-segmentation = "1"
 # Remote images (`remote_image`): the one HTTP client, as in the terminal
 # crate (rustls TLS, no OpenSSL, no system TLS library). Blocking, run on
-# tokio's blocking pool. `url` resolves a redirect's `Location`.
-ureq = "2"
+# tokio's blocking pool. `native-certs` makes it trust the system's
+# certificate store, as a browser or `curl` does: a network that inspects
+# HTTPS (a company proxy, an antivirus, a VPN) adds its own certificate
+# there, and the bundled list alone rejects it ("UnknownIssuer").
+# `url` resolves a redirect's `Location`.
+ureq = { version = "2", features = ["native-certs"] }
 url = "2"
 
 # Inline images (`inline_image`): header sizes for raster files, plus the
