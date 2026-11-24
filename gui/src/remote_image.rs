@@ -258,14 +258,43 @@ impl Fetcher for RealFetcher {
         }
         match request.call() {
             Ok(response) => self.read(response, deadline),
-            Err(ureq::Error::Status(status @ (429 | 503), response)) => Hop::Busy {
-                status,
-                retry_after: retry_after_secs(response.header("retry-after")),
-            },
-            Err(ureq::Error::Status(code, _)) => Hop::Failed(FetchFailure::Status(code)),
+            Err(ureq::Error::Status(status @ (429 | 503), response)) => {
+                let retry_after = retry_after_secs(response.header("retry-after"));
+                log_error_answer(url, response);
+                Hop::Busy {
+                    status,
+                    retry_after,
+                }
+            }
+            Err(ureq::Error::Status(code, response)) => {
+                log_error_answer(url, response);
+                Hop::Failed(FetchFailure::Status(code))
+            }
             Err(ureq::Error::Transport(t)) => Hop::Failed(transport_failure(&t)),
         }
     }
+}
+
+/// Writes an error answer to the log: its status, its headers and the start
+/// of its body. A server that refuses a request says why in one of them (a
+/// rate limit, a policy on clients), and the one-line note cannot.
+fn log_error_answer(url: &str, response: ureq::Response) {
+    let status = response.status();
+    let headers: Vec<String> = response
+        .headers_names()
+        .iter()
+        .map(|name| format!("{name}: {}", response.header(name).unwrap_or("")))
+        .collect();
+    let mut body = Vec::new();
+    let _ = response.into_reader().take(400).read_to_end(&mut body);
+    let body = String::from_utf8_lossy(&body)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    tracing::warn!(
+        "remote image answer {status} for {url}; headers: [{}]; body: {body}",
+        headers.join("; ")
+    );
 }
 
 /// A reader that fails with `TimedOut` once the deadline has passed. Each
