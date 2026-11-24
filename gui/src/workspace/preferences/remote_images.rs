@@ -27,6 +27,8 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement, Styled, div,
 };
 
+use kimun_notes::logic::attachment::human_size;
+
 use super::super::reopen;
 use super::workspaces::{Notice, button_row, notice_line};
 use super::{PreferencesView, note};
@@ -56,22 +58,6 @@ pub(crate) fn remote_host_row_id(host: &str) -> SharedString {
 /// The element id of the "Remove" button of `host`.
 pub(crate) fn remote_remove_id(host: &str) -> SharedString {
     format!("preferences-remote-remove-{host}").into()
-}
-
-/// `bytes` in a human unit, with one decimal past bytes: "0 B", "512 B",
-/// "1.5 KB", "12.3 MB".
-pub(crate) fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64 / 1024.0;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
 }
 
 /// The text beside "Clear cached images": the size, or that it is being
