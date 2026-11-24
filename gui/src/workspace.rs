@@ -4124,6 +4124,8 @@ mod pinned_tests;
 #[cfg(test)]
 mod placement_tests;
 #[cfg(test)]
+mod preferences_keyboard_tests;
+#[cfg(test)]
 mod preferences_remote_images_tests;
 #[cfg(test)]
 mod preferences_tests;

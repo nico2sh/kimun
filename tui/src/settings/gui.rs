@@ -371,6 +371,23 @@ impl GuiSettings {
         }
     }
 
+    /// Replaces the `[gui.keys]` overrides: one array of chords per action,
+    /// in name order. An empty map removes the table.
+    pub fn set_key_overrides(&mut self, keys: &BTreeMap<String, Vec<String>>) {
+        if keys.is_empty() {
+            self.table.remove(KEYS);
+            return;
+        }
+        let table: Table = keys
+            .iter()
+            .map(|(action, chords)| {
+                let list = chords.iter().cloned().map(Value::String).collect();
+                (action.clone(), Value::Array(list))
+            })
+            .collect();
+        self.table.insert(KEYS.into(), Value::Table(table));
+    }
+
     /// The `[gui.keys]` overrides: action name → chords, as written. A single
     /// string counts as a one-chord list, an empty list unbinds; non-string
     /// list items are dropped, and an entry of any other type is skipped (and
@@ -528,6 +545,28 @@ ReplaceInBuffer = []
         assert_eq!(keys["FindInBuffer"], ["primary+shift+f", "alt+f"]);
         assert_eq!(keys["ToggleSidebar"], ["primary+b"]);
         assert!(keys["ReplaceInBuffer"].is_empty());
+    }
+
+    #[test]
+    fn key_overrides_round_trip() {
+        let mut g = GuiSettings::default();
+        let unbound = BTreeMap::from([("ToggleRail".to_string(), Vec::<String>::new())]);
+        g.set_key_overrides(&unbound);
+        assert_eq!(g.key_overrides(), unbound);
+        let bound = BTreeMap::from([("OpenNote".to_string(), vec!["primary+o".to_string()])]);
+        g.set_key_overrides(&bound);
+        assert_eq!(g.key_overrides(), bound);
+    }
+
+    #[test]
+    fn empty_key_overrides_remove_the_table() {
+        let mut g = GuiSettings::default();
+        g.set_key_overrides(&BTreeMap::from([(
+            "OpenNote".to_string(),
+            vec!["a".to_string()],
+        )]));
+        g.set_key_overrides(&BTreeMap::new());
+        assert!(g.is_empty());
     }
 
     #[test]

@@ -411,6 +411,7 @@ impl PreferencesView {
             || self.index.running.is_some()
             || self.ws.task.is_some()
             || self.remote_working()
+            || self.keyboard_file_working()
     }
 
     /// Whether one of the section's text fields has the keyboard (the New

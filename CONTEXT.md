@@ -430,6 +430,18 @@ _Avoid_: key event (crossterm's type), keystroke.
 A **GUI** Preferences setting that takes effect and is written to `config.toml` the moment it changes — theme, fonts, scale, editor backend, autosave, sorting. Heavy changes (switching a workspace, reindex, the server URL) are explicit actions with confirmation instead. The TUI keeps its explicit Save.
 _Avoid_: auto-save (that is the note **autosave**), live setting.
 
+**Chord**:
+One key plus its modifiers, as the **GUI** keymap binds it to an action (`primary+shift+f`). `primary` is Cmd on macOS and Ctrl elsewhere. An action can have more than one chord. The Preferences Keyboard section shows them all and sets one chord with Change. No chord is a valid state. Distinct from a **key combo**, the TUI's terminal-shaped spelling, and from **key input**, the raw typed key.
+_Avoid_: shortcut (the user-facing word for the same thing), binding (it also names the chord-to-action pair).
+
+**Shortcut override**:
+A **chord** of an action that differs from the **GUI**'s default for it, including no chord at all. Cleared actions count: an action that lost its chord to another action is an override with no chord, so that the loss survives a reload. An action whose default is no chord has nothing to clear. Only an interactive edit in Preferences can take a chord from another action whose scope overlaps. A hand-edited file or an imported **keymap file** keeps the first claim and reports the rest as dropped.
+_Avoid_: custom binding, remap.
+
+**Keymap file**:
+The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding only the **shortcut overrides**, one line per action. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
+_Avoid_: keymap (that is the whole table in effect, defaults included), profile.
+
 ### GUI motion
 
 **Motion**:

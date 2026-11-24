@@ -567,6 +567,50 @@ pub fn list_subdirs(
     Ok(dirs)
 }
 
+/// The folders and the files with `extension` (`toml` or `.toml`, any case)
+/// directly inside `dir`, for a chooser that picks a file: the folders
+/// first, then the files, each sorted by name ignoring case (ties by the
+/// exact name). Hidden entries (a leading `.`) are left out.
+///
+/// Blocking (a directory read and one stat per entry): run it off the UI
+/// thread.
+pub fn list_files(
+    dir: &kimun_core::system::SystemPath,
+    extension: &str,
+) -> Result<Vec<kimun_core::system::SystemPath>, String> {
+    let extension = extension.trim_start_matches('.');
+    let name = |p: &kimun_core::system::SystemPath| {
+        p.as_path()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    let key = |p: &kimun_core::system::SystemPath| {
+        let name = name(p);
+        (name.to_lowercase(), name)
+    };
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in kimun_core::system::read_dir(dir).map_err(|e| e.to_string())? {
+        if name(&entry).starts_with('.') {
+            continue;
+        }
+        if entry.is_dir() {
+            dirs.push(entry);
+        } else if entry
+            .as_path()
+            .extension()
+            .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(extension))
+        {
+            files.push(entry);
+        }
+    }
+    dirs.sort_by_cached_key(key);
+    files.sort_by_cached_key(key);
+    dirs.extend(files);
+    Ok(dirs)
+}
+
 /// Make the folder `name` inside `dir` (the directory chooser's "New
 /// folder"), with the rules of the TUI's browser: trimmed, not empty, a
 /// valid file name on every platform. Returns the created directory.
@@ -982,6 +1026,29 @@ mod tests {
         let dirs = list_subdirs(&dir).unwrap();
         assert_eq!(names(&dirs), [".hidden", "Alpha", "beta", "gamma"]);
         assert!(dirs.iter().all(|d| d.parent().as_ref() == Some(&dir)));
+    }
+
+    #[test]
+    fn list_files_lists_only_the_extension_and_folders_sorted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for d in ["beta", "Alpha", ".hidden-dir", "z.toml.d"] {
+            std::fs::create_dir(tmp.path().join(d)).unwrap();
+        }
+        for f in ["b.toml", "A.TOML", "c.txt", "notes", ".hidden.toml"] {
+            std::fs::write(tmp.path().join(f), "x").unwrap();
+        }
+        let dir = kimun_core::system::SystemPath::try_absolute(tmp.path()).unwrap();
+        for ext in ["toml", ".toml"] {
+            let listed = list_files(&dir, ext).unwrap();
+            assert_eq!(
+                names(&listed),
+                ["Alpha", "beta", "z.toml.d", "A.TOML", "b.toml"],
+                "{ext}: folders first, then the files, each sorted ignoring case"
+            );
+            assert!(listed.iter().all(|d| d.parent().as_ref() == Some(&dir)));
+        }
+        let gone = dir.join("gone");
+        assert!(list_files(&gone, "toml").is_err());
     }
 
     #[test]

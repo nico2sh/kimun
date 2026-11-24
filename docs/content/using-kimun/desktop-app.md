@@ -201,6 +201,8 @@ Press `F1` to see every shortcut. These are the most useful:
 
 ### Change a shortcut
 
+You can change a shortcut in [Preferences](#keyboard-shortcuts). You can also edit the file by hand.
+
 Add a `[gui.keys]` section to `config.toml`. Write the action name, then the new shortcut. An empty list removes a shortcut.
 
 ```toml
@@ -211,6 +213,8 @@ OpenFileBrowser = ["primary+e", "f7"]
 
 `primary` means `Ctrl`, or `Cmd` on macOS. The terminal app does not use this list.
 
+These are the same lines as in a [keymap file](#export-and-import), but under `[gui.keys]` and not `[keys]`. Kimün skips a line it cannot load and writes the reason to its log file. It shows no message.
+
 ## Preferences
 
 Press `F4` or `Ctrl+,`. The list on the left has these sections:
@@ -218,6 +222,7 @@ Press `F4` or `Ctrl+,`. The list on the left has these sections:
 - Workspaces: add, rename, or remove a workspace.
 - Appearance: pick the theme.
 - Display: the editor font and size, reduce motion, the rail position, and the update check.
+- Keyboard: change the shortcuts. See [Keyboard shortcuts](#keyboard-shortcuts).
 - Sorting, Indexing, Editor, and Server: the other settings.
 
 ![The Display section of Preferences](/img/gui-preferences.png)
@@ -227,6 +232,83 @@ Click `Save` or press `Ctrl+S` to keep your changes.
 Reduce motion stops the bouncing logo and the loading spinners. The default, System, follows the animation setting of your operating system. Choose Reduce or Allow to override it.
 
 If the title bar looks wrong on your desktop, add `window_decorations = "system"` to the `[gui]` section of `config.toml`. Restart the app to apply it.
+
+### Keyboard shortcuts
+
+Open Preferences and choose Keyboard. The list shows every action in groups, such as Notes, Editor, and Tabs. Each row shows the action and its shortcut. A row with no shortcut shows `none`. The leader key is one of the rows, named Leader.
+
+Some shortcuts work only in one place. The row says where, for example "editor only" or "search browser only".
+
+Each row has these buttons:
+
+- `Change` sets a new shortcut.
+- `Clear` removes the shortcut. The row then shows `none`.
+- `Reset` gives the row its default shortcut back. It shows only on a row you changed.
+
+To change a shortcut:
+
+1. Click `Change` on the row.
+2. Press the new keys.
+
+The row then shows the new shortcut. Press `Esc` to cancel and keep the old one. `Change` replaces all the shortcuts of the row with this one.
+
+The section refuses these keys and tells you why.
+
+- A plain letter, number, or symbol. It types text. Add `Ctrl`, `Alt`, or `Cmd` to use it.
+- `Enter`, `Tab`, `Backspace`, and other editing keys with no `Ctrl`, `Alt`, or `Cmd`. `Shift` alone does not count. Add one of the three.
+- The `+` key, with or without other keys. No other keys fix this. Pick another key.
+
+A function key such as `F6` works alone.
+
+On macOS, `Cmd+Q`, `Cmd+W`, `Cmd+H`, and `Cmd+M` act at once, even while a row waits for keys. You cannot set them as shortcuts.
+
+On macOS, `Option` with a letter can type a special character. A shortcut on such a key can then fail in the editor.
+
+What a row can tell you after a change:
+
+- "{shortcut} was {action}. Saving clears it there." Another action had the shortcut. It moves to this row. The other row shows the same warning.
+- "In the editor, this key then runs this shortcut and no longer edits text." The editor uses this key, for example to undo or to copy. The shortcut now takes it.
+- "In the editor with vim mode, vim reads this key first." With vim mode on, the editor handles this key before Kimün does.
+- A line such as "Where a query is typed, F7 is Query builder." Two actions can share a shortcut when they work in different places. The line says which one wins where.
+
+Nothing is kept until you click `Save`. Click `Cancel` to discard all the changes. Saved changes work at once and need no restart.
+
+`Reset all` puts every shortcut back to its default.
+
+If no shortcut opens Preferences anymore, click CFG in the rail. Then click `Preferences…` in the CFG view, and click `Reset all` in the Keyboard section. You can also remove the `[gui.keys]` table from `config.toml`. Every shortcut then goes back to its default.
+
+### Export and import
+
+Above the list, the Keymap file area has two parts. You can save your changes to a file and load them from a file. This helps you move your shortcuts to another computer.
+
+To export:
+
+1. Check the path in the Export field. It starts as `kimun-keys.toml` in your home folder.
+2. Click `Export`.
+
+The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder. If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds only the shortcuts you changed.
+
+To import:
+
+1. Type the path of the file in the Import field, or click `Choose file…`.
+2. Click `Import`.
+
+The path must be a full path or start with `~`. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
+
+Kimün shows how many changes it loaded. It lists each line it skipped and gives the reason. Import never takes a shortcut from another action. If two lines ask for the same shortcut, the first one wins and Kimün skips the other. The action of a skipped line then has no shortcut at all, because its line replaces all of its default shortcuts. To prevent this, clear the action that has the shortcut in the same file, for example with `OpenFileBrowser = []`.
+
+A keymap file looks like this:
+
+```toml
+[keys]
+SaveNote = "primary+s"
+OpenFileBrowser = ["primary+e", "f7"]
+NewTab = []
+```
+
+- `primary` means `Cmd` on macOS and `Ctrl` on other systems. A file with `primary` works on every system.
+- An empty list, as in `NewTab = []`, means no shortcut.
+- An action that is not in the file keeps its default shortcut.
 
 ## Updates
 

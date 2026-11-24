@@ -17,6 +17,12 @@
 //! ([`FolderChooser::new_folder_focused`]). The chooser says what was picked
 //! with [`FolderChooserEvent`]. Element ids carry the host's prefix
 //! (`onboarding-chooser`, `preferences-chooser`).
+//!
+//! **Files mode** ([`FolderChooser::files`], off by default): the list also
+//! shows the files with one extension (`logic::onboarding::list_files`,
+//! hidden entries left out). A folder works as before; a click or Enter on
+//! a file picks it ([`FolderChooserEvent::ChosenFile`]). There is no
+//! `Choose this folder` then.
 
 use crate::tasks::blocking;
 use gpui_kit::base::TestSupportExt as _;
@@ -51,6 +57,12 @@ pub(crate) fn row_id(prefix: &str, dir: &SystemPath) -> SharedString {
     format!("{prefix}-dir-{}", folder_name(dir)).into()
 }
 
+/// The element id of a chooser's row for the file `path` (its name), in
+/// files mode.
+pub(crate) fn file_row_id(prefix: &str, path: &SystemPath) -> SharedString {
+    format!("{prefix}-file-{}", folder_name(path)).into()
+}
+
 /// The chooser's element ids under the host's `prefix`: `{prefix}-chooser`,
 /// `{prefix}-chooser-<part>`.
 fn id(prefix: &str, part: &str) -> SharedString {
@@ -65,6 +77,8 @@ fn id(prefix: &str, part: &str) -> SharedString {
 pub(crate) enum FolderChooserEvent {
     /// `Choose this folder` (Ctrl+Enter, a double-click): this folder.
     Chosen(SystemPath),
+    /// A click or Enter on a file (files mode only): this file.
+    ChosenFile(SystemPath),
     /// `Cancel` (Esc): nothing chosen.
     Cancelled,
 }
@@ -99,6 +113,10 @@ pub(crate) struct FolderChooser {
     task: Option<Task<()>>,
     new_folder: Option<NewFolder>,
     scroll: UniformListScrollHandle,
+    /// Files mode: the extension of the files listed beside the folders.
+    files: Option<&'static str>,
+    /// Which rows of the listing are files, by index.
+    is_file: Vec<bool>,
 }
 
 impl EventEmitter<FolderChooserEvent> for FolderChooser {}
@@ -124,9 +142,19 @@ impl FolderChooser {
             task: None,
             new_folder: None,
             scroll: UniformListScrollHandle::new(),
+            files: None,
+            is_file: Vec::new(),
         };
         chooser.browse(start, window, cx);
         chooser
+    }
+
+    /// Files mode: the files with `extension` (`toml`) are listed too, and
+    /// one is picked with a click or Enter. Set it as the chooser is made:
+    /// the first listing reads it when it runs.
+    pub(crate) fn files(mut self, extension: &'static str) -> Self {
+        self.files = Some(extension);
+        self
     }
 
     /// The folder shown.
@@ -185,6 +213,11 @@ impl FolderChooser {
         }
     }
 
+    /// Whether row `ix` is a file (files mode).
+    fn is_file(&self, ix: usize) -> bool {
+        self.is_file.get(ix).copied().unwrap_or(false)
+    }
+
     /// Show `dir`, listed in the background.
     pub(crate) fn browse(&mut self, dir: SystemPath, window: &mut Window, cx: &mut Context<Self>) {
         self.revision += 1;
@@ -194,7 +227,9 @@ impl FolderChooser {
         self.selected = None;
         self.new_folder = None;
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
-            let listed = blocking(move || onb::list_subdirs(&dir).map_err(|e| e.to_string())).await;
+            // Read here, not at the call: the builder sets it after `new`.
+            let files = this.read_with(cx, |c, _| c.files).ok().flatten();
+            let listed = blocking(move || list(&dir, files)).await;
             this.update(cx, |chooser, cx| {
                 chooser.listed(revision, listed.and_then(|r| r), cx)
             })
@@ -206,7 +241,7 @@ impl FolderChooser {
     fn listed(
         &mut self,
         revision: u64,
-        listed: Result<Vec<SystemPath>, String>,
+        listed: Result<Vec<(SystemPath, bool)>, String>,
         cx: &mut Context<Self>,
     ) {
         if self.revision != revision {
@@ -216,6 +251,8 @@ impl FolderChooser {
         match listed {
             Ok(rows) => {
                 self.selected = (!rows.is_empty()).then_some(0);
+                let (rows, is_file) = rows.into_iter().unzip();
+                self.is_file = is_file;
                 self.listing = Listing::Loaded(rows);
                 self.scroll.scroll_to_item(0, ScrollStrategy::Top);
             }
@@ -236,14 +273,22 @@ impl FolderChooser {
         }
     }
 
-    /// Enter (Right): into the selected subfolder.
-    fn enter_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Enter (Right): into the selected subfolder. Enter on a file (files
+    /// mode) picks it; Right does nothing there.
+    fn enter_selected(&mut self, pick: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.creating() {
             return;
         }
-        let target = self.selected.and_then(|ix| self.rows().get(ix).cloned());
-        if let Some(target) = target {
+        let Some(ix) = self.selected else {
+            return;
+        };
+        let Some(target) = self.rows().get(ix).cloned() else {
+            return;
+        };
+        if !self.is_file(ix) {
             self.browse(target, window, cx);
+        } else if pick {
+            cx.emit(FolderChooserEvent::ChosenFile(target));
         }
     }
 
@@ -263,8 +308,9 @@ impl FolderChooser {
     }
 
     /// `Choose this folder` (Ctrl+Enter, a double-click): the folder shown.
+    /// Not in files mode, which picks a file.
     pub(crate) fn choose(&mut self, cx: &mut Context<Self>) {
-        if self.creating() {
+        if self.creating() || self.files.is_some() {
             return;
         }
         cx.emit(FolderChooserEvent::Chosen(self.dir.clone()));
@@ -356,7 +402,8 @@ impl FolderChooser {
         let plain = key.mods == Mods::NONE;
         match key.key {
             Key::Enter if key.mods.ctrl || key.mods.sup => self.choose(cx),
-            Key::Enter | Key::Right if plain => self.enter_selected(window, cx),
+            Key::Enter if plain => self.enter_selected(true, window, cx),
+            Key::Right if plain => self.enter_selected(false, window, cx),
             Key::Left | Key::Backspace if plain => self.up(window, cx),
             Key::Up if plain => self.move_selection(false, cx),
             Key::Down if plain => self.move_selection(true, cx),
@@ -370,6 +417,38 @@ impl FolderChooser {
     /// The key hints a host shows while the chooser is up.
     pub(crate) const HINTS: &'static str =
         "↑/↓: select · Enter: open · ←: up · Ctrl+Enter: choose · N: new folder · Esc: back";
+
+    /// [`Self::HINTS`] in files mode.
+    pub(crate) const FILE_HINTS: &'static str =
+        "↑/↓: select · Enter: open a folder or pick a file · ←: up · N: new folder · Esc: back";
+
+    /// The key hints for this chooser's mode.
+    pub(crate) fn hints(&self) -> &'static str {
+        if self.files.is_some() {
+            Self::FILE_HINTS
+        } else {
+            Self::HINTS
+        }
+    }
+}
+
+/// The listing of `dir`: its subfolders, or in files mode (`files`) its
+/// folders and the files with that extension. Each with whether it is a
+/// file. Blocking.
+fn list(dir: &SystemPath, files: Option<&'static str>) -> Result<Vec<(SystemPath, bool)>, String> {
+    match files {
+        None => onb::list_subdirs(dir)
+            .map(|dirs| dirs.into_iter().map(|d| (d, false)).collect())
+            .map_err(|e| e.to_string()),
+        Some(extension) => onb::list_files(dir, extension).map(|rows| {
+            rows.into_iter()
+                .map(|p| {
+                    let file = !p.is_dir();
+                    (p, file)
+                })
+                .collect()
+        }),
+    }
 }
 
 /// A quieter note.
@@ -398,9 +477,15 @@ impl Render for FolderChooser {
                 .text_color(theme::error(t))
                 .child(format!("Couldn't list this folder: {e}"))
                 .into_any_element(),
-            Listing::Loaded(rows) if rows.is_empty() => {
-                note("No folders here. Choose this one, or make a new one.", t).into_any_element()
-            }
+            Listing::Loaded(rows) if rows.is_empty() => match self.files {
+                Some(ext) => note(
+                    format!("No folders or .{} files here.", ext.trim_start_matches('.')),
+                    t,
+                )
+                .into_any_element(),
+                None => note("No folders here. Choose this one, or make a new one.", t)
+                    .into_any_element(),
+            },
             Listing::Loaded(rows) => uniform_list(
                 id(prefix, "list"),
                 rows.len(),
@@ -412,8 +497,13 @@ impl Render for FolderChooser {
                         .map(|(ix, dir)| {
                             let selected = this.selected == Some(ix);
                             let name = folder_name(&dir);
+                            let file = this.is_file(ix);
                             div()
-                                .id(row_id(prefix, &dir))
+                                .id(if file {
+                                    file_row_id(prefix, &dir)
+                                } else {
+                                    row_id(prefix, &dir)
+                                })
                                 .test_support()
                                 .role(Role::ListBoxOption)
                                 .aria_label(SharedString::from(name.clone()))
@@ -425,14 +515,20 @@ impl Render for FolderChooser {
                                 .px_2()
                                 .rounded_md()
                                 .text_sm()
-                                .text_color(theme::directory(&t))
+                                .text_color(if file {
+                                    theme::foreground(&t)
+                                } else {
+                                    theme::directory(&t)
+                                })
                                 .when(selected, |row| row.bg(theme::selected_background(&t)))
                                 .when(!selected, |row| row.hover(move |style| style.bg(hover)))
                                 .child(div().truncate().child(name))
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
-                                        if event.click_count() >= 2 {
+                                        if file {
+                                            cx.emit(FolderChooserEvent::ChosenFile(dir.clone()));
+                                        } else if event.click_count() >= 2 {
                                             // The first click entered it: take it.
                                             this.choose(cx);
                                         } else if !this.creating() {
@@ -489,7 +585,11 @@ impl Render for FolderChooser {
             .id(id(prefix, ""))
             .test_support()
             .role(Role::Group)
-            .aria_label("Choose a folder")
+            .aria_label(if self.files.is_some() {
+                "Choose a file"
+            } else {
+                "Choose a folder"
+            })
             .flex()
             .flex_col()
             .gap_3()
@@ -528,7 +628,11 @@ impl Render for FolderChooser {
                 div()
                     .id(id(prefix, "rows"))
                     .role(Role::ListBox)
-                    .aria_label("Folders")
+                    .aria_label(if self.files.is_some() {
+                        "Folders and files"
+                    } else {
+                        "Folders"
+                    })
                     .flex_1()
                     .min_h(rems(8.))
                     .h(rems(14.))
@@ -549,13 +653,15 @@ impl Render for FolderChooser {
 /// The chooser's commands (`New folder…`, `Cancel`, `Choose this folder`),
 /// as a row of buttons for the host's footer, with `spacer` between the
 /// first and the other two.
+/// In files mode there is no `Choose this folder`.
 pub(crate) fn actions(chooser: &Entity<FolderChooser>, cx: &App) -> Vec<AnyElement> {
     let prefix = chooser.read(cx).prefix;
     let creating = chooser.read(cx).creating();
+    let files = chooser.read(cx).files.is_some();
     let new = chooser.clone();
     let cancel = chooser.clone();
     let choose = chooser.clone();
-    vec![
+    let mut buttons = vec![
         Button::new(id(prefix, "new"))
             .label("New folder…")
             .disabled(creating)
@@ -568,11 +674,16 @@ pub(crate) fn actions(chooser: &Entity<FolderChooser>, cx: &App) -> Vec<AnyEleme
             .label("Cancel")
             .on_click(move |_: &ClickEvent, _, cx| cancel.update(cx, |c, cx| c.cancel(cx)))
             .into_any_element(),
-        Button::new(id(prefix, "choose"))
-            .primary()
-            .label("Choose this folder")
-            .disabled(creating)
-            .on_click(move |_: &ClickEvent, _, cx| choose.update(cx, |c, cx| c.choose(cx)))
-            .into_any_element(),
-    ]
+    ];
+    if !files {
+        buttons.push(
+            Button::new(id(prefix, "choose"))
+                .primary()
+                .label("Choose this folder")
+                .disabled(creating)
+                .on_click(move |_: &ClickEvent, _, cx| choose.update(cx, |c, cx| c.choose(cx)))
+                .into_any_element(),
+        );
+    }
+    buttons
 }
