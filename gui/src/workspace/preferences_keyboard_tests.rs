@@ -693,7 +693,7 @@ mod file {
     };
     use crate::workspace::preferences_tests::config;
     use crate::workspace::start_tests::drive;
-    use gpui_kit::Entity;
+    use gpui_kit::{Entity, Modifiers, Point, ScrollEvent, SharedString, VisualTestContext, px};
     use kimun_core::system::{self, SystemPath};
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
@@ -743,7 +743,8 @@ mod file {
         })
     }
 
-    /// A temp folder with `sub/`, `.hidden/`, `keys.toml`, `notes.txt`.
+    /// A temp folder with `sub/`, `.hidden/`, `keys.toml`, `.hidden.toml`,
+    /// `notes.txt`.
     fn folder() -> (tempfile::TempDir, PathBuf) {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = SystemPath::try_absolute(tmp.path())
@@ -752,6 +753,7 @@ mod file {
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::create_dir(dir.join(".hidden")).unwrap();
         std::fs::write(dir.join("keys.toml"), "[keys]\n").unwrap();
+        std::fs::write(dir.join(".hidden.toml"), "[keys]\n").unwrap();
         std::fs::write(dir.join("notes.txt"), "x").unwrap();
         (tmp, dir)
     }
@@ -778,8 +780,9 @@ mod file {
         settle(&rt, cx);
     }
 
-    /// `Choose file…` lists the folders and the `.toml` files; Enter on a
-    /// file puts it in the Import field and closes the chooser.
+    /// `Choose file…` lists the folders (hidden ones too) and the `.toml`
+    /// files (hidden ones left out); Enter on a file puts it in the Import
+    /// field and closes the chooser.
     #[gpui_kit::test]
     fn chooser_in_files_mode_chooses_a_file_on_enter(cx: &mut TestAppContext) {
         let rt = runtime();
@@ -794,7 +797,8 @@ mod file {
             dir,
             "it starts in the field's folder"
         );
-        assert_eq!(rows(&chooser, cx), ["sub", "keys.toml"]);
+        assert_eq!(rows(&chooser, cx), [".hidden", "sub", "keys.toml"]);
+        s.pf_press("down", cx);
         s.pf_press("down", cx);
         s.pf_press("enter", cx);
         assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_none()));
@@ -802,6 +806,137 @@ mod file {
             path_text(&s, false, cx),
             system::path_to_string(dir.join("keys.toml"))
         );
+        settle(&rt, cx);
+    }
+
+    /// The chooser up on a folder of 40 subfolders, in the pane's view.
+    fn long_chooser(
+        s: &Started,
+        rt: &Runtime,
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, PathBuf, Entity<FolderChooser>) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = SystemPath::try_absolute(tmp.path())
+            .unwrap()
+            .into_path_buf();
+        for i in 0..40 {
+            std::fs::create_dir(dir.join(format!("d{i:02}"))).unwrap();
+        }
+        set_path(s, false, &dir.join("missing.toml"), cx);
+        click(s, IMPORT_CHOOSE_ID, cx);
+        let chooser = chooser(s, rt, cx);
+        let first = SystemPath::try_absolute(dir.join("d00")).unwrap();
+        reveal(s, folder_chooser::row_id(CHOOSER_PREFIX, &first), cx);
+        (tmp, dir, chooser)
+    }
+
+    /// The chooser's top in the window: it moves only when the pane scrolls.
+    fn chooser_top(s: &Started, cx: &mut TestAppContext) -> gpui_kit::Pixels {
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find(SharedString::from(format!("{CHOOSER_PREFIX}-chooser")))
+                .bounds()
+                .top()
+        })
+        .unwrap()
+    }
+
+    /// The centre of the element `id`, in a fresh frame.
+    fn centre(
+        s: &Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> Point<gpui_kit::Pixels> {
+        let id = id.into();
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id).bounds().center()
+        })
+        .unwrap()
+    }
+
+    /// The wheel `dy` lines at `at`, as the platform sends it.
+    fn wheel(s: &Started, at: Point<gpui_kit::Pixels>, dy: f32, cx: &mut TestAppContext) {
+        let mut visual = VisualTestContext::from_window(s.handle, cx);
+        visual.simulate_mouse_move(at, None, Modifiers::default());
+        visual.simulate_event(ScrollEvent {
+            position: at,
+            delta: ScrollDelta::Lines(point(0.0, dy)),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+    }
+
+    /// The wheel over the chooser's list scrolls the list only, also at
+    /// its top or bottom edge: the pane under it stays put.
+    #[gpui_kit::test]
+    fn the_wheel_over_the_chooser_list_scrolls_the_list_only(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir, chooser) = long_chooser(&s, &rt, cx);
+        let first = SystemPath::try_absolute(dir.join("d00")).unwrap();
+        // The pane a line down, so that it could scroll either way.
+        let path = centre(
+            &s,
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
+            cx,
+        );
+        let before = chooser_top(&s, cx);
+        wheel(&s, path, -1.0, cx);
+        let pane = chooser_top(&s, cx);
+        assert!(pane < before, "the pane is off its top");
+        let over = centre(&s, folder_chooser::row_id(CHOOSER_PREFIX, &first), cx);
+        let list = |cx: &TestAppContext| cx.read(|cx| chooser.read(cx).list_scroll());
+
+        wheel(&s, over, 3.0, cx);
+        assert_eq!(list(cx), px(0.), "the list is at its top edge");
+        assert_eq!(chooser_top(&s, cx), pane, "the pane stays at the top edge");
+
+        wheel(&s, over, -3.0, cx);
+        assert!(list(cx) > px(0.), "the list scrolls down");
+        assert_eq!(chooser_top(&s, cx), pane, "the pane stays");
+
+        for _ in 0..40 {
+            wheel(&s, over, -3.0, cx);
+        }
+        let bottom = list(cx);
+        wheel(&s, over, -3.0, cx);
+        assert_eq!(list(cx), bottom, "the list is at its bottom edge");
+        assert_eq!(
+            chooser_top(&s, cx),
+            pane,
+            "the pane stays at the bottom edge"
+        );
+        settle(&rt, cx);
+    }
+
+    /// The wheel outside the list, over the chooser's path line, still
+    /// scrolls the pane.
+    #[gpui_kit::test]
+    fn the_wheel_outside_the_chooser_list_scrolls_the_pane(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, _dir, chooser) = long_chooser(&s, &rt, cx);
+        let path = centre(
+            &s,
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
+            cx,
+        );
+        let pane = chooser_top(&s, cx);
+        wheel(&s, path, -1.0, cx);
+        let down = chooser_top(&s, cx);
+        assert!(down < pane, "the pane scrolls down: {pane:?} to {down:?}");
+        let path = centre(
+            &s,
+            SharedString::from(format!("{CHOOSER_PREFIX}-chooser-path")),
+            cx,
+        );
+        wheel(&s, path, 1.0, cx);
+        assert_eq!(chooser_top(&s, cx), pane, "the pane scrolls back up");
+        assert_eq!(cx.read(|cx| chooser.read(cx).list_scroll()), px(0.));
         settle(&rt, cx);
     }
 

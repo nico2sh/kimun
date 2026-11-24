@@ -1207,6 +1207,36 @@ fn a_hidden_workspaces_question_leaves_the_keyboard_keys_alone(cx: &mut TestAppC
     settle(&rt, cx);
 }
 
+/// The "Discard your changes?" ask shows in every section: after a click
+/// on Keyboard, Esc still keeps editing, with the draft intact.
+#[gpui_kit::test]
+fn the_switch_ask_answers_esc_in_another_section(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let s = on_a_with_prefs(cx, &rt, &p);
+    s.pw_section(Section::Display, cx);
+    s.pw_click(super::preferences::UPDATE_CHECK_ID, cx);
+    s.pw_section(Section::Workspaces, cx);
+    s.pw_pick("b", cx);
+    s.pw_press("enter", cx);
+    assert!(s.pw_read(cx, |v| v.ws_ask().is_some()), "it asks");
+    s.pw_section(Section::Keyboard, cx);
+    s.pw_press("escape", cx);
+    assert!(
+        s.pw_read(cx, |v| v.ws_ask().is_none()),
+        "Esc closes the ask"
+    );
+    assert!(
+        s.pw_read(cx, |v| v.confirm().is_none()),
+        "no second question"
+    );
+    assert!(s.pw_is_open(cx));
+    assert!(s.pw_read(cx, |v| v.is_dirty()), "the draft is intact");
+    assert_eq!(current(&p.settings).as_deref(), Some("a"));
+    settle(&rt, cx);
+}
+
 /// The shared chooser keeps its ids under each host's prefix.
 #[test]
 fn the_chooser_ids_carry_the_hosts_prefix() {

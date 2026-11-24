@@ -19,8 +19,8 @@
 //! (`onboarding-chooser`, `preferences-chooser`).
 //!
 //! **Files mode** ([`FolderChooser::files`], off by default): the list also
-//! shows the files with one extension (`logic::onboarding::list_files`,
-//! hidden entries left out). A folder works as before; a click or Enter on
+//! shows the files with one extension (`logic::onboarding::list_files`:
+//! hidden folders listed, hidden files left out). A folder works as before; a click or Enter on
 //! a file picks it ([`FolderChooserEvent::ChosenFile`]). There is no
 //! `Choose this folder` then.
 
@@ -167,6 +167,12 @@ impl FolderChooser {
     #[cfg(test)]
     pub(crate) fn listing(&self) -> &Listing {
         &self.listing
+    }
+
+    /// How far the list is scrolled down (zero at its top).
+    #[cfg(test)]
+    pub(crate) fn list_scroll(&self) -> gpui_kit::Pixels {
+        -self.scroll.0.borrow().base_handle.offset().y
     }
 
     /// The selected row.
@@ -542,6 +548,12 @@ impl Render for FolderChooser {
                 }),
             )
             .track_scroll(&self.scroll)
+            // GPUI hands the wheel to every scroll container under the
+            // pointer, so the host's pane scrolled with the list (and on
+            // its own at the list's edge). The list's offset moves before
+            // this bubble listener runs: stopping here keeps the wheel in
+            // the list.
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .size_full()
             .into_any_element(),
         };

@@ -6,7 +6,8 @@
 //! every other action live in an overlapping [`Scope`]. The holder keeps its
 //! other chords; a holder left with none is saved as `Action = []`, so its
 //! default does not come back at the next load and undo the steal. The
-//! loader keeps its own rule (the first claim wins): a file is never read
+//! loader keeps its own rule (a chord stays with the action that holds it,
+//! defaults first, then overrides in action order): a file is never read
 //! this way.
 //!
 //! **Overrides are literal.** A changed action is written with exactly the

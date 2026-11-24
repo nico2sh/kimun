@@ -3,7 +3,10 @@
 //! means "no shortcut". Pure text in and out, headless-testable.
 //!
 //! **Import never steals.** A hand-edited or imported file keeps the
-//! loader's rule: the first claim wins. What the loader drops is reported in
+//! loader's rule: a chord stays with the action that holds it. Defaults bind
+//! first, then overrides in action order (not file order), so a line also
+//! loses to another action's default. Only the clashing chord is dropped,
+//! not the whole line. What the loader drops is reported in
 //! [`Imported::dropped`](crate::keymap::file::Imported::dropped); the rest is kept. Only text that is not TOML, or
 //! has no `[keys]` table, is a [`FileError`](crate::keymap::file::FileError).
 

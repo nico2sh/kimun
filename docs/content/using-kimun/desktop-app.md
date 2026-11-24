@@ -275,7 +275,7 @@ Nothing is kept until you click `Save`. Click `Cancel` to discard all the change
 
 `Reset all` puts every shortcut back to its default.
 
-If no shortcut opens Preferences anymore, click CFG in the rail. Then click `Preferences…` in the CFG view, and click `Reset all` in the Keyboard section. You can also remove the `[gui.keys]` table from `config.toml`. Every shortcut then goes back to its default.
+If no shortcut opens Preferences anymore, click CFG in the rail. Then click `Preferences…` in the CFG view. In the Keyboard section, click `Reset all`, then `Save`. You can also remove the `[gui.keys]` table from `config.toml`. Every shortcut then goes back to its default.
 
 ### Export and import
 
@@ -295,7 +295,7 @@ To import:
 
 The path must be a full path or start with `~`. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
 
-Kimün shows how many changes it loaded. It lists each line it skipped and gives the reason. Import never takes a shortcut from another action. If two lines ask for the same shortcut, the first one wins and Kimün skips the other. The action of a skipped line then has no shortcut at all, because its line replaces all of its default shortcuts. To prevent this, clear the action that has the shortcut in the same file, for example with `OpenFileBrowser = []`.
+Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. Import never takes a shortcut from another action. If a line asks for a shortcut that another action already has, Kimün skips that shortcut and tells you why. A default shortcut of another action counts too. If two lines ask for the same shortcut, only one of them gets it. A line replaces all the default shortcuts of its action. So if Kimün skips the only shortcut of a line, that action has no shortcut at all. To prevent this, clear the action that has the shortcut in the same file, for example with `OpenFileBrowser = []`.
 
 A keymap file looks like this:
 

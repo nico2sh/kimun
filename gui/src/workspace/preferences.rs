@@ -1205,10 +1205,12 @@ impl PreferencesView {
             }
             return true;
         }
-        // A Workspaces or Indexing question outlives a section switch: it
-        // answers the keys only while its own section shows it.
+        // The "Discard your changes?" ask shows in every section, so it
+        // answers the keys in every section, as `confirm` does. The Delete
+        // form and the full reindex question outlive a section switch but
+        // show only in their own section: they answer only there.
         let on_workspaces = self.section == Section::Workspaces;
-        if on_workspaces && self.ws.ask.is_some() {
+        if self.ws.ask.is_some() {
             match key.key {
                 Key::Esc => self.ask_keep(window, cx),
                 Key::Enter if plain && on_root => self.ask_go(window, cx),
