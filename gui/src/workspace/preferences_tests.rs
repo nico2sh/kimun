@@ -202,7 +202,7 @@ impl Started {
         drive(rt, cx, |cx| self.pf_read(cx, |v| v.model().is_some()));
     }
 
-    fn pf_press(&self, key: &str, cx: &mut TestAppContext) {
+    pub(super) fn pf_press(&self, key: &str, cx: &mut TestAppContext) {
         cx.update_window(self.handle, |_, window, cx| window.press(key, cx))
             .unwrap();
         cx.run_until_parked();
