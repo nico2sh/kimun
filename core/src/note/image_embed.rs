@@ -232,6 +232,83 @@ pub fn host_matches(allowed: &str, host: &str) -> bool {
     }
 }
 
+/// The hosts a reader allowed remote images from: plain names in lower case
+/// and ASCII form, without a port, no duplicates, in the order added. One
+/// rule for the settings, the store of remote images and a redirect:
+/// [`host_matches`]. The settings keep the names as a plain list in their
+/// file, so the list operations also work on a bare `Vec<String>`
+/// ([`allow_host`], [`forget_host`], [`host_listed`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AllowedHosts(Vec<String>);
+
+/// The stored name of `host` as written (a name, with or without a port,
+/// any case): `None` for a blank or invalid one.
+pub fn normalize_host(host: &str) -> Option<String> {
+    host_of(&format!("https://{}", host.trim()))
+}
+
+/// Whether `host` is on `list`.
+pub fn host_listed(list: &[String], host: &str) -> bool {
+    list.iter().any(|allowed| host_matches(allowed, host))
+}
+
+/// Add `host`, normalized, to `list`. Returns true when the list changed:
+/// a blank or invalid host, or one already there, changes nothing.
+pub fn allow_host(list: &mut Vec<String>, host: &str) -> bool {
+    let Some(name) = normalize_host(host) else {
+        return false;
+    };
+    if list.contains(&name) {
+        return false;
+    }
+    list.push(name);
+    true
+}
+
+/// Remove `host` from `list`. Returns true when the list changed.
+pub fn forget_host(list: &mut Vec<String>, host: &str) -> bool {
+    let before = list.len();
+    list.retain(|allowed| !host_matches(allowed, host));
+    list.len() != before
+}
+
+impl AllowedHosts {
+    /// Whether `host` is on the list.
+    pub fn matches(&self, host: &str) -> bool {
+        host_listed(&self.0, host)
+    }
+
+    /// Add `host`; see [`allow_host`].
+    pub fn allow(&mut self, host: &str) -> bool {
+        allow_host(&mut self.0, host)
+    }
+
+    /// Remove `host`; see [`forget_host`].
+    pub fn forget(&mut self, host: &str) -> bool {
+        forget_host(&mut self.0, host)
+    }
+
+    /// The names, in the order added.
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for AllowedHosts {
+    type Target = [String];
+
+    fn deref(&self) -> &[String] {
+        &self.0
+    }
+}
+
+/// The names as given, kept as they are: for hosts already normalized.
+impl FromIterator<String> for AllowedHosts {
+    fn from_iter<I: IntoIterator<Item = String>>(names: I) -> Self {
+        Self(names.into_iter().collect())
+    }
+}
+
 /// The vault file `embed`, written in the note at `note`, points at, when it
 /// is in `attachments`. An exact embed is resolved against the note's
 /// folder. A bare name takes the closest file of that name: the note's own
@@ -577,6 +654,22 @@ mod tests {
         );
         assert_eq!(host_of("https://X.com:80/a").as_deref(), Some("x.com"));
         assert_eq!(host_of("nonsense"), None);
+    }
+
+    #[test]
+    fn allowed_hosts_keeps_a_plain_normalized_list() {
+        let mut hosts = AllowedHosts::default();
+        assert!(hosts.allow("Example.COM:8080"));
+        assert!(!hosts.allow("example.com"));
+        assert!(!hosts.allow("  "));
+        assert!(!hosts.allow("not a host"));
+        assert_eq!(hosts.as_slice(), ["example.com"]);
+        assert!(hosts.matches("EXAMPLE.com:443"));
+        assert!(!hosts.matches("cdn.example.com"));
+        assert!(!hosts.forget(""));
+        assert!(hosts.forget("EXAMPLE.com"));
+        assert!(hosts.as_slice().is_empty());
+        assert_eq!(normalize_host(" X.com:1 "), Some("x.com".to_string()));
     }
 
     #[test]

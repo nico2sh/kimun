@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::{App, Global};
 use kimun_core::ImageCache;
 use kimun_core::image_extension;
-use kimun_core::note::{host_matches, host_of, normalize_image_url};
+use kimun_core::note::{AllowedHosts, host_matches, host_of, normalize_image_url};
 
 /// The largest image we download: 20 MB.
 pub(crate) const MAX_BYTES: u64 = 20 * 1024 * 1024;
@@ -316,7 +316,7 @@ struct Job {
     fetcher: Arc<dyn Fetcher>,
     fetches: Arc<AtomicUsize>,
     cache: Option<ImageCache>,
-    allowed: Vec<String>,
+    allowed: AllowedHosts,
     /// The hosts this address may follow a redirect to for the session.
     permits: Vec<String>,
     url: String,
@@ -367,7 +367,7 @@ impl Job {
             // The reader chose the first host. Any other host must be
             // allowed, or be one this address may follow for the session.
             let ok = origin.as_deref() == Some(host.as_str())
-                || self.allowed.iter().any(|a| host_matches(a, &host))
+                || self.allowed.matches(&host)
                 || self.permits.iter().any(|p| host_matches(p, &host));
             if !ok {
                 return Outcome::RedirectBlocked(host);
@@ -431,7 +431,7 @@ struct Inner {
     /// Calls of [`Fetcher::get`] so far (tests count them).
     fetches: Arc<AtomicUsize>,
     cache: Option<ImageCache>,
-    allowed: Vec<String>,
+    allowed: AllowedHosts,
     /// Failures and blocked redirects, by address key.
     sessions: HashMap<String, Session>,
     /// The one-address permissions to follow a redirect: the hosts, by
@@ -495,7 +495,7 @@ impl RemoteImages {
                 fetcher,
                 fetches: Arc::new(AtomicUsize::new(0)),
                 cache,
-                allowed: Vec::new(),
+                allowed: AllowedHosts::default(),
                 sessions: HashMap::new(),
                 permits: HashMap::new(),
                 in_flight: HashMap::new(),
@@ -524,17 +524,13 @@ impl RemoteImages {
     /// Keeps a copy of the allowed hosts. The workspace calls it when the
     /// settings load and after each change of the list.
     pub(crate) fn set_allowed_hosts(&mut self, hosts: &[String]) {
-        self.inner.borrow_mut().allowed = hosts.to_vec();
+        self.inner.borrow_mut().allowed = hosts.iter().cloned().collect();
     }
 
     /// Whether `host` is on the allowed list. The rule is core's
     /// [`host_matches`], as for the settings.
     pub(crate) fn is_allowed(&self, host: &str) -> bool {
-        self.inner
-            .borrow()
-            .allowed
-            .iter()
-            .any(|allowed| host_matches(allowed, host))
+        self.inner.borrow().allowed.matches(host)
     }
 
     /// The image cache the store saves to and finds copies in: a cheap
@@ -1735,7 +1731,7 @@ mod tests {
             }),
             fetches: fetches.clone(),
             cache: Some(cache.clone()),
-            allowed: Vec::new(),
+            allowed: AllowedHosts::default(),
             permits: Vec::new(),
             url: A.to_string(),
             total: Duration::from_millis(250),

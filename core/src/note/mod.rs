@@ -27,8 +27,9 @@ pub use facet_view::{
 };
 pub use facets::{note_facets, select_blocks, Facet, FacetEntry, FacetKind, NoteFacets};
 pub use image_embed::{
-    all_image_embeds, host_matches, host_of, image_embeds, normalize_image_url,
-    resolve_image_embed, FoundEmbed, ImageEmbed, RemoteImageEmbed,
+    all_image_embeds, allow_host, forget_host, host_listed, host_matches, host_of, image_embeds,
+    normalize_host, normalize_image_url, resolve_image_embed, AllowedHosts, FoundEmbed, ImageEmbed,
+    RemoteImageEmbed,
 };
 pub use tasks::toggle_task;
 
