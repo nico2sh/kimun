@@ -1287,7 +1287,7 @@ mod file {
         settle(&rt, cx);
     }
 
-    /// `New folder…` (and its N key) is only in folder mode: Export's
+    /// `New folder…` (and its Ctrl+N key) is only in folder mode: Export's
     /// chooser has it, Import's file chooser does not. Cancel stays.
     #[gpui_kit::test]
     fn new_folder_shows_only_in_folder_mode(cx: &mut TestAppContext) {
@@ -1314,12 +1314,68 @@ mod file {
             .unwrap();
         assert!(!drawn, "files mode has none");
         assert!(s.pf_shows(cancel, cx));
-        s.pf_press("n", cx);
+        s.pf_press("ctrl-n", cx);
         assert!(
             !cx.read(|cx| files.read(cx).new_folder_open()),
-            "N opens nothing"
+            "Ctrl+N opens nothing"
         );
-        assert!(!cx.read(|cx| files.read(cx).hints()).contains("new folder"));
+        assert!(
+            !cx.read(|cx| files.read(cx).hints(cx))
+                .contains("new folder")
+        );
+        settle(&rt, cx);
+    }
+
+    /// Esc in the Keyboard section's chooser closes only the chooser: the
+    /// Location field has the keyboard as it opens, its keys are never a
+    /// shortcut for the section (a row that listened stops), Esc with text
+    /// clears it, Esc from the empty field gives the keyboard back to the
+    /// path field it was for. Preferences stay open, with no question.
+    #[gpui_kit::test]
+    fn the_keyboard_section_chooser_esc_closes_only_the_chooser(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        let location = format!("{CHOOSER_PREFIX}-chooser-location");
+        set_path(&s, true, &dir.join("mine.toml"), cx);
+        click(&s, change_id(&A::ToggleFacetView), cx);
+        click(&s, EXPORT_CHOOSE_ID, cx);
+        let chooser = chooser(&s, &rt, cx);
+        assert!(
+            focused(&s, location.clone(), cx),
+            "the field has the keyboard"
+        );
+        assert_eq!(s.pf_read(cx, |v| v.keyboard_listening().cloned()), None);
+        s.pf_typed("su", cx);
+        s.pf_press("ctrl-g", cx);
+        assert!(
+            overrides(&s, cx).is_empty(),
+            "no chord taken from the field"
+        );
+        let text = |cx: &TestAppContext| {
+            cx.read(|cx| {
+                chooser
+                    .read(cx)
+                    .location_input()
+                    .read(cx)
+                    .value()
+                    .to_string()
+            })
+        };
+        assert_eq!(text(cx), "su");
+        s.pf_press("escape", cx);
+        assert_eq!(text(cx), "", "Esc clears the text first");
+        assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_some()));
+        s.pf_press("escape", cx);
+        assert!(s.pf_read(cx, |v| v.keyboard_chooser().is_none()));
+        assert!(focused(&s, EXPORT_PATH_ID, cx), "back to the path field");
+        assert!(s.pf_is_open(cx), "Preferences stay");
+        assert!(s.pf_read(cx, |v| v.confirm().is_none()), "no question");
+        assert_eq!(
+            path_text(&s, true, cx),
+            system::path_to_string(dir.join("mine.toml"))
+        );
         settle(&rt, cx);
     }
 

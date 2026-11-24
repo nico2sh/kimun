@@ -694,7 +694,7 @@ fn the_toggles_take_up_down_and_space(cx: &mut TestAppContext) {
 // ── the folder chooser ──────────────────────────────────────────────────────
 
 /// The chooser lists only subfolders, sorted ignoring case; Enter opens the
-/// selected one, Left goes up, a click enters a row.
+/// selected one, Alt+Up goes up, a click enters a row.
 #[gpui_kit::test]
 fn the_chooser_lists_subfolders_and_walks_them(cx: &mut TestAppContext) {
     let rt = runtime();
@@ -715,7 +715,7 @@ fn the_chooser_lists_subfolders_and_walks_them(cx: &mut TestAppContext) {
     s.ob_listed(&rt, cx);
     assert_eq!(s.ob_chooser_dir(cx), base.join("beta"));
     assert_eq!(s.ob_chooser_rows(cx), ["inner"]);
-    s.ob_press("left", cx);
+    s.ob_press("alt-up", cx);
     s.ob_listed(&rt, cx);
     assert_eq!(s.ob_chooser_dir(cx), base);
     let gamma = SystemPath::try_absolute(base.join("gamma")).unwrap();
@@ -730,32 +730,80 @@ fn the_chooser_lists_subfolders_and_walks_them(cx: &mut TestAppContext) {
     assert_eq!(s.ob_step(cx), OnbStep::Workspace);
 }
 
-/// The chooser's Location field keeps its keys: `n` and `b` type (no New
-/// folder, no new chooser), Enter goes nowhere, and Esc closes the chooser
-/// only.
+/// The keyboard alone picks a folder: the Location field has the keyboard
+/// as the chooser opens; a typed path and Enter (the real key) open a
+/// folder, a name and Enter open the best row, Backspace in the empty field
+/// goes up, `n` and `b` type, and Ctrl+Enter chooses. Esc with text only
+/// clears it; Esc again closes the chooser, never the assistant.
 #[gpui_kit::test]
-fn the_chooser_location_field_keeps_its_keys(cx: &mut TestAppContext) {
+fn the_setup_assistant_chooser_picks_a_folder_with_the_keyboard_alone(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let f = fresh();
     let base = f.root.join("browse");
-    mkdirs(&base, &["bin", "notes"]);
+    mkdirs(&base, &["bin", "notes/inner", "nb"]);
     let s = first_run(cx, &rt, &f);
     s.ob_go_to(OnbStep::Workspace, cx);
-    s.ob_browse(&rt, &base, cx);
-    s.ob_click("onboarding-chooser-location", cx);
-    s.ob_typed("nb", cx);
-    let text = s
+    let before = s.ob_model(cx, |m| m.draft.workspace.clone());
+    s.ob_press("b", cx);
+    s.ob_listed(&rt, cx);
+    let location = s
         .ob_chooser(cx, |c| c.location_input())
-        .map(|input| cx.read(|cx| input.read(cx).value().to_string()));
-    assert_eq!(text.as_deref(), Some("nb"));
+        .expect("the chooser is up");
+    let focused = cx
+        .update_window(s.handle, |_, window, cx| {
+            location.read(cx).focus_handle(cx).is_focused(window)
+        })
+        .unwrap();
+    assert!(focused, "the Location field has the keyboard");
+    let text = |cx: &TestAppContext| cx.read(|cx| location.read(cx).value().to_string());
+    // A full path, then Enter: the folder opens, nothing is chosen.
+    s.ob_typed(
+        &kimun_core::system::path_to_string(SystemPath::try_absolute(&base).unwrap()),
+        cx,
+    );
+    s.ob_press("enter", cx);
+    drive(&rt, cx, |cx| {
+        s.ob_chooser(cx, |c| {
+            c.dir().as_path() == base && !matches!(c.listing(), Listing::Loading)
+        })
+        .unwrap_or(false)
+    });
+    assert_eq!(text(cx), "");
+    assert_eq!(s.ob_model(cx, |m| m.draft.workspace.clone()), before);
+    // `n` and `b` type a name; Enter opens the best match.
+    s.ob_typed("nb", cx);
+    assert_eq!(text(cx), "nb");
     assert_eq!(s.ob_chooser(cx, |c| c.new_folder_open()), Some(false));
     s.ob_press("enter", cx);
-    assert_eq!(s.ob_chooser_dir(cx), base, "Enter goes nowhere yet");
-    assert_eq!(s.ob_step(cx), OnbStep::Workspace);
+    s.ob_listed(&rt, cx);
+    assert_eq!(s.ob_chooser_dir(cx), base.join("nb"));
+    // Backspace in the empty field: up.
+    s.ob_press("backspace", cx);
+    s.ob_listed(&rt, cx);
+    assert_eq!(s.ob_chooser_dir(cx), base);
+    // Esc with text clears it; the chooser stays.
+    s.ob_typed("not", cx);
+    s.ob_press("escape", cx);
+    assert_eq!(text(cx), "");
+    assert!(s.ob_read_view(cx, |v| v.chooser().is_some()));
+    // `notes`, Enter, then Ctrl+Enter chooses it.
+    s.ob_typed("notes", cx);
+    s.ob_press("enter", cx);
+    s.ob_listed(&rt, cx);
+    s.ob_press("ctrl-enter", cx);
+    assert!(s.ob_read_view(cx, |v| v.chooser().is_none()));
+    assert_eq!(
+        s.ob_model(cx, |m| m.draft.workspace.clone()),
+        Some(("notes".to_string(), base.join("notes")))
+    );
+    // Again, and Esc from the empty field closes only the chooser.
+    s.ob_press("b", cx);
+    s.ob_listed(&rt, cx);
     s.ob_press("escape", cx);
     assert!(s.ob_read_view(cx, |v| v.chooser().is_none()));
     assert!(s.ob_is_open(cx), "the assistant stays");
+    assert_eq!(s.ob_read_view(cx, |v| v.confirm()), None, "no question");
     assert_eq!(s.ob_step(cx), OnbStep::Workspace);
 }
 
@@ -771,7 +819,7 @@ fn new_folder_creates_and_enters_it(cx: &mut TestAppContext) {
     let s = first_run(cx, &rt, &f);
     s.ob_go_to(OnbStep::Workspace, cx);
     s.ob_browse(&rt, &base, cx);
-    s.ob_press("n", cx);
+    s.ob_press("ctrl-n", cx);
     assert!(s.ob_chooser(cx, |c| c.new_folder_open()).unwrap());
     s.ob_typed("bad:name", cx);
     s.ob_press("enter", cx);

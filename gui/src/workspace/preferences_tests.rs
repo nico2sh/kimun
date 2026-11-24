@@ -212,7 +212,7 @@ impl Started {
         cx.run_until_parked();
     }
 
-    fn pf_typed(&self, text: &str, cx: &mut TestAppContext) {
+    pub(super) fn pf_typed(&self, text: &str, cx: &mut TestAppContext) {
         cx.update_window(self.handle, |_, window, cx| window.input(text, cx))
             .unwrap();
         cx.run_until_parked();

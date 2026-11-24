@@ -472,21 +472,6 @@ impl OnboardingView {
                 .is_some_and(|c| c.read(cx).field_focused(window, cx))
     }
 
-    /// Whether the chooser's Location field has the keyboard.
-    fn location_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
-        self.chooser
-            .as_ref()
-            .is_some_and(|c| c.read(cx).location_focused(window, cx))
-    }
-
-    /// Whether the chooser's new folder field has the keyboard: Enter
-    /// creates the folder, Esc closes the field.
-    fn new_folder_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
-        self.chooser
-            .as_ref()
-            .is_some_and(|c| c.read(cx).new_folder_focused(window, cx))
-    }
-
     // ---- the steps --------------------------------------------------------
 
     /// `Next` (Enter, Right): advance, or finish on the summary. The first
@@ -671,12 +656,11 @@ impl OnboardingView {
             cx.notify();
             return;
         };
-        let host = self.focus.clone();
-        let chooser = cx.new(|cx| FolderChooser::new(CHOOSER_PREFIX, start, host, window, cx));
+        let chooser = cx.new(|cx| FolderChooser::new(CHOOSER_PREFIX, start, window, cx));
         self._chooser_events = Some(cx.subscribe_in(&chooser, window, Self::on_chooser_event));
+        // The chooser's Location field has the keyboard now.
         self.chooser = Some(chooser);
         self.message = None;
-        window.focus(&self.focus, cx);
         cx.notify();
     }
 
@@ -782,35 +766,20 @@ impl OnboardingView {
 
     // ---- keys -------------------------------------------------------------
 
-    /// Enter in a text field (the kit's action, seen first): create the new
-    /// folder, or leave the name field forward.
+    /// Enter in the name field (the kit's action, seen first): leave it
+    /// forward. A chooser field's Enter goes on to the chooser.
     fn on_field_enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
-        if self.new_folder_focused(window, cx) {
-            if let Some(chooser) = self.chooser.clone() {
-                chooser.update(cx, |c, cx| c.create_folder(window, cx));
-            }
-            cx.stop_propagation();
-        } else if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
+        if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
             self.next(window, cx);
             cx.stop_propagation();
         }
     }
 
-    /// Esc in a text field: close the new folder field, close the chooser
-    /// from its Location field (as Esc on the assistant does), or leave the
-    /// name field for the assistant (Esc again cancels).
+    /// Esc in the name field: leave it for the assistant (Esc again
+    /// cancels). A chooser field's Esc goes on to the chooser (clear the
+    /// text, then close the chooser), never to the assistant.
     fn on_field_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
-        if self.new_folder_focused(window, cx) {
-            if let Some(chooser) = self.chooser.clone() {
-                chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
-            }
-            cx.stop_propagation();
-        } else if self.location_focused(window, cx) {
-            if let Some(chooser) = self.chooser.clone() {
-                chooser.update(cx, |c, cx| c.cancel(cx));
-            }
-            cx.stop_propagation();
-        } else if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
+        if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
             window.focus(&self.focus, cx);
             cx.notify();
             cx.stop_propagation();
@@ -1472,12 +1441,12 @@ impl OnboardingView {
     }
 
     /// The key hints under the body: what the keyboard does here.
-    fn hints(&self, step: Option<OnbStep>) -> &'static str {
+    fn hints(&self, step: Option<OnbStep>, cx: &gpui_kit::App) -> &'static str {
         if self.confirm.is_some() {
             return "Enter: yes · Esc: back to the setup";
         }
-        if self.chooser.is_some() {
-            return FolderChooser::HINTS;
+        if let Some(chooser) = self.chooser.as_ref() {
+            return chooser.read(cx).hints(cx);
         }
         match step {
             Some(OnbStep::Welcome) => "Enter: start · ←/→: steps · Esc: cancel",
@@ -1633,7 +1602,7 @@ impl Render for OnboardingView {
                         div()
                             .text_xs()
                             .text_color(theme::muted(&t))
-                            .child(self.hints(step)),
+                            .child(self.hints(step, cx)),
                     )
                     .child(self.render_footer(step, cx)),
             )

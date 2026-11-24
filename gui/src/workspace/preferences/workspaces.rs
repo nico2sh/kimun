@@ -602,10 +602,9 @@ impl PreferencesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<FolderChooser> {
-        let host = self.focus.clone();
-        let chooser = cx.new(|cx| FolderChooser::new(CHOOSER_PREFIX, start, host, window, cx));
+        let chooser = cx.new(|cx| FolderChooser::new(CHOOSER_PREFIX, start, window, cx));
         self.ws._chooser_events = Some(cx.subscribe_in(&chooser, window, Self::on_chooser_event));
-        window.focus(&self.focus, cx);
+        // The chooser's Location field has the keyboard now.
         chooser
     }
 
@@ -894,18 +893,9 @@ impl PreferencesView {
         cx.notify();
     }
 
-    /// Enter in one of the section's fields. Nothing in the chooser's
-    /// Location field: it must not create the workspace.
+    /// Enter in one of the section's own fields (a chooser field's Enter is
+    /// the chooser's: [`PreferencesView::chooser_field_focused`]).
     pub(crate) fn ws_field_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.ws_chooser() {
-            if chooser.read(cx).new_folder_focused(window, cx) {
-                chooser.update(cx, |c, cx| c.create_folder(window, cx));
-                return;
-            }
-            if chooser.read(cx).location_focused(window, cx) {
-                return;
-            }
-        }
         match self.ws.form.as_ref() {
             Some(Form::New(_)) => self.ws_create(window, cx),
             Some(Form::Rename { .. }) => self.ws_rename_submit(window, cx),
@@ -913,20 +903,9 @@ impl PreferencesView {
         }
     }
 
-    /// Esc in one of the section's fields. In the chooser's Location field
-    /// it closes the chooser only, as Esc on the section does, not the New
-    /// form around it.
+    /// Esc in one of the section's own fields: the form goes (a chooser
+    /// field's Esc is the chooser's).
     pub(crate) fn ws_field_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.ws_chooser() {
-            if chooser.read(cx).new_folder_focused(window, cx) {
-                chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
-                return;
-            }
-            if chooser.read(cx).location_focused(window, cx) {
-                chooser.update(cx, |c, cx| c.cancel(cx));
-                return;
-            }
-        }
         self.ws_close_form(window, cx);
     }
 
@@ -1423,7 +1402,7 @@ impl PreferencesView {
                 .gap_3()
                 .child(chooser.clone())
                 .child(button_row().children(folder_chooser::actions(&chooser, cx)))
-                .child(note(FolderChooser::HINTS, t))
+                .child(note(chooser.read(cx).hints(cx), t))
                 .into_any_element();
         }
         let busy = self.busy();
@@ -1648,7 +1627,7 @@ impl PreferencesView {
                 .child(para(format!("Choose the folder for '{name}'."), t))
                 .child(chooser.clone())
                 .child(button_row().children(folder_chooser::actions(chooser, cx)))
-                .child(note(FolderChooser::HINTS, t))
+                .child(note(chooser.read(cx).hints(cx), t))
                 .children(message)
                 .into_any_element();
         }
