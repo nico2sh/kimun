@@ -1889,3 +1889,756 @@ fn the_collection_actions_have_no_default_chord_and_can_be_bound() {
         );
     }
 }
+
+// ---------------------------------------------------------- the key draft
+
+use draft::{CaptureError, KeyDraft, bindable_groups, check_capture, write_chord};
+
+/// The draft's overrides as `(name, chords)` pairs, for a readable compare.
+fn draft_overrides(draft: &KeyDraft) -> Vec<(String, Vec<String>)> {
+    draft.overrides().into_iter().collect()
+}
+
+fn entry(name: &str, chords: &[&str]) -> (String, Vec<String>) {
+    (
+        name.to_string(),
+        chords.iter().map(|c| c.to_string()).collect(),
+    )
+}
+
+#[test]
+fn assign_takes_the_chord_and_names_the_holder() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let e = parse_chord("primary+e", p).unwrap();
+        assert_eq!(
+            draft.holders(&A::OpenNote, e),
+            [A::OpenFileBrowser],
+            "{p:?}"
+        );
+        let taken = draft.assign(&A::OpenNote, e);
+        assert_eq!(taken, [A::OpenFileBrowser], "{p:?}");
+        assert_eq!(draft.chords(&A::OpenNote), [e], "{p:?}");
+        // The holder loses the chord, and its vim twin with it: an
+        // override is literal.
+        assert!(draft.chords(&A::OpenFileBrowser).is_empty(), "{p:?}");
+        assert_eq!(
+            draft_overrides(&draft),
+            [
+                entry("OpenFileBrowser", &[]),
+                entry("OpenNote", &["primary+e"]),
+            ],
+            "{p:?}"
+        );
+        assert!(draft.is_changed(&A::OpenNote) && draft.is_changed(&A::OpenFileBrowser));
+        // The saved overrides load with no collision and the same chords.
+        let (keymap, errors) = Keymap::load(p, &draft.overrides());
+        assert!(errors.is_empty(), "{p:?}: {errors:?}");
+        assert_eq!(keymap.chords_for(&A::OpenNote), [e]);
+        assert!(keymap.chords_for(&A::OpenFileBrowser).is_empty());
+    }
+}
+
+#[test]
+fn assign_the_chord_the_action_already_holds_changes_nothing() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let k = parse_chord("primary+k", p).unwrap();
+        assert!(draft.assign(&A::SearchNotes, k).is_empty(), "{p:?}");
+        assert_eq!(
+            draft.chords(&A::SearchNotes),
+            Keymap::defaults(p).chords_for(&A::SearchNotes)
+        );
+        assert!(draft.overrides().is_empty(), "{p:?}");
+        assert!(!draft.is_changed(&A::SearchNotes));
+    }
+}
+
+#[test]
+fn a_holder_with_two_chords_keeps_the_other() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let f = parse_chord("primary+shift+f", p).unwrap();
+        assert_eq!(draft.assign(&A::NewNote, f), [A::SearchNotes], "{p:?}");
+        assert_eq!(
+            draft.chords(&A::SearchNotes),
+            [parse_chord("primary+k", p).unwrap()],
+            "{p:?}"
+        );
+        // On Linux and Windows the search on defaults kept Ctrl+Shift+F
+        // from being find's vim twin. Overridden, it no longer does, so find
+        // is pinned to its written chord: the same chords, not a change.
+        let pinned: &[(String, Vec<String>)] = &[entry("FindInBuffer", &["primary+f"])];
+        let expected: Vec<(String, Vec<String>)> = match p {
+            LinuxWindows => pinned.to_vec(),
+            MacOs => Vec::new(),
+        }
+        .into_iter()
+        .chain([
+            entry("NewNote", &["primary+shift+f"]),
+            entry("SearchNotes", &["primary+k"]),
+        ])
+        .collect();
+        assert_eq!(draft_overrides(&draft), expected, "{p:?}");
+        assert!(!draft.is_changed(&A::FindInBuffer), "{p:?}");
+        assert_eq!(draft.chords(&A::NewNote), [f], "{p:?}");
+        let (keymap, errors) = Keymap::load(p, &draft.overrides());
+        assert!(errors.is_empty(), "{p:?}: {errors:?}");
+        assert_eq!(keymap.chords_for(&A::NewNote), [f], "{p:?}");
+    }
+}
+
+#[test]
+fn scopes_that_do_not_overlap_share_a_chord() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let f1 = chord("f1");
+        assert!(draft.holders(&A::KeyboardHelp, f1).is_empty(), "{p:?}");
+        assert!(draft.holders(&A::QuerySyntax, f1).is_empty(), "{p:?}");
+        draft.clear(&A::QuerySyntax);
+        assert!(draft.assign(&A::QuerySyntax, f1).is_empty(), "{p:?}");
+        assert_eq!(draft.chords(&A::QuerySyntax), [f1]);
+        assert_eq!(draft.chords(&A::KeyboardHelp), [f1]);
+        assert!(draft.overrides().is_empty(), "{p:?}");
+    }
+}
+
+#[test]
+fn clear_then_reset_returns_to_default_and_leaves_no_override() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        draft.clear(&A::OpenNote);
+        assert!(draft.chords(&A::OpenNote).is_empty());
+        assert!(draft.is_changed(&A::OpenNote));
+        assert_eq!(draft_overrides(&draft), [entry("OpenNote", &[])]);
+        assert!(draft.reset(&A::OpenNote).is_empty(), "{p:?}");
+        assert_eq!(
+            draft.chords(&A::OpenNote),
+            Keymap::defaults(p).chords_for(&A::OpenNote),
+            "{p:?}"
+        );
+        assert!(!draft.is_changed(&A::OpenNote));
+        assert!(draft.overrides().is_empty(), "{p:?}");
+        // Clearing an action that ships with no chord changes nothing.
+        draft.clear(&A::ToggleFacetView);
+        assert!(!draft.is_changed(&A::ToggleFacetView));
+        assert!(draft.overrides().is_empty(), "{p:?}");
+    }
+}
+
+#[test]
+fn reset_takes_the_default_from_a_holder() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let e = parse_chord("primary+e", p).unwrap();
+        draft.assign(&A::OpenNote, e);
+        assert_eq!(draft.reset(&A::OpenFileBrowser), [A::OpenNote], "{p:?}");
+        assert_eq!(
+            draft.chords(&A::OpenFileBrowser),
+            Keymap::defaults(p).chords_for(&A::OpenFileBrowser),
+            "{p:?}"
+        );
+        assert!(draft.chords(&A::OpenNote).is_empty(), "{p:?}");
+        assert_eq!(draft_overrides(&draft), [entry("OpenNote", &[])], "{p:?}");
+        let (_, errors) = Keymap::load(p, &draft.overrides());
+        assert!(errors.is_empty(), "{p:?}: {errors:?}");
+    }
+}
+
+/// A reset gives back the vim twin too, so an action that took the twin
+/// loses it, or the loader would drop its chord at the next load.
+#[test]
+fn reset_takes_the_vim_twin_back_from_a_holder() {
+    let mut draft = KeyDraft::new(LinuxWindows, &BTreeMap::new());
+    draft.clear(&A::OpenFileBrowser);
+    assert!(draft.assign(&A::OpenNote, chord("ctrl+shift+e")).is_empty());
+    assert_eq!(draft.reset(&A::OpenFileBrowser), [A::OpenNote]);
+    assert_eq!(
+        draft.chords(&A::OpenFileBrowser),
+        [chord("ctrl+e"), chord("ctrl+shift+e")]
+    );
+    assert_eq!(draft_overrides(&draft), [entry("OpenNote", &[])]);
+}
+
+#[test]
+fn overrides_drop_entries_equal_to_default() {
+    // Read from a file: an entry equal to the default goes, an unknown name
+    // stays as written (no row; the loader reports it), a real change stays.
+    let file = overrides(&[
+        ("OpenNote", &["primary+o"]),
+        ("NoSuchAction", &["primary+g"]),
+        ("FindInBuffer", &["primary+g"]),
+    ]);
+    let draft = KeyDraft::new(MacOs, &file);
+    assert_eq!(
+        draft_overrides(&draft),
+        [
+            entry("FindInBuffer", &["primary+g"]),
+            entry("NoSuchAction", &["primary+g"]),
+        ]
+    );
+    assert_eq!(draft.changes(), 1);
+    assert!(!draft.is_changed(&A::OpenNote));
+    assert!(draft.is_changed(&A::FindInBuffer));
+    // Picking the default chord back on macOS (no twin) leaves no entry,
+    // but the holder it was taken from stays cleared.
+    let mut draft = KeyDraft::new(MacOs, &BTreeMap::new());
+    draft.assign(&A::OpenNote, chord("cmd+e"));
+    draft.assign(&A::OpenNote, chord("cmd+o"));
+    assert_eq!(draft_overrides(&draft), [entry("OpenFileBrowser", &[])]);
+    // reset_all forgets every change.
+    draft.reset_all();
+    assert!(draft.overrides().is_empty());
+    assert_eq!(draft.chords(&A::OpenFileBrowser), [chord("cmd+e")]);
+}
+
+/// Picking the default chord again keeps the entry where the default has a
+/// vim twin: the override is literal and drops the twin. Where it has none
+/// (macOS), the entry goes.
+#[test]
+fn assigning_the_default_back_keeps_the_entry_only_where_a_twin_is_lost() {
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let o = parse_chord("primary+o", p).unwrap();
+        draft.clear(&A::OpenNote);
+        draft.assign(&A::OpenNote, o);
+        let expected: Vec<(String, Vec<String>)> = match p {
+            LinuxWindows => vec![entry("OpenNote", &["primary+o"])],
+            MacOs => Vec::new(),
+        };
+        assert_eq!(draft_overrides(&draft), expected, "{p:?}");
+        assert_eq!(draft.is_changed(&A::OpenNote), p == LinuxWindows, "{p:?}");
+    }
+}
+
+/// Overriding an action can give another action its vim twin back, with
+/// nothing taken. That row was not touched, so it is not changed.
+#[test]
+fn a_freed_vim_twin_does_not_mark_an_untouched_row_changed() {
+    let p = LinuxWindows;
+    let mut draft = KeyDraft::new(p, &BTreeMap::new());
+    draft.clear(&A::QuickNote);
+    assert_eq!(
+        draft.chords(&A::CloseTab),
+        [chord("ctrl+w"), chord("ctrl+shift+w")]
+    );
+    assert!(!draft.is_changed(&A::CloseTab), "{p:?}");
+    assert!(draft.assign(&A::SearchNotes, chord("alt+s")).is_empty());
+    assert!(!draft.is_changed(&A::FindInBuffer), "{p:?}");
+    draft.clear(&A::NewDirectory);
+    assert!(!draft.is_changed(&A::NewNote), "{p:?}");
+    // A pinned holder keeps its default chords: not changed either.
+    let mut draft = KeyDraft::new(p, &BTreeMap::new());
+    draft.assign(&A::NewNote, chord("ctrl+shift+f"));
+    assert!(draft.overrides().contains_key("FindInBuffer"), "{p:?}");
+    assert!(!draft.is_changed(&A::FindInBuffer), "{p:?}");
+}
+
+#[test]
+fn holders_is_empty_for_a_chord_the_action_holds() {
+    let draft = KeyDraft::new(LinuxWindows, &BTreeMap::new());
+    assert!(
+        draft
+            .holders(&A::SearchNotes, chord("ctrl+shift+f"))
+            .is_empty()
+    );
+}
+
+#[test]
+fn check_capture_refuses_a_bare_character_and_a_bare_enter_tab_backspace() {
+    let plain = |key| KeyInput::plain(key);
+    assert_eq!(
+        check_capture(plain(Key::Char('a'))),
+        Err(CaptureError::NeedsModifier)
+    );
+    assert_eq!(
+        check_capture(KeyInput::new(Key::Char('a'), Mods::SHIFT)),
+        Err(CaptureError::NeedsModifier)
+    );
+    assert_eq!(
+        check_capture(plain(Key::Char(' '))),
+        Err(CaptureError::NeedsModifier)
+    );
+    for key in [
+        Key::Enter,
+        Key::Tab,
+        Key::Backspace,
+        Key::Esc,
+        Key::Delete,
+        Key::Left,
+        Key::Home,
+        Key::PageDown,
+    ] {
+        assert_eq!(
+            check_capture(plain(key)),
+            Err(CaptureError::Reserved),
+            "{key:?}"
+        );
+    }
+    assert_eq!(
+        check_capture(KeyInput::new(Key::Enter, Mods::SHIFT)),
+        Err(CaptureError::Reserved),
+        "Shift+Enter is a plain newline"
+    );
+    assert_eq!(
+        check_capture(KeyInput::new(Key::BackTab, Mods::SHIFT)),
+        Err(CaptureError::Reserved)
+    );
+    for ok in [
+        "f1",
+        "shift+f6",
+        "ctrl+e",
+        "alt+l",
+        "cmd+k",
+        "ctrl+enter",
+        "alt+left",
+        "ctrl+tab",
+    ] {
+        assert_eq!(check_capture(chord(ok)), Ok(()), "{ok}");
+    }
+    // `+` joins the parts of a written chord: it cannot be saved.
+    for plus in [
+        KeyInput::ctrl('+'),
+        KeyInput::new(Key::Char('+'), Mods::ALT),
+    ] {
+        assert_eq!(check_capture(plus), Err(CaptureError::PlusKey));
+    }
+    assert!(CaptureError::PlusKey.to_string().contains('+'));
+    assert!(!CaptureError::NeedsModifier.to_string().is_empty());
+    assert!(!CaptureError::Reserved.to_string().is_empty());
+}
+
+#[test]
+fn write_chord_round_trips_with_parse_chord() {
+    for p in PLATFORMS {
+        // Every chord the default table binds, twins included.
+        let keymap = Keymap::defaults(p);
+        for binding in &keymap.bindings {
+            let written = write_chord(binding.chord, p);
+            assert_eq!(
+                parse_chord(&written, p),
+                Ok(binding.chord),
+                "{p:?} {written}"
+            );
+        }
+        // The defaults written with `primary` come back as written.
+        for action in ActionShortcuts::ALL {
+            for written in default_chords(&action, p).unwrap_or_default() {
+                if written.starts_with("primary") {
+                    let chord = parse_chord(written, p).unwrap();
+                    assert_eq!(write_chord(chord, p), *written, "{p:?} {action:?}");
+                }
+            }
+        }
+        assert_eq!(write_chord(chord("ctrl+h"), LinuxWindows), "primary+h");
+        assert_eq!(write_chord(chord("cmd+alt+f"), MacOs), "primary+alt+f");
+    }
+    assert_eq!(write_chord(chord("ctrl+tab"), MacOs), "ctrl+tab");
+    assert_eq!(write_chord(chord("cmd+k"), LinuxWindows), "cmd+k");
+    assert_eq!(
+        write_chord(chord("ctrl+shift+tab"), LinuxWindows),
+        "primary+shift+tab"
+    );
+    assert_eq!(
+        write_chord(chord("ctrl+space"), LinuxWindows),
+        "primary+space"
+    );
+    for key in [
+        "escape",
+        "backspace",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "f12",
+    ] {
+        let c = parse_chord(&format!("alt+{key}"), MacOs).unwrap();
+        assert_eq!(write_chord(c, MacOs), format!("alt+{key}"));
+    }
+}
+
+#[test]
+fn every_action_is_listed_or_marked_not_bindable() {
+    let rows: Vec<ActionShortcuts> = bindable_groups()
+        .into_iter()
+        .flat_map(|group| group.rows.into_iter().map(|row| row.action))
+        .collect();
+    for action in ActionShortcuts::ALL {
+        let listed = rows.iter().filter(|a| **a == action).count();
+        let expected = match action {
+            A::Quit
+            | A::OpenPreferences
+            | A::SearchNotes
+            | A::OpenNote
+            | A::NewJournal
+            | A::ToggleSidebar
+            | A::OpenFileBrowser
+            | A::FocusEditor
+            | A::FocusSidebar
+            | A::OpenSortDialog
+            | A::FileOperations
+            | A::FollowLink
+            | A::QuickNote
+            | A::YankRow
+            | A::OpenSavedSearches
+            | A::SaveCurrentQuery
+            | A::OpenAsk
+            | A::SwitchWorkspace
+            | A::FindInBuffer
+            | A::ReplaceInBuffer
+            | A::Leader
+            | A::OpenCommandPalette
+            | A::FocusRegion(_)
+            | A::ToggleRightDrawer
+            | A::SaveNote
+            | A::KeyboardHelp
+            | A::QuerySyntax
+            | A::SplitSlotRight
+            | A::SplitSlotDown
+            | A::CloseSlot
+            | A::MoveViewToNeighbour(_)
+            | A::ToggleZoom
+            | A::OpenQueryInSidebar
+            | A::ToggleRail
+            | A::NewTab
+            | A::CloseTab
+            | A::NextTab
+            | A::PrevTab
+            | A::NewNote
+            | A::NewDirectory
+            | A::QueryBuilder
+            // No default chord, but the GUI acts on them when bound: "no
+            // chord until the user binds one".
+            | A::ToggleFacetView
+            | A::OpenQueryAsCollection
+            | A::RefreshCollection => 1,
+            // Nothing in the GUI acts on these. The FIND toggle is a drawer
+            // view here; the desktop has the two New chords, not the menu;
+            // formatting is on the palette and the leader, and a resolved
+            // `Text` chord reaches no handler (ADR-0064).
+            A::ToggleQueryPanel | A::NewEntry | A::Text(_) => 0,
+        };
+        assert_eq!(listed, expected, "{action:?}");
+    }
+    let titles: Vec<&str> = bindable_groups().iter().map(|g| g.title).collect();
+    assert_eq!(
+        titles,
+        [
+            "Notes",
+            "Editor",
+            "Layout and views",
+            "Tabs",
+            "Search",
+            "Help and system"
+        ]
+    );
+    assert!(
+        bindable_groups()
+            .iter()
+            .all(|g| g.rows.iter().all(|r| !r.label.is_empty()))
+    );
+}
+
+#[test]
+fn a_row_names_where_its_chord_is_live() {
+    let tag = |action: ActionShortcuts| {
+        bindable_groups()
+            .into_iter()
+            .flat_map(|g| g.rows)
+            .find(|r| r.action == action)
+            .map(|r| r.scope_tag)
+            .unwrap()
+    };
+    assert_eq!(tag(A::OpenNote), None);
+    assert_eq!(tag(A::FindInBuffer), Some("editor only"));
+    assert_eq!(tag(A::YankRow), Some("sidebar and rail only"));
+    assert_eq!(tag(A::QuerySyntax), Some("where a query is typed"));
+    assert_eq!(tag(A::OpenQueryInSidebar), Some("search browser only"));
+}
+
+// ------------------------------------------------------ the keymap file
+
+mod keymap_file {
+    use super::*;
+    use crate::keymap::file::{FileError, export, import, read_file, write_file};
+    use std::collections::BTreeMap;
+
+    fn map(pairs: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.iter().map(|c| c.to_string()).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn export_lists_cleared_actions_as_empty_arrays() {
+        let text = export(&map(&[
+            ("ToggleRail", &[]),
+            ("FindInBuffer", &["primary+alt+f"]),
+        ]));
+        assert_eq!(
+            text,
+            "[keys]\nFindInBuffer = [\"primary+alt+f\"]\nToggleRail = []\n"
+        );
+    }
+
+    #[test]
+    fn export_with_no_changes_is_an_empty_keys_table() {
+        assert_eq!(export(&BTreeMap::new()), "[keys]\n");
+    }
+
+    #[test]
+    fn import_round_trips_export() {
+        for platform in PLATFORMS {
+            let overrides = map(&[
+                ("FindInBuffer", &["primary+alt+j", "primary+alt+g"]),
+                ("ToggleRail", &[]),
+            ]);
+            let got = import(&export(&overrides), platform).unwrap();
+            assert_eq!(got.overrides, overrides, "{platform:?}");
+            assert!(got.dropped.is_empty(), "{platform:?}: {:?}", got.dropped);
+        }
+    }
+
+    #[test]
+    fn import_an_empty_keys_table_has_no_overrides() {
+        let got = import("[keys]\n", LinuxWindows).unwrap();
+        assert!(got.overrides.is_empty());
+        assert!(got.dropped.is_empty());
+    }
+
+    #[test]
+    fn import_reads_a_single_string_as_one_chord() {
+        let got = import("[keys]\nToggleRail = \"primary+alt+r\"\n", LinuxWindows).unwrap();
+        assert_eq!(got.overrides, map(&[("ToggleRail", &["primary+alt+r"])]));
+    }
+
+    #[test]
+    fn import_drops_an_unknown_action_and_a_bad_chord_and_keeps_the_rest() {
+        let text = "[keys]\nNoSuchAction = [\"primary+alt+r\"]\n\
+                    ToggleRail = [\"primary+alt+r\", \"primary+nonsense\"]\n";
+        let got = import(text, LinuxWindows).unwrap();
+        assert_eq!(got.dropped.len(), 2, "{:?}", got.dropped);
+        assert!(got.dropped.iter().any(|e| matches!(
+            e,
+            KeymapError::UnknownAction { name } if name == "NoSuchAction"
+        )));
+        assert!(got.dropped.iter().any(|e| matches!(
+            e,
+            KeymapError::InvalidChord { action: A::ToggleRail, chord, .. }
+                if chord == "primary+nonsense"
+        )));
+        assert_eq!(
+            got.overrides,
+            map(&[("ToggleRail", &["primary+alt+r"])]),
+            "what the loader could not read is not handed on"
+        );
+    }
+
+    #[test]
+    fn import_keeps_an_action_whose_only_chord_is_bad_as_cleared() {
+        // The loader reads `["primary+nonsense"]` as "no chord": the override
+        // stays, with no chord, as the loader applies it.
+        let got = import(
+            "[keys]\nToggleRail = [\"primary+nonsense\"]\n",
+            LinuxWindows,
+        )
+        .unwrap();
+        assert_eq!(got.overrides, map(&[("ToggleRail", &[])]));
+        assert_eq!(got.dropped.len(), 1, "{:?}", got.dropped);
+    }
+
+    #[test]
+    fn import_keeps_the_first_claim_on_a_clash_inside_the_file() {
+        // Both take the same free chord; the loader applies them in action
+        // order, so the first claims it and the second is dropped.
+        let text = "[keys]\nToggleRail = [\"primary+alt+j\"]\nToggleZoom = [\"primary+alt+j\"]\n";
+        let got = import(text, LinuxWindows).unwrap();
+        assert_eq!(got.dropped.len(), 1, "{:?}", got.dropped);
+        let (first, second) = match &got.dropped[0] {
+            KeymapError::Collision {
+                action, taken_by, ..
+            } => (taken_by.clone(), action.clone()),
+            other => panic!("{other:?}"),
+        };
+        assert_ne!(first, second);
+        // The file's text is kept as written; the loaded keymap shows the claim.
+        let (keymap, _) = Keymap::load(LinuxWindows, &got.overrides);
+        assert_eq!(keymap.chords_for(&first), vec![chord("ctrl+alt+j")]);
+        assert!(keymap.chords_for(&second).is_empty());
+    }
+
+    #[test]
+    fn import_rejects_text_that_is_not_toml() {
+        let err = import("[keys\nnot toml", LinuxWindows).unwrap_err();
+        assert!(matches!(err, FileError::NotToml(_)), "{err:?}");
+    }
+
+    #[test]
+    fn import_rejects_a_file_without_a_keys_table() {
+        assert_eq!(
+            import("[other]\nx = 1\n", LinuxWindows).unwrap_err(),
+            FileError::NoKeysTable
+        );
+        assert_eq!(
+            import("keys = 5\n", LinuxWindows).unwrap_err(),
+            FileError::NoKeysTable
+        );
+    }
+
+    #[test]
+    fn import_accepts_a_cmd_chord_on_linux() {
+        // The brief expected the loader to report it. It does not: `cmd` is
+        // the Super key and parses on every platform.
+        let got = import("[keys]\nToggleRail = [\"cmd+alt+r\"]\n", LinuxWindows).unwrap();
+        assert_eq!(got.dropped, Vec::<KeymapError>::new());
+    }
+
+    #[test]
+    fn write_file_then_read_file_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keymap.toml");
+        let overrides = map(&[("ToggleRail", &[]), ("FindInBuffer", &["primary+alt+f"])]);
+        write_file(&path, &overrides).unwrap();
+        let got = read_file(&path, LinuxWindows).unwrap();
+        assert_eq!(got.overrides, overrides);
+        assert!(got.dropped.is_empty());
+        let missing = read_file(&dir.path().join("none.toml"), LinuxWindows);
+        assert!(matches!(missing, Err(FileError::Unreadable(_))));
+    }
+}
+
+/// An override for an action this build does not know (a typo, or one of
+/// a newer build) is no row of the draft, but the draft hands it back
+/// untouched: an edit, Reset all or an import never deletes it.
+#[test]
+fn the_draft_keeps_overrides_for_unknown_actions() {
+    let mut overrides = BTreeMap::new();
+    overrides.insert(
+        "FromANewerBuild".to_string(),
+        vec!["primary+alt+j".to_string()],
+    );
+    let mut draft = KeyDraft::new(LinuxWindows, &overrides);
+    assert_eq!(draft.overrides(), overrides, "loaded as written");
+    assert!(!draft.has_changes(), "no row changed");
+    draft.assign(&A::ToggleFacetView, KeyInput::ctrl('g'));
+    assert_eq!(
+        draft.overrides().get("FromANewerBuild"),
+        Some(&vec!["primary+alt+j".to_string()]),
+        "an edit keeps it"
+    );
+    assert!(draft.has_changes());
+    draft.reset_all();
+    assert_eq!(draft.overrides(), overrides, "Reset all keeps it");
+    let mut imported = BTreeMap::new();
+    imported.insert("OpenNote".to_string(), vec!["primary+g".to_string()]);
+    draft.replace(&imported);
+    let mut want = overrides.clone();
+    want.insert("OpenNote".to_string(), vec!["primary+g".to_string()]);
+    assert_eq!(draft.overrides(), want, "an import keeps it");
+    assert_eq!(draft.chords(&A::OpenNote), [KeyInput::ctrl('g')]);
+    assert_eq!(draft.changes(), 1);
+}
+
+#[test]
+fn a_query_chord_over_an_everywhere_chord_is_shared_not_taken() {
+    use draft::Shared;
+    for p in PLATFORMS {
+        let mut draft = KeyDraft::new(p, &BTreeMap::new());
+        let f7 = parse_chord("f7", p).unwrap();
+        assert!(draft.holders(&A::OpenAsk, f7).is_empty(), "{p:?}");
+        assert!(draft.assign(&A::OpenAsk, f7).is_empty(), "{p:?}");
+        assert_eq!(draft.chords(&A::QueryBuilder), [f7], "{p:?}");
+        assert_eq!(
+            draft.shared(&A::OpenAsk, f7),
+            [Shared {
+                other: A::QueryBuilder,
+                other_wins_in: Some("Where a query is typed"),
+            }],
+            "{p:?}"
+        );
+        // From the query side: the other action has it everywhere else.
+        assert_eq!(
+            draft.shared(&A::QueryBuilder, f7),
+            [Shared {
+                other: A::OpenAsk,
+                other_wins_in: None,
+            }],
+            "{p:?}"
+        );
+        // The browser's chord over an everywhere one.
+        let f5 = parse_chord("f5", p).unwrap();
+        draft.assign(&A::OpenQueryInSidebar, f5);
+        assert_eq!(
+            draft.shared(&A::SwitchWorkspace, f5),
+            [Shared {
+                other: A::OpenQueryInSidebar,
+                other_wins_in: Some("In the search browser"),
+            }],
+            "{p:?}"
+        );
+        // Editor and Shell never meet: nothing is shared.
+        let g = parse_chord("primary+g", p).unwrap();
+        draft.assign(&A::FindInBuffer, g);
+        draft.assign(&A::YankRow, g);
+        assert!(draft.shared(&A::YankRow, g).is_empty(), "{p:?}");
+        assert!(
+            draft
+                .shared(&A::OpenNote, parse_chord("primary+o", p).unwrap())
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn the_draft_says_when_vim_reads_a_chord_first() {
+    let draft = KeyDraft::new(Platform::LinuxWindows, &BTreeMap::new());
+    let v = parse_chord("ctrl+v", Platform::LinuxWindows).unwrap();
+    assert!(draft.vim_shadows(&A::OpenNote, v));
+    assert!(
+        !draft.vim_shadows(&A::YankRow, v),
+        "Shell is never the editor"
+    );
+    let mac = KeyDraft::new(Platform::MacOs, &BTreeMap::new());
+    assert!(!mac.vim_shadows(&A::OpenNote, v));
+}
+
+#[test]
+fn a_chord_the_plain_editor_edits_with_is_flagged_for_editor_actions() {
+    let chord = |w: &str| parse_chord(w, Platform::LinuxWindows).unwrap();
+    for edits in [
+        "ctrl+z",
+        "ctrl+shift+z",
+        "ctrl+y",
+        "ctrl+a",
+        "ctrl+c",
+        "ctrl+x",
+        "ctrl+v",
+        "ctrl+left",
+        "ctrl+shift+right",
+        "ctrl+backspace",
+        "alt+b",
+        "cmd+c",
+        "cmd+shift+z",
+        "cmd+up",
+    ] {
+        assert!(
+            draft::takes_editing_key(&A::OpenNote, chord(edits)),
+            "{edits}"
+        );
+    }
+    assert!(draft::takes_editing_key(&A::FindInBuffer, chord("ctrl+z")));
+    for plain in ["ctrl+g", "ctrl+shift+c", "alt+z", "f7"] {
+        assert!(
+            !draft::takes_editing_key(&A::OpenNote, chord(plain)),
+            "{plain}"
+        );
+    }
+    assert!(
+        !draft::takes_editing_key(&A::YankRow, chord("ctrl+z")),
+        "Shell is never the editor"
+    );
+    assert!(!draft::takes_editing_key(&A::QueryBuilder, chord("ctrl+z")));
+}

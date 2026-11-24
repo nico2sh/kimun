@@ -677,6 +677,8 @@ impl OnboardingView {
         match event {
             FolderChooserEvent::Chosen(dir) => self.choose_directory(dir.clone(), window, cx),
             FolderChooserEvent::Cancelled => self.close_chooser(window, cx),
+            // Files mode is never on here.
+            FolderChooserEvent::ChosenFile(_) => {}
         }
     }
 

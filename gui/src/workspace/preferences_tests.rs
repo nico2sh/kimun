@@ -155,11 +155,15 @@ impl Started {
         cx.read(|cx| f(view.read(cx)))
     }
 
-    fn pf_model<R>(&self, cx: &TestAppContext, f: impl FnOnce(&PreferencesModel) -> R) -> R {
+    pub(super) fn pf_model<R>(
+        &self,
+        cx: &TestAppContext,
+        f: impl FnOnce(&PreferencesModel) -> R,
+    ) -> R {
         self.pf_read(cx, |v| f(v.model().expect("the draft is read")))
     }
 
-    fn pf_with_view(
+    pub(super) fn pf_with_view(
         &self,
         cx: &mut TestAppContext,
         f: impl FnOnce(&mut PreferencesView, &mut Window, &mut Context<PreferencesView>),
@@ -172,7 +176,7 @@ impl Started {
         cx.run_until_parked();
     }
 
-    fn pf_on_window<R>(
+    pub(super) fn pf_on_window<R>(
         &self,
         cx: &mut TestAppContext,
         f: impl FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>) -> R,
@@ -202,7 +206,7 @@ impl Started {
         drive(rt, cx, |cx| self.pf_read(cx, |v| v.model().is_some()));
     }
 
-    fn pf_press(&self, key: &str, cx: &mut TestAppContext) {
+    pub(super) fn pf_press(&self, key: &str, cx: &mut TestAppContext) {
         cx.update_window(self.handle, |_, window, cx| window.press(key, cx))
             .unwrap();
         cx.run_until_parked();
@@ -224,7 +228,7 @@ impl Started {
         cx.run_until_parked();
     }
 
-    fn pf_disabled(&self, id: &'static str, cx: &mut TestAppContext) -> bool {
+    pub(super) fn pf_disabled(&self, id: &'static str, cx: &mut TestAppContext) -> bool {
         cx.update_window(self.handle, |_, window, cx| {
             window.render_frame(cx);
             window.find(id).disabled() == Some(true)
@@ -232,7 +236,11 @@ impl Started {
         .unwrap()
     }
 
-    fn pf_shows(&self, id: impl Into<gpui_kit::ElementId>, cx: &mut TestAppContext) -> bool {
+    pub(super) fn pf_shows(
+        &self,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> bool {
         let id = id.into();
         cx.update_window(self.handle, |_, window, cx| {
             window.render_frame(cx);
@@ -286,7 +294,7 @@ impl Started {
     }
 
     /// Save, and wait until Preferences are gone and the window is calm.
-    fn pf_save(&self, rt: &Runtime, cx: &mut TestAppContext) {
+    pub(super) fn pf_save(&self, rt: &Runtime, cx: &mut TestAppContext) {
         assert!(!self.pf_disabled(SAVE_ID, cx), "Save is enabled");
         self.pf_click(SAVE_ID, cx);
         drive(rt, cx, |cx| {
@@ -455,7 +463,7 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
     let v = vault(&rt);
     let s = with_prefs(cx, &rt, &v);
     let mut seen = vec![s.pf_read(cx, |v| v.section())];
-    for _ in 0..8 {
+    for _ in 0..9 {
         s.pf_press("down", cx);
         seen.push(s.pf_read(cx, |v| v.section()));
     }
@@ -470,14 +478,15 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
             Section::Editor,
             Section::Server,
             Section::RemoteImages,
-            Section::RemoteImages,
+            Section::Keyboard,
+            Section::Keyboard,
         ]
     );
     for section in Section::ALL {
         assert!(s.pf_shows(section_id(section), cx), "{section:?} is listed");
     }
     s.pf_press("up", cx);
-    assert_eq!(s.pf_read(cx, |v| v.section()), Section::Server);
+    assert_eq!(s.pf_read(cx, |v| v.section()), Section::RemoteImages);
     s.pf_section(cx, Section::Display);
     assert!(s.pf_shows(UPDATE_CHECK_ID, cx));
     assert!(

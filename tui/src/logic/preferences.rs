@@ -338,6 +338,8 @@ pub struct PreferencesModel {
     /// naming a missing theme), then the name of each selected theme.
     pub theme_name: String,
     pub use_nerd_fonts: bool,
+    /// `[gui.keys]` as written: action name -> chords (an empty list unbinds).
+    pub gui_key_overrides: std::collections::BTreeMap<String, Vec<String>>,
     /// Whether kimün checks GitHub for a newer release on startup.
     pub update_check: bool,
     /// Whether the TUI captures the mouse (read at startup only).
@@ -388,6 +390,7 @@ impl PreferencesModel {
             editor_font_family: s.gui.editor_font_family(),
             editor_font_size: s.gui.editor_font_size(),
             rail: s.gui.rail(),
+            gui_key_overrides: s.gui.key_overrides(),
             leader_timeout_ms: s.leader_timeout_ms,
             default_sort_field: s.default_sort_field,
             default_sort_order: s.default_sort_order,
@@ -595,6 +598,7 @@ impl PreferencesModel {
             )
             || self.editor_font_size != initial.gui.editor_font_size()
             || self.rail != initial.gui.rail()
+            || self.gui_key_overrides != initial.gui.key_overrides()
             || self.leader_timeout_ms != initial.leader_timeout_ms
             || self.default_sort_field != initial.default_sort_field
             || self.default_sort_order != initial.default_sort_order
@@ -660,6 +664,14 @@ impl PreferencesModel {
         s.leader_timeout_ms = self.leader_timeout_ms;
     }
 
+    /// Write the `[gui.keys]` draft, only when it differs (the rest of `[gui]`
+    /// is kept).
+    pub fn apply_keys(&self, s: &mut AppSettings) {
+        if s.gui.key_overrides() != self.gui_key_overrides {
+            s.gui.set_key_overrides(&self.gui_key_overrides);
+        }
+    }
+
     /// Write the Sorting draft.
     pub fn apply_sorting(&self, s: &mut AppSettings) {
         s.default_sort_field = self.default_sort_field;
@@ -689,6 +701,7 @@ impl PreferencesModel {
     pub fn apply(&self, s: &mut AppSettings) -> bool {
         let theme_changed = self.apply_appearance(s);
         self.apply_display(s);
+        self.apply_keys(s);
         self.apply_sorting(s);
         self.apply_editor(s);
         self.apply_server(s);

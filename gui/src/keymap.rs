@@ -42,6 +42,12 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::{Dir, Panel};
 
+/// The Keyboard section's draft (Preferences).
+pub(crate) mod draft;
+
+/// The keymap file the Keyboard section exports and imports.
+pub(crate) mod file;
+
 /// Which platform's conventions the keymap follows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
@@ -759,6 +765,12 @@ pub fn active(cx: &App) -> Rc<Keymap> {
 /// binds.
 pub(crate) fn primary(cx: &App) -> Mods {
     active(cx).platform.primary()
+}
+
+/// The platform of the keymap in effect: the table a Preferences draft of
+/// the `[gui.keys]` overrides is built for.
+pub(crate) fn platform(cx: &App) -> Platform {
+    active(cx).platform
 }
 
 /// `key` written the platform's way (`Ctrl+Shift+B`, `⌘⇧B`).
