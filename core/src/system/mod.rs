@@ -906,6 +906,29 @@ pub fn read_dir(dir: &SystemPath) -> Result<Vec<SystemPath>, SystemError> {
     Ok(out)
 }
 
+/// What a path names, when it names something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathKind {
+    /// A directory (a symlink to one counts).
+    Dir,
+    /// Anything else that exists: a regular file, or a special file.
+    File,
+}
+
+/// What `path` names: `Some` kind, or `None` when nothing is there.
+///
+/// Unlike [`SystemPath::exists`] and [`SystemPath::is_dir`], which fold every
+/// failure into `false`, this tells a missing path apart from one that cannot
+/// be read (permission denied, and so on), which comes back as an error.
+pub fn path_kind(path: &SystemPath) -> Result<Option<PathKind>, SystemError> {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Ok(Some(PathKind::Dir)),
+        Ok(_) => Ok(Some(PathKind::File)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(SystemError::io("read", path.as_path(), e)),
+    }
+}
+
 /// Marks a file executable.
 ///
 /// A unix permission bit and nothing at all on Windows, where executability
