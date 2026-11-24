@@ -1,19 +1,27 @@
 //! The **folder chooser** (M8c, shared since M9b-2): a panel inside a
 //! full-window view (the setup assistant, Preferences > Workspaces), not a
-//! dialog over it. The folder shown with Up, its subfolders (a click enters
-//! one, a double-click or `Choose this folder` takes the folder shown) and
-//! an inline `New folder…` field.
+//! dialog over it. Up, the Location field, the subfolders of the folder
+//! shown (a click enters one, a double-click or `Choose this folder` takes
+//! the folder shown) and an inline `New folder…` field.
+//!
+//! **The Location field** shows the folder as its placeholder. A name typed
+//! there ranks the rows, best first, the best selected
+//! (`logic::file_ops::rank_names`); an empty field shows the listing in
+//! order; a path (`logic::onboarding::classify_location`) filters nothing.
+//! Browsing to another folder empties it.
 //!
 //! **Behaviour owner.** The chooser entity: the folder shown, its listing,
-//! the selection, the new folder field and the work under way. Listings
-//! and the new folder run on tokio's blocking pool
+//! the rows shown and the selection, the fields and the work under way.
+//! Listings and the new folder run on tokio's blocking pool
 //! (`logic::onboarding::list_subdirs`, `create_subdir`, through core); a
 //! stale listing is dropped by revision.
 //!
 //! **Its host** draws it ([`FolderChooser`] renders the panel, [`actions`]
 //! the command row the host places in its footer), keeps the keyboard on
-//! its own root and hands the keys over ([`FolderChooser::key`]); Enter and
-//! Esc in the new folder field come through the host's field actions
+//! its own root and hands the keys over ([`FolderChooser::key`]), never
+//! while a chooser field has the keyboard
+//! ([`FolderChooser::field_focused`]). Enter and Esc in the new folder
+//! field come through the host's field actions
 //! ([`FolderChooser::new_folder_focused`]). The chooser says what was picked
 //! with [`FolderChooserEvent`]. Element ids carry the host's prefix
 //! (`onboarding-chooser`, `preferences-chooser`).
@@ -33,17 +41,18 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle,
     Focusable as _, InteractiveElement, IntoElement, ParentElement, Render, Role, ScrollStrategy,
-    SharedString, StatefulInteractiveElement, Styled, Task, UniformListScrollHandle, Window, div,
-    rems, uniform_list,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
+    Window, div, rems, uniform_list,
 };
 use kimun_core::system::{self, SystemPath};
+use kimun_notes::logic::file_ops;
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
-use kimun_notes::logic::onboarding as onb;
+use kimun_notes::logic::onboarding::{self as onb, LocationInput};
 use kimun_notes::settings::themes::Theme;
 
 use crate::theme;
@@ -67,6 +76,9 @@ pub(crate) fn row_id(prefix: &str, dir: &SystemPath) -> SharedString {
 pub(crate) fn file_row_id(prefix: &str, path: &SystemPath) -> SharedString {
     format!("{prefix}-file-{}", folder_name(path)).into()
 }
+
+/// The Location field's accessible name.
+const LOCATION_LABEL: &str = "Location";
 
 /// The chooser's element ids under the host's `prefix`: `{prefix}-chooser`,
 /// `{prefix}-chooser-<part>`.
@@ -112,6 +124,10 @@ pub(crate) struct FolderChooser {
     host_focus: FocusHandle,
     dir: SystemPath,
     listing: Listing,
+    /// The rows shown, as indexes into the listing: all of them in order,
+    /// or the ones the Location field's filter keeps, best first.
+    shown: Vec<usize>,
+    /// The selected row, as an index into [`Self::shown`].
     selected: Option<usize>,
     /// Bumped by every listing asked for: an older one landing is dropped.
     revision: u64,
@@ -120,8 +136,12 @@ pub(crate) struct FolderChooser {
     scroll: UniformListScrollHandle,
     /// Files mode: the extension of the files listed beside the folders.
     files: Option<&'static str>,
-    /// Which rows of the listing are files, by index.
+    /// Which rows of the listing are files, by index into the listing.
     is_file: Vec<bool>,
+    /// The Location field: a name filters the list, a path is gone to
+    /// (Enter). Its placeholder is the folder shown.
+    location: Entity<InputState>,
+    _location_events: Subscription,
 }
 
 impl EventEmitter<FolderChooserEvent> for FolderChooser {}
@@ -137,11 +157,18 @@ impl FolderChooser {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let location = cx.new(|cx| InputState::new(window, cx));
+        let location_events = cx.subscribe(&location, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.refilter(false, cx);
+            }
+        });
         let mut chooser = Self {
             prefix,
             host_focus,
             dir: start.clone(),
             listing: Listing::Loading,
+            shown: Vec::new(),
             selected: None,
             revision: 0,
             task: None,
@@ -149,6 +176,8 @@ impl FolderChooser {
             scroll: UniformListScrollHandle::new(),
             files: None,
             is_file: Vec::new(),
+            location,
+            _location_events: location_events,
         };
         chooser.browse(start, window, cx);
         chooser
@@ -217,16 +246,72 @@ impl FolderChooser {
             .is_some_and(|f| f.input.read(cx).focus_handle(cx).is_focused(window))
     }
 
-    fn rows(&self) -> &[SystemPath] {
+    /// The Location field.
+    #[cfg(test)]
+    pub(crate) fn location_input(&self) -> Entity<InputState> {
+        self.location.clone()
+    }
+
+    /// The rows shown, in their order, each with whether it is a file.
+    #[cfg(test)]
+    pub(crate) fn shown_rows(&self) -> Vec<(SystemPath, bool)> {
+        (0..self.shown.len())
+            .filter_map(|ix| Some((self.row(ix)?.clone(), self.is_file(ix))))
+            .collect()
+    }
+
+    /// Whether the Location field has the keyboard.
+    pub(crate) fn location_focused(&self, window: &Window, cx: &App) -> bool {
+        self.location.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    /// Whether one of the chooser's fields (the Location field, the new
+    /// folder field) has the keyboard: its keys are the field's, so the
+    /// host does not take them.
+    pub(crate) fn field_focused(&self, window: &Window, cx: &App) -> bool {
+        self.location_focused(window, cx) || self.new_folder_focused(window, cx)
+    }
+
+    /// The whole listing, in its alphabetical order.
+    fn loaded(&self) -> &[SystemPath] {
         match &self.listing {
             Listing::Loaded(rows) => rows,
             _ => &[],
         }
     }
 
-    /// Whether row `ix` is a file (files mode).
+    /// The row shown at `ix` (an index into the rows shown).
+    fn row(&self, ix: usize) -> Option<&SystemPath> {
+        self.loaded().get(*self.shown.get(ix)?)
+    }
+
+    /// Whether the row shown at `ix` is a file (files mode).
     fn is_file(&self, ix: usize) -> bool {
-        self.is_file.get(ix).copied().unwrap_or(false)
+        self.shown
+            .get(ix)
+            .and_then(|&row| self.is_file.get(row))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The Location field changed, or a listing landed (`landed`): show
+    /// the rows a name keeps, best first, or every row in order for an
+    /// empty field, and select the first. A path filters nothing: the list
+    /// stays as it was until Enter, a fresh listing shows whole.
+    fn refilter(&mut self, landed: bool, cx: &mut Context<Self>) {
+        let text = self.location.read(cx).value().to_string();
+        let all = || (0..self.loaded().len()).collect::<Vec<_>>();
+        self.shown = match onb::classify_location(&text) {
+            LocationInput::Filter(query) => {
+                let names: Vec<String> = self.loaded().iter().map(folder_name).collect();
+                file_ops::rank_names(&names, &query)
+            }
+            LocationInput::Path(_) if !landed => return,
+            LocationInput::Empty | LocationInput::Path(_) => all(),
+        };
+        self.selected = (!self.shown.is_empty()).then_some(0);
+        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+        cx.notify();
     }
 
     /// Show `dir`, listed in the background.
@@ -235,8 +320,16 @@ impl FolderChooser {
         let revision = self.revision;
         self.dir = dir.clone();
         self.listing = Listing::Loading;
+        self.shown.clear();
         self.selected = None;
         self.new_folder = None;
+        // Another folder: the field empties (no Change event), and its
+        // placeholder names the new folder.
+        let placeholder = system::path_to_string(&dir);
+        self.location.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+            input.set_placeholder(placeholder, window, cx);
+        });
         self.task = Some(cx.spawn_in(window, async move |this, cx| {
             // Read here, not at the call: the builder sets it after `new`.
             let files = this.read_with(cx, |c, _| c.files).ok().flatten();
@@ -261,11 +354,11 @@ impl FolderChooser {
         self.task = None;
         match listed {
             Ok(rows) => {
-                self.selected = (!rows.is_empty()).then_some(0);
                 let (rows, is_file) = rows.into_iter().unzip();
                 self.is_file = is_file;
                 self.listing = Listing::Loaded(rows);
-                self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                // Text typed while it ran stays, and ranks it.
+                self.refilter(true, cx);
             }
             Err(e) => self.listing = Listing::Failed(e),
         }
@@ -293,7 +386,7 @@ impl FolderChooser {
         let Some(ix) = self.selected else {
             return;
         };
-        let Some(target) = self.rows().get(ix).cloned() else {
+        let Some(target) = self.row(ix).cloned() else {
             return;
         };
         if !self.is_file(ix) {
@@ -304,7 +397,7 @@ impl FolderChooser {
     }
 
     fn move_selection(&mut self, down: bool, cx: &mut Context<Self>) {
-        let count = self.rows().len();
+        let count = self.shown.len();
         if count == 0 {
             return;
         }
@@ -476,7 +569,6 @@ impl Render for FolderChooser {
         let theme = theme::current(cx);
         let t = &*theme;
         let prefix = self.prefix;
-        let path = system::path_to_string(&self.dir);
         let has_parent = self.dir.parent().is_some();
         let body = match &self.listing {
             Listing::Loading => note("Loading…", t).into_any_element(),
@@ -498,14 +590,18 @@ impl Render for FolderChooser {
                 None => note("No folders here. Choose this one, or make a new one.", t)
                     .into_any_element(),
             },
-            Listing::Loaded(rows) => uniform_list(
+            Listing::Loaded(_) if self.shown.is_empty() => match self.files {
+                Some(_) => note("No folders or files match.", t).into_any_element(),
+                None => note("No folders match.", t).into_any_element(),
+            },
+            Listing::Loaded(_) => uniform_list(
                 id(prefix, "list"),
-                rows.len(),
+                self.shown.len(),
                 cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                     let t = theme::current(cx);
                     let hover = theme::hover_background(&t);
                     range
-                        .filter_map(|ix| this.rows().get(ix).map(|d| (ix, d.clone())))
+                        .filter_map(|ix| this.row(ix).map(|d| (ix, d.clone())))
                         .map(|(ix, dir)| {
                             let selected = this.selected == Some(ix);
                             let name = folder_name(&dir);
@@ -633,17 +729,14 @@ impl Render for FolderChooser {
                             ),
                     )
                     .child(
-                        div()
-                            .id(id(prefix, "path"))
-                            .test_support()
-                            .role(Role::Label)
-                            .aria_label(SharedString::from(path.clone()))
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(theme::foreground(t))
-                            .child(path),
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.location)
+                                .id(id(prefix, "location"))
+                                .aria_label(LOCATION_LABEL)
+                                .bg(theme::background(t))
+                                .border_color(theme::divider(t))
+                                .text_color(theme::foreground(t)),
+                        ),
                     ),
             )
             .children(new_folder)

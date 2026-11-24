@@ -460,14 +460,27 @@ impl OnboardingView {
         self.finishing.is_some() || self.model.is_none()
     }
 
-    /// Whether one of the assistant's text fields has the keyboard: its
-    /// keys are the field's.
+    /// Whether one of the assistant's text fields (the name, a chooser
+    /// field) has the keyboard: its keys are the field's.
     fn field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         let focused =
             |input: &Entity<InputState>| input.read(cx).focus_handle(cx).is_focused(window);
-        focused(&self.name_input) || self.new_folder_focused(window, cx)
+        focused(&self.name_input)
+            || self
+                .chooser
+                .as_ref()
+                .is_some_and(|c| c.read(cx).field_focused(window, cx))
     }
 
+    /// Whether the chooser's Location field has the keyboard.
+    fn location_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        self.chooser
+            .as_ref()
+            .is_some_and(|c| c.read(cx).location_focused(window, cx))
+    }
+
+    /// Whether the chooser's new folder field has the keyboard: Enter
+    /// creates the folder, Esc closes the field.
     fn new_folder_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         self.chooser
             .as_ref()
@@ -783,12 +796,18 @@ impl OnboardingView {
         }
     }
 
-    /// Esc in a text field: close the new folder field, or leave the name
-    /// field for the assistant (Esc again cancels).
+    /// Esc in a text field: close the new folder field, close the chooser
+    /// from its Location field (as Esc on the assistant does), or leave the
+    /// name field for the assistant (Esc again cancels).
     fn on_field_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
         if self.new_folder_focused(window, cx) {
             if let Some(chooser) = self.chooser.clone() {
                 chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
+            }
+            cx.stop_propagation();
+        } else if self.location_focused(window, cx) {
+            if let Some(chooser) = self.chooser.clone() {
+                chooser.update(cx, |c, cx| c.cancel(cx));
             }
             cx.stop_propagation();
         } else if self.name_input.read(cx).focus_handle(cx).is_focused(window) {
