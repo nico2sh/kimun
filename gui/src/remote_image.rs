@@ -259,6 +259,7 @@ fn timed_out(e: &std::io::Error) -> bool {
 
 /// The failure for a request that got no answer.
 fn transport_failure(t: &ureq::Transport) -> FetchFailure {
+    tracing::warn!("remote image request failed: {} ({})", t, root_cause(t));
     let mut source = std::error::Error::source(t);
     while let Some(e) = source {
         if e.downcast_ref::<std::io::Error>().is_some_and(timed_out) {
@@ -266,10 +267,29 @@ fn transport_failure(t: &ureq::Transport) -> FetchFailure {
         }
         source = e.source();
     }
+    // `ureq` also reports a failed TLS handshake as a failed connection. The
+    // reader must not read "not reachable" for a certificate or protocol
+    // problem: name it, with its cause.
+    let secure = t.to_string().to_ascii_lowercase().contains("tls");
     match t.kind() {
+        ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed if secure => {
+            FetchFailure::Other(format!("secure connection failed: {}", root_cause(t)))
+        }
         ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed => FetchFailure::Offline,
         _ => FetchFailure::Other(t.to_string()),
     }
+}
+
+/// The innermost cause of `t` on one line: what a reader or a bug report
+/// needs when the top message only says that a step failed.
+fn root_cause(t: &ureq::Transport) -> String {
+    let mut text = t.to_string();
+    let mut source = std::error::Error::source(t);
+    while let Some(e) = source {
+        text = e.to_string();
+        source = e.source();
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The scheme of an address, from its literal start. `https:foo` has no
@@ -1860,6 +1880,48 @@ mod tests {
         assert!(
             took >= Duration::from_millis(1500) && took < Duration::from_secs(5),
             "{took:?}"
+        );
+    }
+
+    /// A server that answers a TLS hello with plain text, then closes.
+    fn serve_not_tls() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://{}/a.png", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\nnot tls");
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn a_failed_tls_handshake_is_not_reported_as_not_reachable() {
+        let fetcher =
+            RealFetcher::with_limits(MAX_BYTES, Duration::from_secs(5), Duration::from_secs(10));
+        match fetcher.get(&serve_not_tls()) {
+            Hop::Failed(FetchFailure::Other(text)) => {
+                assert!(text.starts_with("secure connection failed: "), "{text}");
+                assert!(!text.contains('\n'));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_connection_is_still_not_reachable() {
+        // Bind and drop: the port is closed for the request.
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let fetcher =
+            RealFetcher::with_limits(MAX_BYTES, Duration::from_secs(5), Duration::from_secs(10));
+        assert_eq!(
+            fetcher.get(&format!("https://127.0.0.1:{port}/a.png")),
+            Hop::Failed(FetchFailure::Offline)
         );
     }
 
