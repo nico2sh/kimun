@@ -47,8 +47,9 @@
 //! needs the vault indexed first takes the vault-path reindex flow.
 //!
 //! **Cancel**, Esc and the window's own close: at once when the draft is
-//! clean (the button then reads "Close", and the hint says "Esc: close"); otherwise an inline "Discard your changes?" (Keep editing /
-//! Discard changes). Esc never saves. Leaving without saving puts the theme
+//! clean (the button then reads "Close", and the hint says "Esc: close");
+//! otherwise an inline "Discard your changes?" (Keep editing / Discard
+//! changes). Esc never saves. Leaving without saving puts the theme
 //! the window had back (the Appearance section previews live).
 
 use crate::tasks::blocking;

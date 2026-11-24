@@ -8,9 +8,9 @@
 //!   nothing: the saved copies stay and "Always load from" allows the host
 //!   again. It writes the settings through the window's one settings write
 //!   (off the UI thread, in turn with the other writes) with the host
-//!   forgotten, and the selection keeps its place in the list. Once it is on disk, the store of remote images
-//!   takes the new list, so an open view stops loading that host on its
-//!   own at once. The saved copies stay. A failed write is shown in the
+//!   forgotten, and the selection keeps its place in the list. Once it is
+//!   on disk, the store of remote images takes the new list, so an open
+//!   view stops loading that host on its own at once. The saved copies stay. A failed write is shown in the
 //!   section, and the list and the store stay as they were.
 //! - "Clear cached images" empties the image cache through core, off the UI
 //!   thread. Then the store forgets the failures and the redirect
@@ -206,9 +206,6 @@ impl PreferencesView {
         if self.remote.working {
             return;
         }
-        // The selection keeps its place; `remote_hosts` clamps it.
-        let count = self.remote_hosts().len();
-        self.remote.selected = self.remote.selected.min(count.saturating_sub(1));
         let settings = self.settings.clone();
         let write = reopen::write_settings(self.store.clone(), settings.clone(), move |s| {
             s.forget_host(&host);
@@ -225,6 +222,11 @@ impl PreferencesView {
             }
             this.update(cx, |view, cx| {
                 view.remote.working = false;
+                // The selection keeps its place, or moves to the new last
+                // row. The stored index follows, so a host added later does
+                // not pull the highlight along.
+                let count = view.remote_hosts().len();
+                view.remote.selected = view.remote.selected.min(count.saturating_sub(1));
                 if let Err(e) = written {
                     tracing::warn!("could not save the allowed hosts: {e}");
                     view.remote.message = Some(Notice::error(format!(
@@ -343,6 +345,9 @@ impl PreferencesView {
                 .test_support()
                 .role(Role::Label)
                 .aria_label(NO_HOSTS)
+                // The list held the keyboard when its last host went: the
+                // empty box keeps it, so Esc and Tab still reach the view.
+                .track_focus(&self.remote.focus)
                 .p_2()
                 .rounded_md()
                 .border_1()
