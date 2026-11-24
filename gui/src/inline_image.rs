@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read};
+use std::io::{BufRead, BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,11 +23,15 @@ use image::codecs::gif::GifDecoder;
 use image::codecs::webp::WebPDecoder;
 use image::metadata::Orientation;
 use image::{AnimationDecoder, ImageDecoder as _};
+use kimun_core::ImageCache;
 
 /// The largest file we read: 20 MB.
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 /// The decoded bytes (width * height * 4) we keep, about 64 MB.
 const BUDGET_BYTES: usize = 64 * 1024 * 1024;
+/// The most pixels (width * height) of a saved copy of a remote image: 64
+/// megapixels, about 256 MB once decoded. A bigger one is not decoded.
+pub(crate) const MAX_PIXELS: u64 = 64 * 1000 * 1000;
 /// An image is never taller than this share of the pane.
 const PANE_HEIGHT_SHARE: f32 = 0.6;
 
@@ -224,6 +228,10 @@ struct Inner {
     /// Decodes are counted but never run, so an image stays pending (tests).
     #[cfg(test)]
     hold_decodes: bool,
+    /// The cache of remote image copies. A copy in it over [`MAX_PIXELS`]
+    /// fails as too large and is never decoded: an older build saved
+    /// copies with no pixel limit. A vault image has no pixel limit.
+    remote_copies: Option<ImageCache>,
 }
 
 /// Natural sizes and decoded images for the vault's image files. A clone
@@ -252,8 +260,16 @@ impl ImageStore {
                 decodes_started: 0,
                 #[cfg(test)]
                 hold_decodes: false,
+                remote_copies: remote_copies(),
             })),
         }
+    }
+
+    /// Holds the copies in `cache` to [`MAX_PIXELS`], as the app's store
+    /// holds the copies in the app folder.
+    #[cfg(test)]
+    pub(crate) fn limit_pixels_in(&self, cache: ImageCache) {
+        self.inner.borrow_mut().remote_copies = Some(cache);
     }
 
     /// A store over a budget of `budget` decoded bytes.
@@ -286,6 +302,21 @@ impl ImageStore {
 }
 
 impl Global for ImageStore {}
+
+/// The cache of remote image copies that the store holds to
+/// [`MAX_PIXELS`]: the one in the app folder, as the remote image store
+/// uses it.
+#[cfg(not(test))]
+fn remote_copies() -> Option<ImageCache> {
+    ImageCache::in_app_dir().ok()
+}
+
+/// A test store holds no cache to the pixel limit until a test names one
+/// ([`ImageStore::limit_pixels_in`]).
+#[cfg(test)]
+fn remote_copies() -> Option<ImageCache> {
+    None
+}
 
 /// One editor's pinned images: the ones on its screen, which the store
 /// never evicts. Dropping it unpins them.
@@ -352,25 +383,7 @@ fn inspect(path: &Path) -> Result<(Kind, FileKey), Failure> {
 fn header_size(path: &Path, kind: Kind) -> Result<(u32, u32), Failure> {
     let file = File::open(path).map_err(|_| Failure::Missing)?;
     let (w, h) = match kind {
-        Kind::Raster(_) => {
-            let mut decoder = image::ImageReader::new(BufReader::new(file))
-                .with_guessed_format()
-                .map_err(|_| Failure::Undecodable)?
-                .into_decoder()
-                .map_err(|_| Failure::Undecodable)?;
-            let (w, h) = decoder.dimensions();
-            // GPUI turns the pixels as the EXIF orientation says (a phone's
-            // portrait photo is stored on its side): size them turned too.
-            match decoder.orientation() {
-                Ok(
-                    Orientation::Rotate90
-                    | Orientation::Rotate270
-                    | Orientation::Rotate90FlipH
-                    | Orientation::Rotate270FlipH,
-                ) => (h, w),
-                _ => (w, h),
-            }
-        }
+        Kind::Raster(_) => raster_size(BufReader::new(file))?,
         Kind::Svg => {
             let mut bytes = Vec::new();
             file.take(MAX_FILE_BYTES)
@@ -386,6 +399,41 @@ fn header_size(path: &Path, kind: Kind) -> Result<(u32, u32), Failure> {
         return Err(Failure::Undecodable);
     }
     Ok((w, h))
+}
+
+/// The size of a raster image from its header, read without decoding the
+/// pixels. The one header reader of the GUI: the loader and the remote
+/// image check both use it.
+fn raster_size(reader: impl BufRead + Seek) -> Result<(u32, u32), Failure> {
+    let mut decoder = image::ImageReader::new(reader)
+        .with_guessed_format()
+        .map_err(|_| Failure::Undecodable)?
+        .into_decoder()
+        .map_err(|_| Failure::Undecodable)?;
+    let (w, h) = decoder.dimensions();
+    // GPUI turns the pixels as the EXIF orientation says (a phone's
+    // portrait photo is stored on its side): size them turned too.
+    Ok(match decoder.orientation() {
+        Ok(
+            Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH,
+        ) => (h, w),
+        _ => (w, h),
+    })
+}
+
+/// Whether an image of `width` by `height` is over [`MAX_PIXELS`].
+pub(crate) fn over_pixel_limit(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) > MAX_PIXELS
+}
+
+/// Whether the raster image in `bytes` declares a size over
+/// [`MAX_PIXELS`] in its header. `false` when the header does not read:
+/// the loader then fails the image without a decode.
+pub(crate) fn header_over_pixel_limit(bytes: &[u8]) -> bool {
+    raster_size(Cursor::new(bytes)).is_ok_and(|(w, h)| over_pixel_limit(w, h))
 }
 
 /// The first frame of an animated GIF or WebP, decoded alone: GPUI's own
@@ -449,7 +497,14 @@ impl ImageStore {
         if let Some(state) = inner.cache.get(path, key) {
             return state;
         }
+        let remote_copy = inner
+            .remote_copies
+            .as_ref()
+            .is_some_and(|cache| cache.holds(path));
         let state = match header_size(path, kind) {
+            Ok((width, height)) if remote_copy && over_pixel_limit(width, height) => {
+                ImageState::Failed(Failure::TooLarge)
+            }
             Ok((width, height)) => ImageState::Sized { width, height },
             Err(f) => ImageState::Failed(f),
         };
@@ -522,6 +577,57 @@ impl ImageStore {
             cx.update(on_done);
         })
         .detach();
+    }
+}
+
+/// Images whose header declares a size their few bytes do not hold
+/// (tests): a check that reads the header must not decode them.
+#[cfg(test)]
+pub(crate) mod declared {
+    /// The CRC-32 of a PNG chunk.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in bytes {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    /// A 1 by 1 PNG whose header says `w` by `h`.
+    pub(crate) fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        // The IHDR chunk: length at 8, type at 12, width at 16, height at
+        // 20, the CRC of type and data at 29.
+        assert_eq!(&out[12..16], b"IHDR");
+        out[16..20].copy_from_slice(&w.to_be_bytes());
+        out[20..24].copy_from_slice(&h.to_be_bytes());
+        let crc = crc32(&out[12..29]);
+        out[29..33].copy_from_slice(&crc.to_be_bytes());
+        out
+    }
+
+    /// A GIF of one 1 by 1 frame whose logical screen is `w` by `h`.
+    pub(crate) fn gif(w: u16, h: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut enc = image::codecs::gif::GifEncoder::new(&mut out);
+            let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]));
+            enc.encode_frame(image::Frame::new(img)).unwrap();
+        }
+        // The logical screen width and height follow the 6-byte signature.
+        out[6..8].copy_from_slice(&w.to_le_bytes());
+        out[8..10].copy_from_slice(&h.to_le_bytes());
+        out
     }
 }
 
@@ -703,6 +809,63 @@ mod tests {
                 height: 5
             }
         ));
+    }
+
+    #[test]
+    fn the_pixel_limit_is_read_from_the_header_of_a_png_or_a_gif() {
+        // 64 megapixels is the limit: one more row is over it.
+        assert!(!header_over_pixel_limit(&declared::png(8000, 8000)));
+        assert!(header_over_pixel_limit(&declared::png(8000, 8001)));
+        assert!(header_over_pixel_limit(&declared::png(1 << 20, 1 << 20)));
+        assert!(header_over_pixel_limit(&declared::gif(65535, 65535)));
+        assert!(!header_over_pixel_limit(&declared::gif(1000, 1000)));
+        assert!(!header_over_pixel_limit(&png(7, 5)));
+        // A header that does not read is not over the limit.
+        assert!(!header_over_pixel_limit(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_copy_over_the_pixel_limit_fails_and_is_never_decoded(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::at(
+            kimun_core::system::SystemPath::try_absolute(dir.path())
+                .unwrap()
+                .join("image-cache"),
+        );
+        let huge = cache
+            .save("https://a.com/huge.gif", &declared::gif(65535, 65535))
+            .unwrap();
+        let normal = cache.save("https://a.com/ok.png", &png(7, 5)).unwrap();
+        // The same bytes in a vault folder.
+        let vault = write(&dir, "huge.gif", &declared::gif(65535, 65535));
+        let mut store = ImageStore::default();
+        store.limit_pixels_in(cache);
+        store.hold_decodes();
+        assert!(matches!(
+            store.size_of(&huge),
+            ImageState::Failed(Failure::TooLarge)
+        ));
+        assert!(matches!(
+            store.size_of(&normal),
+            ImageState::Sized {
+                width: 7,
+                height: 5
+            }
+        ));
+        // A vault image has no pixel limit: it sizes as before.
+        assert!(matches!(
+            store.size_of(&vault),
+            ImageState::Sized {
+                width: 65535,
+                height: 65535
+            }
+        ));
+        cx.update(|cx| {
+            store.request(&huge, cx, |_| {});
+            store.request(&normal, cx, |_| {});
+        });
+        // Only the normal copy asked for a decode.
+        assert_eq!(store.decodes_started(), 1);
     }
 
     #[test]
