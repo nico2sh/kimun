@@ -2830,3 +2830,634 @@ fn typing_in_an_open_block_keeps_the_caret_on_its_row(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+// ---- Inline images: the room the display reserves (CONTEXT.md, "Inline
+// image"). Painting them is another step's.
+
+mod inline_images {
+    use super::*;
+    use crate::inline_image::{fit, rows_for};
+    use crate::test_vault::{TestVault, test_vault};
+    use kimun_core::nfs::VaultPath;
+
+    /// A PNG of `w`x`h` pixels.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::RgbaImage::from_pixel(w, h, image::Rgba([200, 10, 10, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    /// An editor showing `text` as the note `n.md` of a vault holding the
+    /// attachments `files` (path, bytes), drawing its images. The runtime and
+    /// the vault must outlive the test body.
+    fn open_note(
+        cx: &mut TestAppContext,
+        text: &str,
+        files: &[(&str, Vec<u8>)],
+    ) -> (
+        AnyWindowHandle,
+        Entity<EditorView>,
+        TestVault,
+        tokio::runtime::Runtime,
+    ) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let vault = rt.block_on(async {
+            let v = test_vault(&[("n.md", text)], &[]).await;
+            for (path, bytes) in files {
+                v.vault
+                    .save_attachment(&VaultPath::new(*path), bytes)
+                    .await
+                    .expect("the attachment is saved");
+            }
+            v
+        });
+        let (handle, view) = open(cx, "");
+        let (note, shared) = (text.to_string(), vault.vault.clone());
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                view.editor.open_note(VaultPath::new("n.md"), note);
+                view.set_image_vault(Some(shared), cx);
+            })
+        });
+        settle(cx, handle);
+        (handle, view, vault, rt)
+    }
+
+    /// Draw until the attachment listing and every decode have landed.
+    fn settle(cx: &mut TestAppContext, handle: AnyWindowHandle) {
+        for _ in 0..3 {
+            cx.update_window(handle, |_, window, cx| {
+                window.refresh();
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
+    }
+
+    fn pads_under(view: &Entity<EditorView>, row: usize, cx: &gpui_kit::App) -> usize {
+        view.read(cx)
+            .editor
+            .session()
+            .display
+            .layout
+            .visual_lines()
+            .iter()
+            .filter(|l| l.pad && l.logical_row == row)
+            .count()
+    }
+
+    /// The lines an image of `natural` size takes in this window, when
+    /// neither the column nor the pane caps it (a narrow picture in a tall
+    /// pane).
+    fn image_rows(
+        view: &Entity<EditorView>,
+        natural: (u32, u32),
+        window: &gpui_kit::Window,
+        cx: &gpui_kit::App,
+    ) -> usize {
+        let scale = window.scale_factor();
+        let (_, height) = fit(natural, 10_000.0, 10_000.0);
+        rows_for(height, painted(view, cx).cells.height() * scale)
+    }
+
+    /// The screen rows painting `text`.
+    fn rows_painting(view: &Entity<EditorView>, text: &str, cx: &gpui_kit::App) -> Vec<usize> {
+        painted(view, cx)
+            .row_paint
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.text() == text)
+            .map(|(r, _)| r)
+            .collect()
+    }
+
+    const NOTE: &str = "intro\n![a](pic.png)\nafter";
+
+    #[gpui_kit::test]
+    fn an_embed_line_off_the_cursor_reserves_rows_minus_one(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            assert_eq!(view.read(cx).editor.cursor().0, 0);
+            let rows = image_rows(&view, (10, 60), window, cx);
+            assert!(rows >= 2, "a picture taller than a line: {rows}");
+            assert_eq!(pads_under(&view, 1, cx), rows - 1);
+            // The embed line draws nothing: the image takes it and its pads.
+            assert_eq!(painted_row(&view, 1, cx).text(), "");
+            assert_eq!(rows_painting(&view, "after", cx), [1 + rows]);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn an_embed_line_on_the_cursor_reserves_all_rows(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("down", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor().0, 1);
+            let rows = image_rows(&view, (10, 60), window, cx);
+            assert_eq!(pads_under(&view, 1, cx), rows);
+            // The raw markdown shows, the image below it.
+            assert_eq!(painted_row(&view, 1, cx).text(), "![a](pic.png)");
+            assert_eq!(rows_painting(&view, "after", cx), [2 + rows]);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn moving_the_cursor_onto_an_embed_keeps_the_same_line_in_view(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            let rows = image_rows(&view, (10, 60), window, cx);
+            assert_eq!(pads_under(&view, 1, cx), rows - 1, "off the cursor");
+            // From above: the lines above the image stay put.
+            window.press("down", cx);
+            window.render_frame(cx);
+            assert_eq!(pads_under(&view, 1, cx), rows, "one line more on it");
+            assert_eq!(rows_painting(&view, "intro", cx), [0]);
+            assert_eq!(rows_painting(&view, "![a](pic.png)", cx), [1]);
+            // From below: the embed line comes back where it was drawn.
+            window.press("down", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor().0, 2);
+            window.press("up", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor().0, 1);
+            assert_eq!(rows_painting(&view, "intro", cx), [0]);
+            assert_eq!(rows_painting(&view, "![a](pic.png)", cx), [1]);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn moving_onto_an_embed_in_a_scrolled_view_keeps_the_top_line(cx: &mut TestAppContext) {
+        let mut lines: Vec<String> = (0..60).map(|i| format!("line {i}")).collect();
+        lines.insert(50, "![a](pic.png)".to_string());
+        let note = lines.join("\n");
+        let (handle, view, _vault, _rt) = open_note(cx, &note, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            let rows = image_rows(&view, (10, 60), window, cx);
+            window.press("ctrl-end", cx);
+            window.render_frame(cx);
+            // Up to the line below the embed, with the embed in view.
+            while view.read(cx).editor.cursor().0 > 51 {
+                window.press("up", cx);
+            }
+            window.render_frame(cx);
+            let top = painted_row(&view, 0, cx).text();
+            assert_ne!(top, "line 0", "the view is scrolled");
+            let above = rows_painting(&view, "line 49", cx);
+            assert_eq!(above.len(), 1, "the line above the embed is in view");
+            assert_eq!(pads_under(&view, 50, cx), rows - 1, "off the cursor");
+            window.press("up", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor().0, 50);
+            assert_eq!(pads_under(&view, 50, cx), rows, "on the cursor");
+            assert_eq!(painted_row(&view, 0, cx).text(), top, "the same top line");
+            assert_eq!(rows_painting(&view, "line 49", cx), above);
+            assert_eq!(rows_painting(&view, "![a](pic.png)", cx), [above[0] + 1]);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_image_reserves_no_pad_lines(cx: &mut TestAppContext) {
+        let note = "intro\n![x](missing.png)\n![y](text.png)\nafter";
+        let files = [("text.png", b"not an image".to_vec())];
+        let (handle, view, _vault, _rt) = open_note(cx, note, &files);
+        cx.update_window(handle, |_, window, cx| {
+            for row in [1, 2] {
+                assert_eq!(pads_under(&view, row, cx), 0, "off the cursor, row {row}");
+                // Off the cursor its note takes the line: no text is drawn.
+                assert_eq!(painted_row(&view, row, cx).text(), "");
+            }
+            assert_eq!(rows_painting(&view, "after", cx), [3]);
+            window.press("down", cx);
+            window.render_frame(cx);
+            assert_eq!(pads_under(&view, 1, cx), 0, "on the cursor");
+            assert_eq!(painted_row(&view, 1, cx).text(), "![x](missing.png)");
+            assert_eq!(rows_painting(&view, "after", cx), [3]);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn resizing_the_pane_recomputes_the_reserve(cx: &mut TestAppContext) {
+        // Taller than 60% of a short pane, shorter than 60% of a tall one.
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 400))]);
+        let tall = cx
+            .update_window(handle, |_, window, cx| {
+                let rows = image_rows(&view, (10, 400), window, cx);
+                assert_eq!(pads_under(&view, 1, cx), rows - 1, "natural size");
+                rows
+            })
+            .unwrap();
+        cx.simulate_window_resize(handle, size(px(640.), px(160.)));
+        settle(cx, handle);
+        cx.update_window(handle, |_, window, cx| {
+            let p = painted(&view, cx);
+            let line = p.cells.height() * window.scale_factor();
+            // Capped at 60% of a pane under 160 px tall.
+            let cap = rows_for(160.0 * window.scale_factor() * 0.6, line);
+            let short = pads_under(&view, 1, cx) + 1;
+            assert!(short < tall, "{short} rows, was {tall}");
+            assert!(short <= cap, "{short} rows, cap {cap}");
+        })
+        .unwrap();
+    }
+
+    /// Two images on screen whose decoded pixels do not fit the cache
+    /// together: an image on screen is never evicted, so both are drawn,
+    /// each decoded once.
+    #[gpui_kit::test]
+    fn images_over_the_cache_budget_are_decoded_once(cx: &mut TestAppContext) {
+        use crate::inline_image::ImageStore;
+        // One 10x60 image decodes to 2400 bytes: one fits, two do not.
+        let store = ImageStore::with_test_budget(3000);
+        cx.update(|cx| cx.set_global(store.clone()));
+        let note = "intro\n![a](a.png)\n![b](b.png)\nafter";
+        let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
+        let (handle, view, _vault, _rt) = open_note(cx, note, &files);
+        assert_eq!(store.decodes_started(), 2, "one decode per image");
+        cx.update(|cx| {
+            assert!(image_of(&view, 1, cx).is_some_and(|i| i.ready), "a drawn");
+            assert!(image_of(&view, 2, cx).is_some_and(|i| i.ready), "b drawn");
+        });
+        // More frames, cursor moves and an edit start nothing new.
+        settle(cx, handle);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("down", cx);
+            window.press("down", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(cx, handle);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("ctrl-end", cx);
+            window.input("x", cx);
+        })
+        .unwrap();
+        settle(cx, handle);
+        assert_eq!(
+            store.decodes_started(),
+            2,
+            "an eviction decodes nothing again"
+        );
+        cx.update(|cx| {
+            assert!(pads_under(&view, 1, cx) > 0, "the images keep their room");
+            assert!(pads_under(&view, 2, cx) > 0);
+            assert!(image_of(&view, 1, cx).is_some_and(|i| i.ready), "a drawn");
+            assert!(image_of(&view, 2, cx).is_some_and(|i| i.ready), "b drawn");
+        });
+    }
+
+    /// The painted image of logical row `row`, when one is painted.
+    fn image_of(
+        view: &Entity<EditorView>,
+        row: usize,
+        cx: &gpui_kit::App,
+    ) -> Option<crate::editor_view::PaintedImage> {
+        painted(view, cx).images.into_iter().find(|i| i.row == row)
+    }
+
+    /// Window-space top of screen row `r`.
+    fn row_top(p: &Painted, r: u16) -> Pixels {
+        p.origin.y + px(p.cells.y_of(r))
+    }
+
+    #[gpui_kit::test]
+    fn a_ready_image_paints_over_its_reserved_rows(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            let scale = window.scale_factor();
+            let rows = image_rows(&view, (10, 60), window, cx);
+            let p = painted(&view, cx);
+            let lh = px(p.cells.height());
+            // Off the cursor: over the embed row and its pads.
+            let image = image_of(&view, 1, cx).expect("the image is painted");
+            assert!(image.ready, "its pixels, not the empty box");
+            assert_eq!(image.rect.origin, point(p.origin.x, row_top(&p, 1)));
+            // One image pixel to one device pixel.
+            assert_eq!(image.rect.size, size(px(10.0 / scale), px(60.0 / scale)));
+            assert_eq!(image.clip.origin.y, row_top(&p, 1));
+            assert_eq!(image.clip.size.height, lh * rows as f32);
+            assert!(image.clip.contains(&image.rect.origin));
+            // On the cursor: under the raw markdown, over the pads.
+            window.press("down", cx);
+            window.render_frame(cx);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 1, cx).expect("the image is painted");
+            assert_eq!(image.rect.origin.y, row_top(&p, 2));
+            assert_eq!(image.clip.origin.y, row_top(&p, 2));
+            assert_eq!(image.clip.size.height, lh * rows as f32);
+            assert_eq!(rows_painting(&view, "![a](pic.png)", cx), [1]);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_pending_image_paints_an_empty_box_of_the_reserved_size(cx: &mut TestAppContext) {
+        use crate::inline_image::ImageStore;
+        // The decode never lands: the image stays at its header size.
+        let store = ImageStore::default();
+        store.hold_decodes();
+        cx.update(|cx| cx.set_global(store.clone()));
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        assert_eq!(store.decodes_started(), 1);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let scale = window.scale_factor();
+            let pending = image_of(&view, 1, cx).unwrap();
+            assert!(!pending.ready, "an empty box");
+            assert_eq!(pending.rect.size, size(px(10.0 / scale), px(60.0 / scale)));
+            let rows = image_rows(&view, (10, 60), window, cx);
+            assert_eq!(
+                pads_under(&view, pending.row, cx),
+                rows - 1,
+                "its room kept"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_image_paints_the_note_only_off_the_cursor_row(cx: &mut TestAppContext) {
+        let note = "intro\n![x](missing.png)\n![[text.png]]\nafter";
+        let files = [("text.png", b"not an image".to_vec())];
+        let (handle, view, _vault, _rt) = open_note(cx, note, &files);
+        cx.update_window(handle, |_, window, cx| {
+            let notes = painted(&view, cx).image_notes;
+            assert_eq!(
+                notes,
+                [
+                    (1, "image not found: missing.png (x)".to_string()),
+                    (2, "cannot draw image: text.png".to_string()),
+                ]
+            );
+            assert!(painted(&view, cx).images.is_empty(), "no box for a failure");
+            window.press("down", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                painted(&view, cx).image_notes,
+                [(2, "cannot draw image: text.png".to_string())],
+                "the cursor row shows its markdown, no note"
+            );
+            assert_eq!(painted_row(&view, 1, cx).text(), "![x](missing.png)");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn hovering_an_image_shows_the_alt_text_and_a_wikilink_shows_the_file_name(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::editor_element::image_hover_id;
+        let note = "intro\n![a red square](a.png)\n![[b.png]]\n![](c.png)\nafter";
+        let files = [
+            ("a.png", png(10, 20)),
+            ("b.png", png(10, 20)),
+            ("c.png", png(10, 20)),
+        ];
+        let (handle, view, _vault, _rt) = open_note(cx, note, &files);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            for (row, tip) in [(1, "a red square"), (2, "b.png"), (3, "c.png")] {
+                let image = image_of(&view, row, cx).expect("painted");
+                assert_eq!(image.tip.as_ref(), tip);
+                let target = window.find(image_hover_id(row));
+                assert_eq!(target.label(), Some(tip), "row {row}");
+                assert_eq!(target.bounds(), image.rect.intersect(&image.clip));
+            }
+            crate::editor_element::BUILT_TIPS.with(|b| b.borrow_mut().clear());
+            window.hover(image_hover_id(1), cx);
+        })
+        .unwrap();
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(2));
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let built = crate::editor_element::BUILT_TIPS.with(|b| b.borrow().clone());
+            assert_eq!(
+                built.last().map(|t| t.as_ref()),
+                Some("a red square"),
+                "the tooltip shows"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_image_never_paints_outside_the_pane(cx: &mut TestAppContext) {
+        let mut lines: Vec<String> = (0..80).map(|i| format!("line {i}")).collect();
+        lines.insert(40, "![a](pic.png)".to_string());
+        let note = lines.join("\n");
+        let (handle, view, _vault, _rt) = open_note(cx, &note, &[("pic.png", png(10, 400))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let p = painted(&view, cx);
+            let pane_bottom = row_top(&p, p.rows);
+            let rows = pads_under(&view, 40, cx) + 1;
+            assert!(rows >= 5, "an image of a few lines: {rows}");
+            assert!(image_of(&view, 40, cx).is_none(), "below the pane");
+            // Scrolled so the image starts four lines above the bottom: it
+            // runs past the pane, and is clipped at its bottom.
+            let down = 40 - (p.rows as usize - 4);
+            window.scroll("editor", ScrollDelta::Lines(point(0., -(down as f32))), cx);
+            window.render_frame(cx);
+            let image = image_of(&view, 40, cx).expect("partly in view");
+            assert_eq!(image.rect.origin.y, row_top(&p, p.rows - 4));
+            assert!(image.rect.origin.y + image.rect.size.height > pane_bottom);
+            assert_eq!(image.clip.origin.y + image.clip.size.height, pane_bottom);
+            // The find bar takes rows at the bottom: the image stops above it.
+            // The caret on the top line first, so the view stays put.
+            window.pointer_down(cell_center(&view, 0, 0, cx), MouseButton::Left, cx);
+            window.pointer_up(cell_center(&view, 0, 0, cx), MouseButton::Left, cx);
+            window.press("ctrl-f", cx);
+            window.render_frame(cx);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 40, cx).expect("partly in view");
+            assert!(image.clip.origin.y + image.clip.size.height <= row_top(&p, p.rows));
+            window.press("escape", cx);
+            // Scrolled so the image starts a line above the pane: clipped at
+            // the pane's top.
+            window.scroll(
+                "editor",
+                ScrollDelta::Lines(point(0., -(p.rows as f32 - 1.0))),
+                cx,
+            );
+            window.render_frame(cx);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 40, cx).expect("partly in view");
+            assert!(image.rect.origin.y < p.origin.y, "starts above the pane");
+            assert_eq!(image.clip.origin.y, p.origin.y, "clipped at the pane top");
+            assert!(image.clip.size.height > px(0.));
+        })
+        .unwrap();
+    }
+
+    /// Images are decoded only once on screen, again each time the set on
+    /// screen changes, and a decode that lands asks for nothing: with two
+    /// images over the cache budget the count of decodes stays bounded.
+    #[gpui_kit::test]
+    fn only_images_on_screen_are_decoded_and_the_count_settles(cx: &mut TestAppContext) {
+        use crate::inline_image::ImageStore;
+        let store = ImageStore::with_test_budget(3000);
+        cx.update(|cx| cx.set_global(store.clone()));
+        let mut lines: Vec<String> = (0..120).map(|i| format!("line {i}")).collect();
+        lines.insert(1, "![a](a.png)".to_string());
+        lines.push("![b](b.png)".to_string());
+        lines.push("end".to_string());
+        let note = lines.join("\n");
+        let files = [("a.png", png(10, 60)), ("b.png", png(10, 60))];
+        let (handle, view, _vault, _rt) = open_note(cx, &note, &files);
+        assert_eq!(store.decodes_started(), 1, "only the image on screen");
+        cx.update(|cx| {
+            assert!(pads_under(&view, 121, cx) > 0, "the one below has its room");
+        });
+        // To the end: `b` comes into view, `a` leaves.
+        cx.update_window(handle, |_, window, cx| window.press("ctrl-end", cx))
+            .unwrap();
+        settle(cx, handle);
+        assert_eq!(store.decodes_started(), 2);
+        settle(cx, handle);
+        assert_eq!(store.decodes_started(), 2, "settled");
+        // Back to the top: `a` was evicted by `b`, so it decodes again.
+        cx.update_window(handle, |_, window, cx| window.press("ctrl-home", cx))
+            .unwrap();
+        settle(cx, handle);
+        assert_eq!(store.decodes_started(), 3);
+        settle(cx, handle);
+        assert_eq!(store.decodes_started(), 3, "settled");
+        cx.update(|cx| {
+            assert!(
+                image_of(&view, 1, cx).is_some_and(|i| i.ready),
+                "drawn again"
+            );
+        });
+    }
+
+    /// A point inside the painted image of `row`, `from_bottom` above its
+    /// visible bottom edge.
+    fn inside_image(
+        view: &Entity<EditorView>,
+        row: usize,
+        from_bottom: Pixels,
+        cx: &gpui_kit::App,
+    ) -> Point<Pixels> {
+        let image = image_of(view, row, cx).expect("the image is painted");
+        let shown = image.rect.intersect(&image.clip);
+        point(
+            shown.origin.x + px(1.),
+            shown.origin.y + shown.size.height - from_bottom,
+        )
+    }
+
+    /// A click on the image (here its last line, a pad line) puts the
+    /// cursor at the start of its embed line: the markdown shows where the
+    /// image's top was, the image right under it, and the lines above stay.
+    #[gpui_kit::test]
+    fn a_click_on_an_image_puts_the_cursor_on_its_line(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor(), (0, 0));
+            assert!(pads_under(&view, 1, cx) >= 1, "the image has pad lines");
+            let at = inside_image(&view, 1, px(1.), cx);
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor(), (1, 0));
+            assert!(view.read(cx).editor.selection().is_none_or(|(a, b)| a == b));
+            assert_eq!(rows_painting(&view, "intro", cx), [0]);
+            assert_eq!(rows_painting(&view, "![a](pic.png)", cx), [1]);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 1, cx).expect("still drawn");
+            assert_eq!(image.rect.origin.y, row_top(&p, 2), "under the markdown");
+        })
+        .unwrap();
+    }
+
+    /// An image that starts above the pane: a click on its visible part
+    /// brings its embed line into view, the image under it.
+    #[gpui_kit::test]
+    fn a_click_on_an_image_cut_at_the_pane_top_shows_its_line(cx: &mut TestAppContext) {
+        let mut lines: Vec<String> = (0..80).map(|i| format!("line {i}")).collect();
+        lines.insert(40, "![a](pic.png)".to_string());
+        let note = lines.join("\n");
+        let (handle, view, _vault, _rt) = open_note(cx, &note, &[("pic.png", png(10, 400))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Scrolled so the image starts a line above the pane.
+            window.scroll("editor", ScrollDelta::Lines(point(0., -41.)), cx);
+            window.render_frame(cx);
+            let p = painted(&view, cx);
+            let image = image_of(&view, 40, cx).expect("partly in view");
+            assert!(image.rect.origin.y < p.origin.y, "starts above the pane");
+            let at = inside_image(&view, 40, px(1.), cx);
+            window.pointer_down(at, MouseButton::Left, cx);
+            window.pointer_up(at, MouseButton::Left, cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).editor.cursor(), (40, 0));
+            let raw = rows_painting(&view, "![a](pic.png)", cx);
+            assert_eq!(raw.len(), 1, "the embed line is in view");
+            let p = painted(&view, cx);
+            let image = image_of(&view, 40, cx).expect("still drawn");
+            assert_eq!(image.rect.origin.y, row_top(&p, raw[0] as u16 + 1));
+        })
+        .unwrap();
+    }
+
+    /// A drag across an image selects the raw markdown of its line: the
+    /// copy is text, never the pixels.
+    #[gpui_kit::test]
+    fn selection_across_an_image_line_copies_the_raw_markdown(cx: &mut TestAppContext) {
+        let (handle, view, _vault, _rt) = open_note(cx, NOTE, &[("pic.png", png(10, 60))]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = cell_center(&view, 0, 0, cx);
+            window.pointer_down(from, MouseButton::Left, cx);
+            // Through the image, then onto "after", wherever it is drawn now.
+            let through = inside_image(&view, 1, px(1.), cx);
+            window.pointer_move(through, Some(MouseButton::Left), cx);
+            window.render_frame(cx);
+            let after = rows_painting(&view, "after", cx)[0] as u16;
+            let to = cell_center(&view, 2, after, cx);
+            window.pointer_move(to, Some(MouseButton::Left), cx);
+            window.pointer_up(to, MouseButton::Left, cx);
+            window.render_frame(cx);
+            let editor = &view.read(cx).editor;
+            let (start, end) = editor.selection().expect("a selection");
+            let (start, end) = (start.min(end), start.max(end));
+            let text = editor.get_text();
+            // Rows and columns to byte offsets (the note is ASCII).
+            let offset = |(row, col): (usize, usize)| {
+                text.split('\n')
+                    .take(row)
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>()
+                    + col
+            };
+            let selected = &text[offset(start)..offset(end)];
+            assert_eq!(selected, "intro\n![a](pic.png)\naf");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn without_a_vault_an_embed_line_is_text(cx: &mut TestAppContext) {
+        let (handle, view) = open(cx, NOTE);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(pads_under(&view, 1, cx), 0);
+            assert_eq!(rows_painting(&view, "after", cx), [2]);
+        })
+        .unwrap();
+    }
+}

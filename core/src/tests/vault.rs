@@ -367,6 +367,33 @@ async fn entry_kind_classifies_note_directory_and_attachment() {
 }
 
 #[tokio::test]
+async fn list_attachments_returns_attachments_and_no_notes() {
+    let dir = TempDir::new().unwrap();
+    let vault = make_vault(dir.path()).await;
+    vault
+        .create_note(&VaultPath::new("sub/note.md"), "hi")
+        .await
+        .unwrap();
+    vault
+        .save_attachment(&VaultPath::new("assets/Diagram.png"), &[1])
+        .await
+        .unwrap();
+    vault
+        .save_attachment(&VaultPath::new("sub/doc.pdf"), &[2])
+        .await
+        .unwrap();
+
+    // A vault without a configured index keeps it inside the vault
+    // (`IndexFile::legacy_in_workspace`), and a browse reports it as an
+    // attachment too, so it is not asserted away here.
+    let found = vault.list_attachments();
+    assert!(found.contains(&VaultPath::new("/assets/diagram.png")));
+    assert!(found.contains(&VaultPath::new("/sub/doc.pdf")));
+    assert!(!found.contains(&VaultPath::new("/sub/note.md")));
+    assert!(found.iter().all(|path| !path.is_note()));
+}
+
+#[tokio::test]
 async fn entry_kind_errors_on_missing_path() {
     let dir = TempDir::new().unwrap();
     let vault = make_vault(dir.path()).await;

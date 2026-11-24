@@ -42,7 +42,7 @@
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::{AppContext as _, Context, Window};
+use gpui_kit::{App, AppContext as _, Context, Entity, Window};
 use kimun_core::NoteVault;
 use kimun_notes::logic::ask_flow::AskFlow;
 use kimun_notes::logic::editor_region::EditorRegion;
@@ -57,6 +57,8 @@ use tokio::task::JoinError;
 use super::note::Closing;
 use super::note_flush::FlushBlock;
 use super::{LayoutStore, Workspace};
+use crate::editor_view::EditorView;
+use crate::remote_image::RemoteImages;
 use crate::startup;
 use crate::status_row::Status;
 
@@ -152,6 +154,65 @@ impl Workspace {
             .ok();
         })
         .detach();
+    }
+
+    /// Hand the store of remote images the allowed hosts of the settings.
+    /// Called when the settings load and after each change of the list.
+    pub(crate) fn sync_remote_hosts(&self, cx: &mut gpui_kit::App) {
+        if let Some(settings) = &self.settings {
+            sync_remote_hosts(settings, cx);
+        }
+    }
+
+    /// "Always load from" `host` on a placeholder: write the host to the
+    /// allowed hosts through the settings writer, then hand the store the
+    /// new list, then run `load`, which loads the one image in the surface
+    /// that showed the button (an editor, a facet chunk, a preview). The
+    /// other embeds of the host on screen then load on their own. A failed
+    /// write flashes and still loads this one image, which the reader asked
+    /// for. Must run with the tokio runtime entered.
+    pub(crate) fn always_load_from(
+        &mut self,
+        host: String,
+        load: impl FnOnce(&mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(settings) = self.settings.clone() else {
+            load(cx);
+            return;
+        };
+        let write = write_settings(self.store.clone(), settings, move |settings| {
+            settings.allow_host(&host);
+        });
+        cx.spawn(async move |this, cx| {
+            let result = write.await;
+            this.update(cx, |workspace, cx| {
+                if let Err(error) = result {
+                    tracing::warn!("could not save the allowed host: {error}");
+                    workspace.flash_error(format!("Couldn't save the settings: {error}"), cx);
+                }
+                workspace.sync_remote_hosts(cx);
+                load(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// [`Self::always_load_from`] for a placeholder in `editor` (a note
+    /// editor or a facet chunk): it loads `url` there.
+    pub(crate) fn always_load_in_editor(
+        &mut self,
+        editor: Entity<EditorView>,
+        host: String,
+        url: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.always_load_from(
+            host,
+            move |cx| editor.update(cx, |view, cx| view.load_remote(&url, cx)),
+            cx,
+        );
     }
 
     /// Leave the vault the window is on (or none) for the one the shared
@@ -436,6 +497,20 @@ impl Workspace {
         self.status = Status::default();
         self.closing = Closing::Open;
     }
+}
+
+/// Hand the store of remote images the allowed hosts of `settings`. The
+/// workspace calls it through [`Workspace::sync_remote_hosts`]. Preferences
+/// call it after a host is removed.
+pub(super) fn sync_remote_hosts(settings: &SharedSettings, cx: &mut App) {
+    let hosts = settings
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .remote_image_hosts
+        .clone();
+    cx.default_global::<RemoteImages>()
+        .clone()
+        .set_allowed_hosts(&hosts);
 }
 
 /// The settings write ([module docs](self)) to `store`: `change` applied to

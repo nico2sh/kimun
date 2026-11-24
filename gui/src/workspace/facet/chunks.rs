@@ -7,8 +7,8 @@
 use gpui_kit::{AppContext as _, Context};
 use kimun_core::note::Reveal;
 
-use super::FacetView;
 use super::members::chunk_plan;
+use super::{FacetEvent, FacetView};
 use crate::editor_view::{EditorEvent, EditorView};
 
 impl FacetView {
@@ -58,6 +58,16 @@ impl FacetView {
                             EditorEvent::LinkMenu { at, target } => {
                                 this.link_menu(i, *at, target.clone(), cx)
                             }
+                            // "Always load from" on a placeholder in the
+                            // chunk: the host writes the setting, then the
+                            // chunk loads the image.
+                            EditorEvent::AlwaysLoadFrom { host, url } => {
+                                cx.emit(FacetEvent::AlwaysLoadFrom {
+                                    chunk: editor.clone(),
+                                    host: host.clone(),
+                                    url: url.clone(),
+                                })
+                            }
                             _ => {}
                         }
                     });
@@ -66,6 +76,9 @@ impl FacetView {
                 }
             }
         }
+        // A new chunk, or one now from another note, draws its images from
+        // its own note.
+        self.sync_image_sources(cx);
         self.close_list_if_gone(cx);
         // A plan can change the picks, the summary and the counts. The bar
         // eases to its new height only when what it draws changed.

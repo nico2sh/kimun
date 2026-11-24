@@ -33,6 +33,17 @@ impl NoteVault {
             .append(&VaultPath::new(filename))
     }
 
+    /// Every attachment in the vault, as canonical absolute paths in no
+    /// particular order. An attachment is any file that is not a note.
+    /// Hidden entries are skipped. An old index file still kept inside the
+    /// vault is listed too, as a browse of the vault lists it. Each call
+    /// walks the vault tree afresh: nothing is cached, and the index is
+    /// never read. Resolve a bare `![[name]]` image embed with it
+    /// ([`crate::note::resolve_image_embed`]).
+    pub fn list_attachments(&self) -> Vec<VaultPath> {
+        nfs::list_attachments(self.workspace_path())
+    }
+
     /// Writes an attachment (raw bytes — e.g. an encoded PNG) to `path` under
     /// the workspace. Creates parent directories as needed. The attachment is
     /// not added to the notes index.

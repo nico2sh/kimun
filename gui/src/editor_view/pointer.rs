@@ -14,6 +14,7 @@ use kimun_notes::logic::editor::find_bar::BarFocus;
 use kimun_notes::logic::input::{Button, Key, KeyInput, Mods, PointerInput, PointerKind};
 use kimun_notes::logic::message::AppMessage;
 
+use super::remote::PlaceholderPress;
 use super::{EditorEvent, EditorView};
 use crate::grid::CellMetrics;
 use crate::input;
@@ -101,7 +102,34 @@ impl EditorView {
         }
         let left = pointer.kind == PointerKind::Down(Button::Left);
         if self.read_only {
+            // A left press on a remote placeholder's button runs it, as in
+            // an editor that edits. It does not move the caret or start a
+            // selection. Any other press keeps its read-only meaning.
+            if left
+                && let Some(PlaceholderPress::Button(url, host, action)) =
+                    self.placeholder_press(event.position, true)
+            {
+                self.clicks.end();
+                self.clicks_ro.pressed = None;
+                self.dragging = false;
+                self.run_remote_action(url, host, action, cx);
+                return;
+            }
             self.read_only_press(pointer, left, window, cx);
+            return;
+        }
+        // A press on a remote placeholder's button runs it, and a right
+        // press on a placeholder opens nothing. Neither moves the caret.
+        let right = pointer.kind == PointerKind::Down(Button::Right);
+        if (left || right)
+            && let Some(press) = self.placeholder_press(event.position, left)
+        {
+            self.clicks.end();
+            self.dragging = false;
+            if let PlaceholderPress::Button(url, host, action) = press {
+                self.run_remote_action(url, host, action, cx);
+            }
+            self.settle(window, cx);
             return;
         }
         // A right press with no selection on a follow target asks for the
@@ -132,7 +160,7 @@ impl EditorView {
             self.feed_pointer(&pointer, true);
             // Stay armed even when it follows: the release must still reach
             // the editor to end the press `handle_pointer` started.
-            self.follow_at_caret();
+            self.follow_at_caret(cx);
             self.dragging = true;
             self.settle(window, cx);
             return;
@@ -145,7 +173,7 @@ impl EditorView {
             if self
                 .clicks
                 .completes_double(pointer.col, pointer.row, (self.clock)())
-                && self.follow_at_caret()
+                && self.follow_at_caret(cx)
             {
                 self.dragging = false;
                 self.settle(window, cx);
@@ -180,10 +208,7 @@ impl EditorView {
     /// find bar owns the pointer while open, so there a press never acts on
     /// a link: no target, and the right press asks for the note menu.
     pub(super) fn link_menu_target(&mut self, pointer: &PointerInput) -> Option<FollowTarget> {
-        let unselected = self
-            .editor
-            .selection()
-            .is_none_or(|(start, end)| start == end);
+        let unselected = !self.has_selection();
         if pointer.kind != PointerKind::Down(Button::Right)
             || !unselected
             || self.editor.find_bar().is_some()
@@ -194,8 +219,20 @@ impl EditorView {
     }
 
     /// Ask the window's owner to follow the follow target under the caret
-    /// (a link, a label). False when there is none.
-    fn follow_at_caret(&self) -> bool {
+    /// (a link, a label). False when there is none. On an **Inline image**'s
+    /// line it asks to open the file the image draws: a bare `![[name]]`
+    /// finds it by the closest-file rule, which the link lookup does not
+    /// know. On a **Remote image**'s line it asks to open the address in
+    /// the browser.
+    fn follow_at_caret(&self, cx: &mut Context<Self>) -> bool {
+        if let Some(path) = self.image_at_cursor() {
+            self.tx.send(AppMessage::OpenAttachment(path)).ok();
+            return true;
+        }
+        if let Some(url) = self.remote_image_at_cursor() {
+            cx.emit(EditorEvent::OpenRemoteImage { url });
+            return true;
+        }
         let message = match self.editor.follow_target_at_cursor() {
             Some(FollowTarget::Link { target, kind }) => AppMessage::FollowLink { target, kind },
             Some(FollowTarget::Label(name)) => AppMessage::FollowLabel(name),

@@ -144,6 +144,7 @@ fn bench_wrap_5000_lines(c: &mut Criterion) {
                     visible: row.as_slice(),
                     inset: 0,
                     hidden: false,
+                    reserve: 0,
                 })
                 .collect();
             let layout = Layout::compute(black_box(&text), 80, Metrics::default(), &hints);

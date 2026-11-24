@@ -6,7 +6,7 @@
 //! it brings the display up to date with the engine's snapshot and decides
 //! what is highlighted. A front end then paints `display.frame(..)`.
 
-use crate::logic::editor::display::EditorDisplay;
+use crate::logic::editor::display::{EditorDisplay, ImageLine};
 use crate::logic::editor::jobs::BackgroundJobs;
 use crate::logic::editor::overlay::{Overlay, OverlayKind};
 use crate::logic::editor::revisions::Revisions;
@@ -40,6 +40,10 @@ pub struct EditorSession {
     pub notifier: Option<Notifier>,
     /// The last frame drew a **replace preview** instead of the buffer.
     showed_preview: bool,
+    /// The inline image lines a frontend asked for
+    /// ([`Self::set_image_lines`]), handed to the display after every update.
+    /// `None` until one asks: the TUI never does.
+    image_lines: Option<Vec<ImageLine>>,
 }
 
 /// What the caller supplies for one frame.
@@ -107,7 +111,17 @@ impl EditorSession {
             jobs: BackgroundJobs::new(),
             notifier: None,
             showed_preview: false,
+            image_lines: None,
         }
+    }
+
+    /// The **Inline image** lines of the buffer, in its current row
+    /// numbering, for every frame from now on: each `prepare_frame` hands
+    /// them to the display right after its update
+    /// ([`EditorDisplay::set_image_lines`]). An empty list turns every image
+    /// line back into text.
+    pub fn set_image_lines(&mut self, lines: Vec<ImageLine>) {
+        self.image_lines = Some(lines);
     }
 
     /// Bring the display up to date for one frame. The order is the contract:
@@ -151,6 +165,11 @@ impl EditorSession {
                 let view_snap = EditorSnapshot::borrowed(lines, snap.cursor, rev);
                 self.display.update_sized(&view_snap, width, height);
             }
+        }
+        // The image lines are in the buffer's row numbering, which the update
+        // just moved to: hand them over before anything reads the layout.
+        if let Some(lines) = &self.image_lines {
+            self.display.set_image_lines(lines);
         }
         // Needles reach the display as **overlays**; the display appends the two
         // kinds it derives from content (tasks, needles) for the visible rows.

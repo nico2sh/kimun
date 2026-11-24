@@ -719,6 +719,9 @@ impl Workspace {
             list.with_click_policy(ClickPolicy::Select)
         });
         let view = cx.new(|cx| SourcesView::new(vault, list.clone(), window, cx));
+        let reader = view.read(cx).reader.clone();
+        let watch = self.watch_preview(&reader, cx);
+        self._views_events.push(watch);
         // Folded into the Ask view, under its selected turn.
         if let Some(ask) = self.ask.clone() {
             ask.update(cx, |ask, cx| ask.set_sources(view.clone(), cx));

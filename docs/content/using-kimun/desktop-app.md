@@ -99,6 +99,81 @@ To read all the results as one document, click `Open as collection` in the tool 
 - Double-click a link to open it. You can also hold `Ctrl` (`Cmd` on macOS) and click it.
 - Press `Ctrl+F` to find text in the note.
 
+### Images
+
+The desktop app shows an image inside the note. Put the image on a line of its own with `![alt](path)` or with `![[name]]`. The image shows below that line. The terminal app shows no images.
+
+- When the cursor is on the line, the line shows as plain text and the image shows below it. Move the cursor away and the line gives way to the image.
+- The image can be in your vault or on the web. A web image does not load until you ask. See [Remote images](#remote-images).
+- Kimün shows PNG, JPEG, GIF, WebP, and SVG files. A GIF shows its first frame only.
+- An image shows at its natural size. It is never wider than the text. It is never taller than 60% of the height of the pane.
+- If the image is missing or Kimün cannot read it, a short note shows in its place.
+- Point at an image to see its alt text.
+- Click an image to put the cursor on its line. Right-click it to open the row menu of the image file. The menu has the items for an attachment, with Reveal in file browser.
+- If you rename or move an image, Kimün does not update the notes that use it. Change the path in those notes yourself.
+
+Images also show in other views. They use the same sizes and formats as in the note.
+
+- The facet view shows an image in place of its line. A chunk never shows the raw line.
+- The search preview and the Ask source reader keep the raw text of the note. An image line becomes the picture. If the line holds a search match, the raw line shows first and the picture shows below it. In the source reader, the marked section plays the part of the match.
+- Only the first 100 images of a note show in a preview. A facet chunk also shows only its first 100 images. A preview reads only the first 256 KB of a note.
+- Point at a picture to see its alt text. There is no click and no menu on a picture in these views.
+
+### Remote images
+
+A note can embed an image from the web with `![alt](https://host/path)`. A remote image can tell its server that you opened the note. For this reason Kimün loads nothing until you ask.
+
+Each remote image first shows a placeholder. The placeholder names the host and has two actions.
+
+- **Load** fetches this one image.
+- **Always load from** fetches this image and allows the host. An allowed host is a host whose images load on their own.
+
+The placeholder looks the same in the note, the facet view, the search preview, and the Ask source reader. You can use both actions in all four places.
+
+How it works:
+
+- An allowed host is one exact name. `cdn.example.com` does not allow `example.com` or `tracker.example.com`.
+- An image on an allowed host loads on its own once it is on screen. In the note, the image on the line that you edit waits until you leave that line.
+- Kimün saves each loaded image in a cache in its own folder, never in your vault. A saved image shows with no network request, so it also shows offline. A changed image keeps its old saved copy until you reload it.
+- The cache can hold 200 MB. When it is full, the oldest copies go first.
+- A redirect to a host that is not allowed stops and names the new host. **Load** there lets that one address follow the redirect until you close the app. **Always load from** allows the new host.
+- Kimün never loads an `http` address. The note says "Not loaded: http is not secure".
+- A remote address can point at a device on your own network. Click **Load** only for addresses that you trust.
+- Kimün never checks where a host name points, so it also loads from an allowed host whose name points at an address in your own network.
+- Kimün checks the certificate of the server with the certificate store of your system. On a network that inspects HTTPS traffic, remote images load when the certificate of that network is installed in your system. On Linux, the `SSL_CERT_FILE` environment variable replaces the system store with the certificates in that file.
+- Kimün draws PNG, JPEG, GIF (first frame), and WebP. It does not draw an SVG or any other format.
+- An image can be at most 20 MB and at most 64 megapixels. A load stops after 15 seconds without data, and after 60 seconds in total.
+- Kimün loads at most 2 images at a time from one host. If a server answers that it is busy or gets too many requests, Kimün waits a few seconds and tries once more.
+- If a load fails, the placeholder gives a short reason and a Retry action. Kimün does not save the failure.
+
+In the note, right-click a loaded remote image to open its menu.
+
+- **Open in browser** opens the address in your default browser.
+- **Copy image address** copies the address.
+- **Reload** fetches the image again. The new image replaces the saved copy. If the fetch fails, Kimün keeps the old saved copy and shows it.
+- **Clear image cache** removes the saved copy of this image only. On an allowed host, the image loads again at once.
+
+Double-click a remote image, or press `Ctrl+Enter` on its line, to open the address in your browser. The facet view and the preview show a loaded image with its tooltip only.
+
+If a saved copy is damaged, the note shows a failure note and the image has no menu. Use **Clear cached images** in Preferences to remove it.
+
+Open Preferences and choose Remote images to manage this feature.
+
+- The list shows each allowed host. **Remove** takes a host off the list. The saved copies of that host stay.
+- **Clear cached images** removes every saved copy. The cache size shows next to it. Every address starts again from its placeholder. Images on allowed hosts load again once they are on screen.
+
+### Images in the attachment view
+
+When you open an image file, the image shows in the attachment view, below the header. This view is different from a note. The image can use the whole area.
+
+- The image shows at its natural size. It is never larger. If it does not fit, Kimün scales it down to fit the whole area, both width and height. It stays in the center and there is no scrolling.
+- The image fits again when you resize the window or the panel.
+- A GIF shows its first frame only. A photo that was rotated by the camera shows upright.
+- An SVG file shows as a picture. Its text does not show. Use Open externally to read the text.
+- If Kimün cannot draw the file, the view shows "No preview" and gives the reason. The file may be missing, over 20 MB, or damaged.
+- Other binary files, such as a zip or a PDF, show "No preview" and "Open it externally to view it." Text files still show their text.
+- The size and date in the header do not update if the file changes while the view is open. Open the file again to refresh them.
+
 ## Properties
 
 Properties are facts about a note, such as `status` or `due`. The footer shows how many a note has. Click it to open the list. Use `Add`, `Edit`, and `Delete`, or press `A`, `E`, and `D`.

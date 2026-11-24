@@ -226,6 +226,10 @@ pub struct AppSettings {
     /// (see [`crate::app::ctrl_h`]); this picks which.
     #[serde(default)]
     pub ctrl_h: CtrlHSetting,
+    /// The hosts the reader allowed for remote images, as plain names in lower
+    /// case and ASCII form, without a port. No duplicates, in the order added.
+    #[serde(default)]
+    pub remote_image_hosts: Vec<String>,
     /// The `[gui]` table (ADR-0050 §5): the GUI's layout and key overrides.
     /// The TUI never reads it; it is kept as written so a TUI save
     /// round-trips it untouched, and left out of the file while empty.
@@ -530,6 +534,7 @@ impl Default for AppSettings {
             journal_sort_order: default_journal_sort_order(),
             group_directories: false,
             ctrl_h: CtrlHSetting::default(),
+            remote_image_hosts: Vec::new(),
             gui: gui::GuiSettings::default(),
             config_file: None,
         }
@@ -537,6 +542,24 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// Whether the reader allowed remote images from `host`. The rule is the
+    /// core one: an exact match, so a parent domain never allows a subdomain.
+    pub fn host_allowed(&self, host: &str) -> bool {
+        kimun_core::note::host_listed(&self.remote_image_hosts, host)
+    }
+
+    /// Allow remote images from `host`. Stores the normalized name. Returns
+    /// true when the list changed. A blank or invalid host is ignored.
+    pub fn allow_host(&mut self, host: &str) -> bool {
+        kimun_core::note::allow_host(&mut self.remote_image_hosts, host)
+    }
+
+    /// Stop allowing remote images from `host`. Returns true when the list
+    /// changed.
+    pub fn forget_host(&mut self, host: &str) -> bool {
+        kimun_core::note::forget_host(&mut self.remote_image_hosts, host)
+    }
+
     pub fn theme_list(&self) -> Vec<Theme> {
         let mut list = Theme::builtins();
         list.append(&mut Self::load_custom_themes());
@@ -2133,5 +2156,76 @@ mod sort_settings_tests {
             map.contains_key(&ActionShortcuts::OpenSortDialog),
             "OpenSortDialog must have a default binding"
         );
+    }
+}
+
+#[cfg(test)]
+mod remote_image_hosts_tests {
+    use super::*;
+
+    #[test]
+    fn an_old_config_file_loads_with_no_allowed_hosts() {
+        let s: AppSettings = toml::from_str("theme = \"Nord\"\n").unwrap();
+        assert!(s.remote_image_hosts.is_empty());
+    }
+
+    #[test]
+    fn allowed_hosts_round_trip_through_the_file_as_plain_names() {
+        let mut s = AppSettings::default();
+        assert!(s.allow_host("example.com"));
+        assert!(s.allow_host("cdn.example.org"));
+        let text = toml::to_string(&s).unwrap();
+        assert!(
+            text.contains("remote_image_hosts = [\"example.com\", \"cdn.example.org\"]"),
+            "unexpected file body: {text}"
+        );
+        let back: AppSettings = toml::from_str(&text).unwrap();
+        assert_eq!(
+            back.remote_image_hosts,
+            vec!["example.com", "cdn.example.org"]
+        );
+    }
+
+    #[test]
+    fn host_allowed_ignores_case_and_port() {
+        let mut s = AppSettings::default();
+        s.allow_host("Example.COM:8080");
+        assert_eq!(s.remote_image_hosts, vec!["example.com"]);
+        assert!(s.host_allowed("EXAMPLE.com"));
+        assert!(s.host_allowed("example.com:443"));
+        assert!(!s.host_allowed("other.com"));
+    }
+
+    #[test]
+    fn a_parent_domain_does_not_allow_its_subdomain() {
+        let mut s = AppSettings::default();
+        s.allow_host("example.com");
+        assert!(!s.host_allowed("cdn.example.com"));
+        let mut t = AppSettings::default();
+        t.allow_host("cdn.example.com");
+        assert!(!t.host_allowed("example.com"));
+    }
+
+    #[test]
+    fn allow_host_adds_once_and_forget_host_removes() {
+        let mut s = AppSettings::default();
+        assert!(s.allow_host("a.com"));
+        assert!(s.allow_host("b.com"));
+        assert!(!s.allow_host("A.com:80"), "a duplicate changes nothing");
+        assert_eq!(s.remote_image_hosts, vec!["a.com", "b.com"]);
+        assert!(s.forget_host("A.COM"));
+        assert!(!s.forget_host("a.com"));
+        assert_eq!(s.remote_image_hosts, vec!["b.com"]);
+    }
+
+    #[test]
+    fn a_blank_or_invalid_host_is_ignored() {
+        let mut s = AppSettings::default();
+        assert!(!s.allow_host(""));
+        assert!(!s.allow_host("   "));
+        assert!(!s.allow_host("not a host"));
+        assert!(s.remote_image_hosts.is_empty());
+        assert!(!s.host_allowed(""));
+        assert!(!s.forget_host(""));
     }
 }

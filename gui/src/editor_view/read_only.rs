@@ -74,7 +74,9 @@ impl EditorView {
     /// A press in read-only text. A left press places the caret, may start
     /// a drag selection and may arm a click on a follow target. A right
     /// press on a follow target asks for the Link menu
-    /// ([`EditorEvent::LinkMenu`]); elsewhere it does nothing.
+    /// ([`EditorEvent::LinkMenu`]); elsewhere it does nothing. On a drawn
+    /// **Inline image** (or its failure note) no press reaches the link its
+    /// embed line hides: it places the caret and selects only.
     pub(super) fn read_only_press(
         &mut self,
         pointer: PointerInput,
@@ -92,7 +94,8 @@ impl EditorView {
         // edit. A right press on a target, with nothing selected, asks for
         // the Link menu; any other right press does nothing.
         self.clicks_ro.pressed = None;
-        if let Some(target) = self.link_menu_target(&pointer) {
+        let on_image = self.on_drawn_image(pointer.row);
+        if !on_image && let Some(target) = self.link_menu_target(&pointer) {
             self.clicks.end();
             cx.emit(EditorEvent::LinkMenu {
                 at: self.pressed_at,
@@ -130,7 +133,11 @@ impl EditorView {
                 self.clicks.end();
             }
             self.feed_pointer(&pointer, true);
-            let target = self.editor.follow_target_at_cursor();
+            let target = if on_image {
+                None
+            } else {
+                self.editor.follow_target_at_cursor()
+            };
             if primary && let Some(target) = target {
                 self.clicks_ro.followed_at(pointer.col, pointer.row, now);
                 cx.emit(EditorEvent::ReadOnlyFollow { target });

@@ -312,6 +312,11 @@ impl Members {
         self.refs.get(i).and_then(|r| self.list.get(r.member))
     }
 
+    /// The note drawn chunk `i` came from: a collection mixes notes.
+    pub(crate) fn note_of(&self, i: usize) -> Option<&VaultPath> {
+        self.member_of(i).map(|member| &member.path)
+    }
+
     /// Drawn chunk `i`'s first source line in its own note, 0-based.
     pub(crate) fn first_line(&self, i: usize) -> usize {
         match (self.member_of(i), self.chunk(i)) {

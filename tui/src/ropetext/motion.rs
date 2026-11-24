@@ -389,13 +389,29 @@ pub fn visual_vertical(
     lines: isize,
     goal: VisualGoal,
 ) -> Position {
-    let last = layout.visual_line_count().saturating_sub(1);
-    let current = layout.visual_row_of(from);
-    let row = if lines >= 0 {
-        current.saturating_add(lines.unsigned_abs()).min(last)
-    } else {
-        current.saturating_sub(lines.unsigned_abs())
-    };
+    let all = layout.visual_lines();
+    let last = all.len().saturating_sub(1);
+    // Step one drawn line at a time, counting only lines that hold text: the
+    // pad lines reserved under a row are room for an image, not a place the
+    // caret can be.
+    let mut row = layout.visual_row_of(from);
+    let mut left = lines.unsigned_abs();
+    while left > 0 {
+        let next = if lines >= 0 {
+            (row < last).then_some(row + 1)
+        } else {
+            row.checked_sub(1)
+        };
+        let Some(next) = next else { break };
+        row = next;
+        if !all[row].pad {
+            left -= 1;
+        }
+    }
+    // Ran off the end onto trailing pads: back to the nearest text line.
+    while all.get(row).is_some_and(|line| line.pad) && row > 0 {
+        row -= 1;
+    }
     let column = match goal {
         VisualGoal::Cell(column) => column,
         VisualGoal::LineEnd => usize::MAX,
@@ -1115,11 +1131,13 @@ mod tests {
                     visible: &[],
                     inset: 2,
                     hidden: false,
+                    reserve: 0,
                 },
                 RowHints {
                     visible: &[],
                     inset: 2,
                     hidden: false,
+                    reserve: 0,
                 },
             ];
             let l = Layout::compute(&t, 10, Metrics::default(), &hints);
