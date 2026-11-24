@@ -159,17 +159,9 @@ impl Workspace {
     /// Hand the store of remote images the allowed hosts of the settings.
     /// Called when the settings load and after each change of the list.
     pub(crate) fn sync_remote_hosts(&self, cx: &mut gpui_kit::App) {
-        let Some(settings) = &self.settings else {
-            return;
-        };
-        let hosts = settings
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .remote_image_hosts
-            .clone();
-        cx.default_global::<RemoteImages>()
-            .clone()
-            .set_allowed_hosts(&hosts);
+        if let Some(settings) = &self.settings {
+            sync_remote_hosts(settings, cx);
+        }
     }
 
     /// "Always load from" `host` on a placeholder: write the host to the
@@ -505,6 +497,20 @@ impl Workspace {
         self.status = Status::default();
         self.closing = Closing::Open;
     }
+}
+
+/// Hand the store of remote images the allowed hosts of `settings`. The
+/// workspace calls it through [`Workspace::sync_remote_hosts`]. Preferences
+/// call it after a host is removed.
+pub(super) fn sync_remote_hosts(settings: &SharedSettings, cx: &mut App) {
+    let hosts = settings
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .remote_image_hosts
+        .clone();
+    cx.default_global::<RemoteImages>()
+        .clone()
+        .set_allowed_hosts(&hosts);
 }
 
 /// The settings write ([module docs](self)) to `store`: `change` applied to
