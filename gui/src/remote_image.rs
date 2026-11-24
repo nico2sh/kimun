@@ -1834,7 +1834,8 @@ mod tests {
             {
                 return;
             }
-            // One byte each 50 ms: every read is well inside the wait limit.
+            // One byte each 50 ms: every read is well inside the wait limit,
+            // even when a loaded machine sleeps far longer than asked.
             for _ in 0..200 {
                 if stream.write_all(&[0]).is_err() {
                     return;
@@ -1842,10 +1843,13 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
         });
+        // The wait is far above the gap between two bytes, so only the total
+        // limit can end the fetch. A macOS runner was seen to sleep 100 ms
+        // past a 150 ms sleep.
         let fetcher = RealFetcher::with_limits(
             MAX_BYTES,
-            Duration::from_millis(300),
-            Duration::from_millis(600),
+            Duration::from_millis(1000),
+            Duration::from_millis(1500),
         );
         let start = Instant::now();
         assert_eq!(
@@ -1854,7 +1858,7 @@ mod tests {
         );
         let took = start.elapsed();
         assert!(
-            took >= Duration::from_millis(550) && took < Duration::from_secs(3),
+            took >= Duration::from_millis(1500) && took < Duration::from_secs(5),
             "{took:?}"
         );
     }
