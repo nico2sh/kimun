@@ -1141,3 +1141,55 @@ fn the_discard_guard_is_not_fooled_by_revisions_that_sum_equal(cx: &mut TestAppC
     );
     assert!(!started.is_closed(cx));
 }
+
+// ── inline images ────────────────────────────────────────────────────────
+
+/// The pad lines under `row` in the active editor's layout.
+fn pads_under(started: &Started, row: usize, cx: &TestAppContext) -> usize {
+    cx.read(|cx| {
+        let editor = started.workspace.read(cx).active_state().editor.clone();
+        editor
+            .read(cx)
+            .editor
+            .session()
+            .display
+            .layout
+            .visual_lines()
+            .iter()
+            .filter(|l| l.pad && l.logical_row == row)
+            .count()
+    })
+}
+
+/// A note opened in an editor group draws its images: the group's editor
+/// lists the vault's attachments and reserves room under the embed line.
+#[gpui_kit::test]
+fn an_opened_note_reserves_room_for_its_images(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(10, 200, image::Rgba([0, 0, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let v = rt.block_on(async {
+        let v = test_vault(&[("a.md", "intro\n![a](pic.png)\nafter")], &[]).await;
+        v.vault
+            .save_attachment(&path("pic.png"), &png)
+            .await
+            .unwrap();
+        v
+    });
+    let started = open_started(
+        cx,
+        vault_start(&v, FirstNote::Note(path("a.md"))),
+        v.settings.clone(),
+    );
+    drive(&rt, cx, |cx| {
+        cx.update_window(started.handle, |_, window, cx| {
+            window.refresh();
+            window.render_frame(cx);
+        })
+        .unwrap();
+        pads_under(&started, 1, cx) > 0
+    });
+}

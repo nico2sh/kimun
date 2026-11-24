@@ -171,7 +171,12 @@ impl Workspace {
         self.release_note_in(group, cx);
         self.drop_attachment_in(group);
         let asked = picks.clone();
-        let view = cx.new(|cx| FacetView::new(note.clone(), text, picks, cx));
+        let vault = self.group_vault(group);
+        let view = cx.new(|cx| {
+            let mut view = FacetView::new(note.clone(), text, picks, cx);
+            view.set_image_vault(vault, cx);
+            view
+        });
         let events = cx.subscribe(&view, Self::on_facet_event);
         // The view drops picks the note no longer holds without an event:
         // the same change as one it reports.
@@ -251,6 +256,9 @@ impl Workspace {
                 if let Some(group) = group {
                     self.refresh_collection(group, cx);
                 }
+            }
+            FacetEvent::AlwaysLoadFrom { chunk, host, url } => {
+                self.always_load_in_editor(chunk.clone(), host.clone(), url.clone(), cx)
             }
         }
     }

@@ -563,6 +563,9 @@ impl Workspace {
         let unavailable = self.semantic_block();
         let view =
             cx.new(|cx| SemanticView::new(vault, settings, list.clone(), unavailable, window, cx));
+        let preview = view.read(cx).preview.clone();
+        let watch = self.watch_preview(&preview, cx);
+        self._views_events.push(watch);
         self._views_events
             .push(cx.subscribe_in(&list, window, Self::on_semantic_list_event));
         self._views_events

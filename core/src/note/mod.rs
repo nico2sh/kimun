@@ -4,6 +4,7 @@ pub(crate) mod content_extractor;
 pub(crate) mod facet_counts;
 pub(crate) mod facet_view;
 pub(crate) mod facets;
+pub(crate) mod image_embed;
 pub(crate) mod link_target;
 pub(crate) mod properties;
 pub(crate) mod tasks;
@@ -25,6 +26,11 @@ pub use facet_view::{
     plan_chunks, reveal, reveal_gap, ChunkPlan, Crumb, Reveal, GAP_SHOW_ALL_MAX, MAX_RANGES,
 };
 pub use facets::{note_facets, select_blocks, Facet, FacetEntry, FacetKind, NoteFacets};
+pub use image_embed::{
+    all_image_embeds, allow_host, forget_host, host_listed, host_matches, host_of, normalize_host,
+    normalize_image_url, resolve_image_embed, AllowedHosts, FoundEmbed, ImageEmbed,
+    RemoteImageEmbed,
+};
 pub use tasks::toggle_task;
 
 pub(crate) use link_target::unique_wikilink;

@@ -19,6 +19,7 @@
 )]
 
 mod assets;
+mod attachment_index;
 mod autocomplete;
 #[cfg(test)]
 mod autocomplete_tests;
@@ -34,6 +35,8 @@ mod fonts;
 mod grid;
 #[cfg(test)]
 mod identity_tests;
+mod image_core;
+mod inline_image;
 mod input;
 mod keymap;
 #[cfg(test)]
@@ -42,6 +45,8 @@ mod measure_guard_tests;
 mod measure_tests;
 mod mono_families;
 mod motion;
+mod remote_image;
+mod remote_placeholder;
 mod row_cache;
 mod row_paint;
 mod shell_layout;

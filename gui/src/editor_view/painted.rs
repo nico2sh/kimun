@@ -59,10 +59,47 @@ pub struct Painted {
     /// coordinates.
     pub popup: Option<Bounds<Pixels>>,
     /// Where the pointer is the pointing hand: the cells of every follow
-    /// target drawn, in window coordinates. The text cursor elsewhere.
+    /// target drawn, and the buttons of every remote look, in window
+    /// coordinates. The text cursor elsewhere.
     /// Kept for tests only: the element sets the cursor from its own copy.
     #[cfg(test)]
     pub hand_areas: Vec<Bounds<Pixels>>,
+    /// The inline images painted (tests).
+    #[cfg(test)]
+    pub images: Vec<PaintedImage>,
+    /// The failed images' notes painted: (screen row, text) (tests).
+    #[cfg(test)]
+    pub image_notes: Vec<(u16, String)>,
+    /// The remote looks painted (tests).
+    #[cfg(test)]
+    pub remote_looks: Vec<PaintedRemote>,
+}
+
+/// A remote look as the last frame painted it (tests).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintedRemote {
+    /// The embed's logical row.
+    pub row: usize,
+    /// The look's full box, its two lines, in window coordinates.
+    pub rect: Bounds<Pixels>,
+    pub look: crate::image_core::RemoteLook,
+}
+
+/// An inline image as the last frame painted it (tests).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintedImage {
+    /// The embed's logical row.
+    pub row: usize,
+    /// The image's full box, in window coordinates.
+    pub rect: Bounds<Pixels>,
+    /// The part of the pane it may paint in.
+    pub clip: Bounds<Pixels>,
+    /// Its pixels (`false`: the empty box).
+    pub ready: bool,
+    /// Its tooltip.
+    pub tip: gpui_kit::SharedString,
 }
 
 impl Painted {

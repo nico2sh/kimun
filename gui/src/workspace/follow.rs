@@ -14,7 +14,7 @@
 //! - an image or a markdown link to an attachment (`[x](doc.pdf)`) inside
 //!   the vault shows it in the editor Panel ([`super::attachment`], M7a
 //!   G3); a URL (or a file outside the vault) goes to the system's default
-//!   program;
+//!   program; on an **Inline image**'s line, the file the image draws;
 //! - a label (`#tag`) opens the search browser on that label
 //!   ([`super::search`], M7b G4).
 //!
@@ -59,12 +59,19 @@ impl Workspace {
             self.open_attachment_externally(cx);
             return true;
         }
-        let target = self
-            .active_state()
-            .editor
-            .read(cx)
-            .editor
-            .follow_target_at_cursor();
+        // On an **Inline image**'s line: the file the image draws, which a
+        // bare `![[name]]` finds by the closest-file rule.
+        let editor = self.active_state().editor.read(cx);
+        if let Some(image) = editor.image_at_cursor() {
+            self.open_attachment_at(&image, OpenAt::Here, cx);
+            return true;
+        }
+        // On a **Remote image**'s line: its address, in the browser.
+        if let Some(url) = editor.remote_image_at_cursor() {
+            self.open_remote_image(&url, cx);
+            return true;
+        }
+        let target = editor.editor.follow_target_at_cursor();
         match target {
             Some(FollowTarget::Link { target, kind }) => self.follow_link(target, kind, cx),
             Some(FollowTarget::Label(name)) => self.follow_label(&name, cx),
@@ -192,6 +199,21 @@ impl Workspace {
     fn vault_path_of(&self, file: &Path) -> Option<VaultPath> {
         let host = self.active_state().notes.as_ref()?;
         VaultPath::from_path(host.session.vault().workspace_path(), file).ok()
+    }
+
+    /// Open the address of a remote image in the browser, through the
+    /// system's handler. Only an `http` or `https` address goes to it.
+    pub(crate) fn open_remote_image(&mut self, url: &str, cx: &mut Context<Self>) {
+        let url = url.trim();
+        let web = ["https://", "http://"].iter().any(|scheme| {
+            url.get(..scheme.len())
+                .is_some_and(|start| start.eq_ignore_ascii_case(scheme))
+        });
+        if !web {
+            self.flash_error(format!("Couldn't open {url}: not a web address"), cx);
+            return;
+        }
+        self.open_externally(url, OsStr::new(url), cx);
     }
 
     /// Hand `what` (a URL, a file) to the system's default program.
