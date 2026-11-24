@@ -1474,7 +1474,7 @@ mod file {
         settle(&rt, cx);
     }
 
-    /// The wheel outside the list, over the chooser's path line, still
+    /// The wheel outside the list, over the chooser's Location field, still
     /// scrolls the pane.
     #[gpui_kit::test]
     fn the_wheel_outside_the_chooser_list_scrolls_the_pane(cx: &mut TestAppContext) {

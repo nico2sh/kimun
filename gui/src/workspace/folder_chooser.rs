@@ -7,8 +7,12 @@
 //! **The Location field** shows the folder as its placeholder. A name typed
 //! there ranks the rows, best first, the best selected
 //! (`logic::file_ops::rank_names`); an empty field shows the listing in
-//! order; a path (`logic::onboarding::classify_location`) filters nothing.
-//! Browsing to another folder empties it.
+//! order; a path (`logic::onboarding::classify_location`) filters nothing
+//! and selects nothing. Enter there ([`FolderChooser::go_to_location`])
+//! looks the path up off the UI thread (`resolve_location`): a folder opens
+//! in the list, a file is picked in files mode, and anything else shows its
+//! message under the field until the next key. Browsing to another folder
+//! empties the field. The list's accessible name names the folder shown.
 //!
 //! **Behaviour owner.** The chooser entity: the folder shown, its listing,
 //! the rows shown and the selection, the fields and the work under way.
@@ -142,6 +146,14 @@ pub(crate) struct FolderChooser {
     /// (Enter). Its placeholder is the folder shown.
     location: Entity<InputState>,
     _location_events: Subscription,
+    /// Why the path typed there cannot be gone to, under the field until
+    /// the next key or another folder.
+    location_error: Option<SharedString>,
+    /// The typed path being looked up (Enter).
+    resolving: Option<Task<()>>,
+    /// Bumped by every lookup, every browse and every key in the field: an
+    /// older lookup landing is dropped.
+    location_revision: u64,
 }
 
 impl EventEmitter<FolderChooserEvent> for FolderChooser {}
@@ -160,6 +172,11 @@ impl FolderChooser {
         let location = cx.new(|cx| InputState::new(window, cx));
         let location_events = cx.subscribe(&location, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
+                // The next key: the message goes, and a lookup of the old
+                // text is no longer wanted.
+                this.location_error = None;
+                this.location_revision += 1;
+                this.resolving = None;
                 this.refilter(false, cx);
             }
         });
@@ -178,6 +195,9 @@ impl FolderChooser {
             is_file: Vec::new(),
             location,
             _location_events: location_events,
+            location_error: None,
+            resolving: None,
+            location_revision: 0,
         };
         chooser.browse(start, window, cx);
         chooser
@@ -260,6 +280,18 @@ impl FolderChooser {
             .collect()
     }
 
+    /// Whether a typed path is being looked up.
+    #[cfg(test)]
+    pub(crate) fn resolving(&self) -> bool {
+        self.resolving.is_some()
+    }
+
+    /// The message under the Location field, if it shows one.
+    #[cfg(test)]
+    pub(crate) fn location_error(&self) -> Option<&str> {
+        self.location_error.as_deref()
+    }
+
     /// Whether the Location field has the keyboard.
     pub(crate) fn location_focused(&self, window: &Window, cx: &App) -> bool {
         self.location.read(cx).focus_handle(cx).is_focused(window)
@@ -297,19 +329,26 @@ impl FolderChooser {
     /// The Location field changed, or a listing landed (`landed`): show
     /// the rows a name keeps, best first, or every row in order for an
     /// empty field, and select the first. A path filters nothing: the list
-    /// stays as it was until Enter, a fresh listing shows whole.
+    /// stays as it was until Enter, a fresh listing shows whole. Nothing is
+    /// selected then, since Enter goes to the path, not to a row.
     fn refilter(&mut self, landed: bool, cx: &mut Context<Self>) {
         let text = self.location.read(cx).value().to_string();
         let all = || (0..self.loaded().len()).collect::<Vec<_>>();
-        self.shown = match onb::classify_location(&text) {
+        let input = onb::classify_location(&text);
+        let path = matches!(input, LocationInput::Path(_));
+        self.shown = match input {
             LocationInput::Filter(query) => {
                 let names: Vec<String> = self.loaded().iter().map(folder_name).collect();
                 file_ops::rank_names(&names, &query)
             }
-            LocationInput::Path(_) if !landed => return,
+            LocationInput::Path(_) if !landed => {
+                self.selected = None;
+                cx.notify();
+                return;
+            }
             LocationInput::Empty | LocationInput::Path(_) => all(),
         };
-        self.selected = (!self.shown.is_empty()).then_some(0);
+        self.selected = (!path && !self.shown.is_empty()).then_some(0);
         self.scroll.scroll_to_item(0, ScrollStrategy::Top);
         cx.notify();
     }
@@ -323,6 +362,11 @@ impl FolderChooser {
         self.shown.clear();
         self.selected = None;
         self.new_folder = None;
+        // Another folder: a lookup under way and its message are for the
+        // old one.
+        self.location_revision += 1;
+        self.resolving = None;
+        self.location_error = None;
         // Another folder: the field empties (no Change event), and its
         // placeholder names the new folder.
         let placeholder = system::path_to_string(&dir);
@@ -394,6 +438,60 @@ impl FolderChooser {
         } else if pick {
             cx.emit(FolderChooserEvent::ChosenFile(target));
         }
+    }
+
+    /// Enter in the Location field. A path (`logic::onboarding::
+    /// classify_location`) is looked up off the UI thread: a folder opens in
+    /// the list (it is not chosen), a file with the files-mode extension is
+    /// picked, anything else shows why under the field. A name or an empty
+    /// field opens the selected row, as Enter on the list does.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Enter in the Location field calls it from Task 4")
+    )]
+    pub(crate) fn go_to_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.creating() {
+            return;
+        }
+        let text = self.location.read(cx).value().to_string();
+        let LocationInput::Path(path) = onb::classify_location(&text) else {
+            self.enter_selected(true, window, cx);
+            return;
+        };
+        self.location_revision += 1;
+        let revision = self.location_revision;
+        let current = self.dir.clone();
+        let files = self.files;
+        self.location_error = None;
+        // The listing stays as it is while this runs.
+        self.resolving = Some(cx.spawn_in(window, async move |this, cx| {
+            let resolved = blocking(move || onb::resolve_location(&path, &current, files)).await;
+            this.update_in(cx, |chooser, window, cx| {
+                chooser.resolved(revision, resolved, window, cx)
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn resolved(
+        &mut self,
+        revision: u64,
+        resolved: Result<Result<onb::Resolved, onb::LocationError>, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.location_revision != revision {
+            return;
+        }
+        self.resolving = None;
+        match resolved {
+            Ok(Ok(onb::Resolved::Folder(dir))) => self.browse(dir, window, cx),
+            Ok(Ok(onb::Resolved::File(path))) => cx.emit(FolderChooserEvent::ChosenFile(path)),
+            Ok(Err(e)) => self.location_error = Some(e.to_string().into()),
+            Err(e) => self.location_error = Some(e.into()),
+        }
+        cx.notify();
     }
 
     fn move_selection(&mut self, down: bool, cx: &mut Context<Self>) {
@@ -739,16 +837,35 @@ impl Render for FolderChooser {
                         ),
                     ),
             )
+            .when_some(self.location_error.clone(), |col, message| {
+                col.child(
+                    div()
+                        .id(id(prefix, "location-error"))
+                        .test_support()
+                        .role(Role::Status)
+                        .aria_label(message.clone())
+                        .text_xs()
+                        .text_color(theme::error(t))
+                        .child(message),
+                )
+            })
             .children(new_folder)
             .child(
                 div()
                     .id(id(prefix, "rows"))
+                    .test_support()
                     .role(Role::ListBox)
-                    .aria_label(if self.files.is_some() {
-                        "Folders and files"
-                    } else {
-                        "Folders"
-                    })
+                    // The folder is named here: the placeholder that shows
+                    // it hides once text is typed.
+                    .aria_label(SharedString::from(format!(
+                        "{} in {}",
+                        if self.files.is_some() {
+                            "Folders and files"
+                        } else {
+                            "Folders"
+                        },
+                        system::path_to_string(&self.dir)
+                    )))
                     .flex_1()
                     .min_h(rems(8.))
                     .h(rems(14.))
