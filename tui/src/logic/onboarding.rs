@@ -570,7 +570,9 @@ pub fn list_subdirs(
 /// The folders and the files with `extension` (`toml` or `.toml`, any case)
 /// directly inside `dir`, for a chooser that picks a file: the folders
 /// first, then the files, each sorted by name ignoring case (ties by the
-/// exact name). Hidden entries (a leading `.`) are left out.
+/// exact name). Hidden folders (a leading `.`) are listed, as
+/// [`list_subdirs`] lists them, so a chooser can walk into `~/.config`.
+/// Hidden files are left out.
 ///
 /// Blocking (a directory read and one stat per entry): run it off the UI
 /// thread.
@@ -592,11 +594,10 @@ pub fn list_files(
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     for entry in kimun_core::system::read_dir(dir).map_err(|e| e.to_string())? {
-        if name(&entry).starts_with('.') {
-            continue;
-        }
         if entry.is_dir() {
             dirs.push(entry);
+        } else if name(&entry).starts_with('.') {
+            continue;
         } else if entry
             .as_path()
             .extension()
@@ -1029,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn list_files_lists_only_the_extension_and_folders_sorted() {
+    fn list_files_lists_the_extension_and_every_folder_sorted() {
         let tmp = tempfile::TempDir::new().unwrap();
         for d in ["beta", "Alpha", ".hidden-dir", "z.toml.d"] {
             std::fs::create_dir(tmp.path().join(d)).unwrap();
@@ -1042,8 +1043,15 @@ mod tests {
             let listed = list_files(&dir, ext).unwrap();
             assert_eq!(
                 names(&listed),
-                ["Alpha", "beta", "z.toml.d", "A.TOML", "b.toml"],
-                "{ext}: folders first, then the files, each sorted ignoring case"
+                [
+                    ".hidden-dir",
+                    "Alpha",
+                    "beta",
+                    "z.toml.d",
+                    "A.TOML",
+                    "b.toml"
+                ],
+                "{ext}: folders first (hidden ones too), then the files, each sorted ignoring case"
             );
             assert!(listed.iter().all(|d| d.parent().as_ref() == Some(&dir)));
         }
