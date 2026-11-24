@@ -520,5 +520,14 @@ pub fn filter_directories(dirs: &[VaultPath], query: &str) -> Vec<VaultPath> {
         .collect()
 }
 
+/// Indexes into `names`, fuzzy-ranked against `query` (best first, ties in
+/// list order); every index, in order, for an empty query. Uses the same row
+/// type and ranking as [`filter_directories`], for plain names that are not
+/// vault paths (the folder chooser's host folders).
+pub fn rank_names(names: &[String], query: &str) -> Vec<usize> {
+    let rows: Vec<DirRow> = names.iter().map(|n| DirRow(n.clone())).collect();
+    fuzzy_rank(&rows, query)
+}
+
 #[cfg(test)]
 mod tests;

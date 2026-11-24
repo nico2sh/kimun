@@ -612,6 +612,91 @@ pub fn list_files(
     Ok(dirs)
 }
 
+/// What the chooser's Location field holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocationInput {
+    /// Nothing but whitespace.
+    Empty,
+    /// Text to filter the listed names by.
+    Filter(String),
+    /// A path to go to: it starts with `~`, is absolute, or holds a separator.
+    Path(String),
+}
+
+/// Reads the Location field: a path or a filter (see [`LocationInput`]). The
+/// text is trimmed. Separators and absolute paths are the host's, so a
+/// Windows path (`C:\x`, `a\b`) is a path there.
+pub fn classify_location(text: &str) -> LocationInput {
+    let text = text.trim();
+    if text.is_empty() {
+        LocationInput::Empty
+    } else if text.starts_with('~')
+        || Path::new(text).is_absolute()
+        || text.contains(std::path::is_separator)
+    {
+        LocationInput::Path(text.to_string())
+    } else {
+        LocationInput::Filter(text.to_string())
+    }
+}
+
+/// Why a typed location cannot be used.
+#[derive(Debug, thiserror::Error)]
+pub enum LocationError {
+    /// Nothing is at that path.
+    #[error("That folder does not exist")]
+    NotFound,
+    /// A file is there, and a folder (or a file of another kind) is wanted.
+    #[error("That is a file, not a folder")]
+    NotAFolder,
+    /// The filesystem refused, with its text.
+    #[error("{0}")]
+    Unreadable(String),
+}
+
+/// What a typed location names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolved {
+    /// An existing folder.
+    Folder(kimun_core::system::SystemPath),
+    /// An existing file with the wanted extension.
+    File(kimun_core::system::SystemPath),
+}
+
+/// Resolves a typed path: `~` expands to home, a relative path is read from
+/// `current`, `.` and `..` are removed (all through core). A folder gives
+/// [`Resolved::Folder`]. A file gives [`Resolved::File`] when its extension
+/// equals `files` (no leading dot, any case), else
+/// [`LocationError::NotAFolder`]. A missing path is
+/// [`LocationError::NotFound`].
+///
+/// Blocking (one stat): run it off the UI thread.
+pub fn resolve_location(
+    text: &str,
+    current: &kimun_core::system::SystemPath,
+    files: Option<&str>,
+) -> Result<Resolved, LocationError> {
+    use kimun_core::system::{PathKind, SystemPath, path_kind};
+    let path = SystemPath::resolve(text.trim(), current);
+    match path_kind(&path).map_err(|e| LocationError::Unreadable(e.to_string()))? {
+        None => Err(LocationError::NotFound),
+        Some(PathKind::Dir) => Ok(Resolved::Folder(path)),
+        Some(PathKind::File) => {
+            let wanted = files.map(|e| e.trim_start_matches('.'));
+            let matches = wanted.is_some_and(|w| {
+                path.as_path()
+                    .extension()
+                    .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(w))
+            });
+            if matches {
+                Ok(Resolved::File(path))
+            } else {
+                Err(LocationError::NotAFolder)
+            }
+        }
+    }
+}
+
 /// Make the folder `name` inside `dir` (the directory chooser's "New
 /// folder"), with the rules of the TUI's browser: trimmed, not empty, a
 /// valid file name on every platform. Returns the created directory.
@@ -1027,6 +1112,108 @@ mod tests {
         let dirs = list_subdirs(&dir).unwrap();
         assert_eq!(names(&dirs), [".hidden", "Alpha", "beta", "gamma"]);
         assert!(dirs.iter().all(|d| d.parent().as_ref() == Some(&dir)));
+    }
+
+    fn sys(p: &std::path::Path) -> kimun_core::system::SystemPath {
+        kimun_core::system::SystemPath::try_absolute(p).unwrap()
+    }
+
+    #[test]
+    fn classify_location_reads_path_or_filter() {
+        use LocationInput::*;
+        assert_eq!(classify_location(""), Empty);
+        assert_eq!(classify_location("  "), Empty);
+        assert_eq!(classify_location("docs"), Filter("docs".into()));
+        assert_eq!(classify_location("~"), Path("~".into()));
+        assert_eq!(classify_location("~/notes"), Path("~/notes".into()));
+        assert_eq!(classify_location("/tmp"), Path("/tmp".into()));
+        assert_eq!(classify_location("sub/dir"), Path("sub/dir".into()));
+        assert_eq!(classify_location(" docs "), Filter("docs".into()));
+        assert_eq!(classify_location("a b"), Filter("a b".into()));
+        if cfg!(windows) {
+            assert_eq!(classify_location(r"C:\x"), Path(r"C:\x".into()));
+            assert_eq!(classify_location(r"sub\dir"), Path(r"sub\dir".into()));
+        }
+    }
+
+    #[test]
+    fn resolve_location_expands_home_and_reads_relative_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        let cur = sys(&tmp.path().canonicalize().unwrap());
+        let want = |p: &str| kimun_core::system::SystemPath::resolve(p, &cur);
+        assert_eq!(
+            resolve_location("a/b", &cur, None).unwrap(),
+            Resolved::Folder(want("a/b"))
+        );
+        let abs = cur.join("a").to_string();
+        assert_eq!(
+            resolve_location(&format!("  {abs}  "), &cur, None).unwrap(),
+            Resolved::Folder(cur.join("a"))
+        );
+        let home = kimun_core::system::home().unwrap();
+        assert_eq!(
+            resolve_location("~", &cur, None).unwrap(),
+            Resolved::Folder(kimun_core::system::SystemPath::resolve("~", &cur))
+        );
+        assert!(home.is_dir());
+    }
+
+    #[test]
+    fn resolve_location_reports_a_missing_folder_and_a_file_in_folder_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("f.toml"), "x").unwrap();
+        let cur = sys(&tmp.path().canonicalize().unwrap());
+        let err = resolve_location("nope/x", &cur, None).unwrap_err();
+        assert!(matches!(err, LocationError::NotFound));
+        assert_eq!(err.to_string(), "That folder does not exist");
+        let err = resolve_location("./f.toml", &cur, None).unwrap_err();
+        assert!(matches!(err, LocationError::NotAFolder));
+        assert_eq!(err.to_string(), "That is a file, not a folder");
+    }
+
+    #[test]
+    fn resolve_location_picks_a_file_with_the_extension_in_files_mode() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.TOML"), "x").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "x").unwrap();
+        std::fs::create_dir(tmp.path().join("d")).unwrap();
+        let cur = sys(&tmp.path().canonicalize().unwrap());
+        for ext in ["toml", ".toml", "TOML"] {
+            assert_eq!(
+                resolve_location("./a.TOML", &cur, Some(ext)).unwrap(),
+                Resolved::File(cur.join("a.TOML")),
+                "{ext}"
+            );
+        }
+        assert!(matches!(
+            resolve_location("./b.txt", &cur, Some("toml")),
+            Err(LocationError::NotAFolder)
+        ));
+        assert_eq!(
+            resolve_location("./d", &cur, Some("toml")).unwrap(),
+            Resolved::Folder(cur.join("d"))
+        );
+    }
+
+    #[test]
+    fn resolve_location_handles_dot_and_dotdot() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("a/b")).unwrap();
+        let root = sys(&tmp.path().canonicalize().unwrap());
+        let cur = root.join("a/b");
+        assert_eq!(
+            resolve_location("..", &cur, None).unwrap(),
+            Resolved::Folder(root.join("a"))
+        );
+        assert_eq!(
+            resolve_location("./../b/.", &cur, None).unwrap(),
+            Resolved::Folder(root.join("a/b"))
+        );
+        assert_eq!(
+            resolve_location("../../a/./b", &cur, None).unwrap(),
+            Resolved::Folder(root.join("a/b"))
+        );
     }
 
     #[test]
