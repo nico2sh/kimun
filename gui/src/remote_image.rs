@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::{App, Global};
 use kimun_core::ImageCache;
 use kimun_core::image_extension;
+
+use crate::inline_image::header_over_pixel_limit;
 use kimun_core::note::{AllowedHosts, host_matches, host_of, normalize_image_url};
 
 /// The largest image we download: 20 MB.
@@ -66,6 +68,10 @@ pub(crate) enum FetchFailure {
     Unsupported,
     /// More redirects than the limit.
     TooManyRedirects,
+    /// The image header declares more pixels than
+    /// [`crate::inline_image::MAX_PIXELS`]: decoding it would take too
+    /// much memory.
+    TooManyPixels,
     /// Any other reason, as text.
     Other(String),
 }
@@ -83,6 +89,7 @@ impl FetchFailure {
             FetchFailure::NotAnImage => "not an image".to_string(),
             FetchFailure::Unsupported => "format not supported".to_string(),
             FetchFailure::TooManyRedirects => "too many redirects".to_string(),
+            FetchFailure::TooManyPixels => "image too large (over 64 megapixels)".to_string(),
             FetchFailure::Other(text) => text.clone(),
         };
         format!("Load failed: {reason}")
@@ -567,6 +574,10 @@ fn save(cache: &ImageCache, url: &str, bytes: &[u8]) -> Outcome {
         } else {
             FetchFailure::NotAnImage
         });
+    }
+    // Read from the header only: the pixels are never decoded here.
+    if header_over_pixel_limit(bytes) {
+        return Outcome::Failed(FetchFailure::TooManyPixels);
     }
     match cache.save(url, bytes) {
         Ok(_) => Outcome::Saved,
@@ -1066,6 +1077,9 @@ pub(crate) fn set_fetcher(cx: &mut App, fetcher: Arc<dyn Fetcher>) {
 /// Installs `cache` in the app's store.
 #[cfg(test)]
 pub(crate) fn set_cache(cx: &mut App, cache: ImageCache) {
+    // As in the app: the loader holds the copies to the pixel limit.
+    cx.default_global::<crate::inline_image::ImageStore>()
+        .limit_pixels_in(cache.clone());
     cx.default_global::<RemoteImages>().inner.borrow_mut().cache = Some(cache);
 }
 
@@ -1483,6 +1497,54 @@ mod tests {
         load(&env, cx, A);
         assert_eq!(state(cx, A), RemoteState::Failed(FetchFailure::TooLarge));
         assert!(env.cache.find(A).is_none());
+    }
+
+    #[gpui_kit::test]
+    fn an_image_over_64_megapixels_fails_and_is_not_saved(cx: &mut TestAppContext) {
+        use crate::inline_image::declared;
+        let gif = "https://img.example.com/huge.gif";
+        let fake = Fake::new(&[
+            (A, Hop::Body(declared::png(8000, 8001))),
+            (gif, Hop::Body(declared::gif(65535, 65535))),
+        ]);
+        let env = env(cx, &fake);
+        for url in [A, gif] {
+            load(&env, cx, url);
+            assert_eq!(
+                state(cx, url),
+                RemoteState::Failed(FetchFailure::TooManyPixels)
+            );
+            assert!(env.cache.find(url).is_none());
+        }
+        assert_eq!(
+            FetchFailure::TooManyPixels.note(),
+            "Load failed: image too large (over 64 megapixels)"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_image_at_the_pixel_limit_or_a_normal_one_still_saves(cx: &mut TestAppContext) {
+        let mut normal = Vec::new();
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([9, 9, 9, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut normal),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let edge = "https://img.example.com/edge.png";
+        let fake = Fake::new(&[
+            (A, Hop::Body(normal.clone())),
+            (
+                edge,
+                Hop::Body(crate::inline_image::declared::png(8000, 8000)),
+            ),
+        ]);
+        let env = env(cx, &fake);
+        for url in [A, edge] {
+            load(&env, cx, url);
+            assert!(matches!(state(cx, url), RemoteState::Saved(_)), "{url}");
+        }
+        assert_eq!(std::fs::read(env.cache.find(A).unwrap()).unwrap(), normal);
     }
 
     #[gpui_kit::test]
@@ -2611,6 +2673,7 @@ mod tests {
             FetchFailure::NotAnImage,
             FetchFailure::Unsupported,
             FetchFailure::TooManyRedirects,
+            FetchFailure::TooManyPixels,
             FetchFailure::Other("x".into()),
         ] {
             assert!(f.note().starts_with("Load failed: ") && !f.note().contains('\n'));

@@ -120,6 +120,12 @@ impl ImageCache {
         Ok(())
     }
 
+    /// Whether `path` names a file in the cache folder: a copy, or a
+    /// temporary file of a save.
+    pub fn holds(&self, path: &Path) -> bool {
+        path.parent() == Some(self.root.as_path())
+    }
+
     /// The total bytes of the saved copies.
     pub fn size(&self) -> u64 {
         self.copies().iter().map(|c| c.len).sum()
@@ -349,6 +355,16 @@ mod tests {
         assert!(c.find("https://a.com/2.png").is_some());
         c.remove("https://a.com/1.png").unwrap();
         c.remove("https://a.com/never.png").unwrap();
+    }
+
+    #[test]
+    fn holds_names_the_files_in_the_cache_folder_only() {
+        let (dir, c) = cache();
+        let copy = c.save("https://a.com/x.png", &png(b"1")).unwrap();
+        assert!(c.holds(&copy));
+        assert!(!c.holds(&dir.path().join("x.png")));
+        assert!(!c.holds(&c.root().join("sub").join("x.png").into_path_buf()));
+        assert!(!c.holds(c.root().as_path()));
     }
 
     #[test]
