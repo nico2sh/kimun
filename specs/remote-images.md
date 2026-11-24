@@ -73,7 +73,7 @@ The store checks the cache first. A saved copy wins over every other state. An a
 
 ### Loading
 
-The reader clicks "Load" or "Always load from". The second also adds the host to the allowed list. When a surface shows an embed on an allowed host, the embed starts its own fetch. A surface shows only the embeds on screen. A fetch for one address runs once, however many views show it. The number of fetches at one time has a limit.
+The reader clicks "Load" or "Always load from". The second also adds the host to the allowed list. When a surface shows an embed on an allowed host, the embed starts its own fetch. A surface shows only the embeds on screen. A fetch for one address runs once, however many views show it. The number of fetches at one time has a limit. In an editor that edits, the embed on the line under the caret does not load on its own. It loads when the caret leaves the line, so a half typed address starts no request.
 
 The fetch:
 
