@@ -141,6 +141,7 @@ How it works:
 - A remote address can point at a device on your own network. Click **Load** only for addresses that you trust.
 - Kimün draws PNG, JPEG, GIF (first frame), and WebP. It does not draw an SVG or any other format.
 - An image can be at most 20 MB. A load stops after 15 seconds without data, and after 60 seconds in total.
+- Kimün loads at most 2 images at a time from one host. If a server answers that it is busy or gets too many requests, Kimün waits a few seconds and tries once more.
 - If a load fails, the placeholder gives a short reason and a Retry action. Kimün does not save the failure.
 
 In the note, right-click a loaded remote image to open its menu.

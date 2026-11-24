@@ -65,7 +65,7 @@ Each remote address is in one of these states in a shared store beside the image
 
 - **Blocked.** The host is not allowed and no saved copy exists. The placeholder shows with its two actions.
 - **Insecure.** The scheme is `http`. A note shows "Not loaded: http is not secure" with no action.
-- **Loading.** A fetch is under way.
+- **Loading.** A fetch is under way, waits in the queue, or waits for its one retry.
 - **Saved.** A copy is in the cache. From here the existing loader treats the saved file as an image file, and the usual states (sized, ready, failed) follow.
 - **Failed.** A one-line reason shows, with a "Retry" action. The state lives in memory for the session. No view asks again for this address until the reader retries.
 
@@ -73,7 +73,7 @@ The store checks the cache first. A saved copy wins over every other state. An a
 
 ### Loading
 
-The reader clicks "Load" or "Always load from". The second also adds the host to the allowed list. When a surface shows an embed on an allowed host, the embed starts its own fetch. A surface shows only the embeds on screen. A fetch for one address runs once, however many views show it. The number of fetches at one time has a limit. In an editor that edits, the embed on the line under the caret does not load on its own. It loads when the caret leaves the line, so a half typed address starts no request.
+The reader clicks "Load" or "Always load from". The second also adds the host to the allowed list. When a surface shows an embed on an allowed host, the embed starts its own fetch. A surface shows only the embeds on screen. A fetch for one address runs once, however many views show it. At most 4 fetches run at one time, and at most 2 of them for one host. A fetch for a busy host waits in the queue, and a fetch for another host behind it starts first. In an editor that edits, the embed on the line under the caret does not load on its own. It loads when the caret leaves the line, so a half typed address starts no request.
 
 The fetch:
 
@@ -82,6 +82,7 @@ The fetch:
 - Stops after 15 seconds. A download of more than 20 MB also stops it.
 - Decides the format from the first bytes. It accepts PNG, JPEG, GIF, and WebP. Any other format, including SVG, is a failure with "Not an image" or "Format not supported".
 - Sends no cookies and no `Referer`, and a generic `User-Agent`.
+- Tries once more after a `429` (too many requests) or `503` (server busy) answer. It waits the seconds of the `Retry-After` header first, at most 10 seconds. With no header, or with a date in it, it waits 2 seconds. The image stays in Loading during the wait, and the wait holds no place in the limit of fetches. The wait counts inside the 60 second limit: a wait that would pass it makes no retry. A second `429` or `503` is a failure. Its note is "Load failed: too many requests, try again later" or "Load failed: server busy, try again later". Other error answers show "Load failed: HTTP" and the code, and get no retry. A "Retry" press starts a new fetch with its own retry.
 
 A fetch never runs on the UI thread. When it ends, the surfaces that show the address redraw. As with vault images, the end of a fetch or a decode never starts another request.
 
@@ -139,7 +140,7 @@ The desktop app page gains a section on remote images: the placeholder, the two 
 These are my calls. None of them changes what the user chose. Please check them.
 
 1. **Request headers.** No cookies, no `Referer`, and a generic `User-Agent` that does not name the user, the system, or the version.
-2. **Fetches at once.** At most 4 at the same time. A host allowed by the reader can still produce a burst in a note with many images, and this keeps the burst small. Only embeds on screen start a fetch.
+2. **Fetches at once.** At most 4 at the same time, and at most 2 for one host. A host allowed by the reader can still produce a burst in a note with many images, and this keeps the burst small. A server such as Wikipedia can answer a burst with `429` (too many requests). Only embeds on screen start a fetch. A `429` or `503` answer gets one retry after the wait that the server names, at most 10 seconds.
 3. **A saved copy beats the allowed list.** An address in the cache shows with no request after its host leaves the list. Showing a copy makes no request.
 4. **No remote image in the attachment view.** That view opens vault files.
 5. **The tooltip of a loaded remote image** shows the alt text, or the title, or the host and file name.
