@@ -56,10 +56,10 @@ use kimun_notes::logic::editor::display::ImageLine;
 use super::EditorView;
 use crate::attachment_index::AttachmentIndex;
 use crate::image_core::{
-    Embed, ImageLook, ImagePane, RemoteLook, embeds_of, image_file, look_of, natural_of_file,
-    remote_rows,
+    Embed, ImageLook, ImagePane, RemoteLook, Source, embeds_of, image_file, look_from,
+    natural_of_file, remote_rows, source_of,
 };
-use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
+use crate::inline_image::{ImageState, ImageStore, Pins};
 use crate::remote_image::RemoteImages;
 
 /// Fills a kit menu with the **Entry menu** of the attachment at a path:
@@ -505,55 +505,43 @@ impl EditorView {
             };
             let url = embed.remote.as_ref().map(|r| r.url.clone());
             // The vault file, or the saved copy of a remote embed.
-            let file = image_file(embed, &remote);
+            let source = source_of(embed, &remote);
+            let file = match &source {
+                Source::File(file) => file.clone(),
+                Source::Remote(_) => None,
+            };
             stale |= images
                 .saved
                 .iter()
                 .any(|&(row, saved)| row == embed.row && saved != file.is_some());
-            if file.is_none() && embed.remote.is_some() {
-                let ImageLook::Remote(look) = look_of(embed, &mut store, &remote, pane) else {
+            let look = look_from(embed, source, &mut store, pane, spot.note);
+            let look = match look {
+                ImageLook::Remote(look) => {
+                    let shown = on_screen.as_ref().is_none_or(|lines| {
+                        spot.top < lines.end && spot.top + spot.lines as isize > lines.start
+                    });
+                    if let (RemoteLook::Placeholder { host, actions }, Some(url)) = (&look, &url)
+                        && !actions.always
+                        && shown
+                        && caret_row != Some(embed.row)
+                    {
+                        to_load.push((url.clone(), host.clone()));
+                    }
+                    draws.push(ImageDraw {
+                        row: spot.row,
+                        top: spot.top,
+                        lines: spot.lines,
+                        look: ImageLook::Remote(look),
+                        tip: embed.tip(),
+                        path: None,
+                        url,
+                    });
                     continue;
-                };
-                let shown = on_screen.as_ref().is_none_or(|lines| {
-                    spot.top < lines.end && spot.top + spot.lines as isize > lines.start
-                });
-                if let (RemoteLook::Placeholder { host, actions }, Some(url)) = (&look, &url)
-                    && !actions.always
-                    && shown
-                    && caret_row != Some(embed.row)
-                {
-                    to_load.push((url.clone(), host.clone()));
-                }
-                draws.push(ImageDraw {
-                    row: spot.row,
-                    top: spot.top,
-                    lines: spot.lines,
-                    look: ImageLook::Remote(look),
-                    tip: embed.tip(),
-                    path: None,
-                    url,
-                });
-                continue;
-            }
-            let state = file.as_ref().map(|file| store.size_of(file));
-            let fitted = |natural| fit(natural, pane.column_px, pane.pane_px);
-            let look = match state {
-                _ if spot.note => {
-                    let failure = match state {
-                        Some(ImageState::Failed(failure)) => failure,
-                        _ => Failure::Missing,
-                    };
-                    ImageLook::Note(failure.note(&embed.name, &embed.alt))
-                }
-                Some(ImageState::Ready(image, width, height)) => {
-                    ImageLook::Ready(image, fitted((width, height)))
-                }
-                Some(ImageState::Sized { width, height }) => {
-                    ImageLook::Pending(fitted((width, height)))
                 }
                 // It failed since the lines were found: they are found again
                 // at the next frame.
-                Some(ImageState::Failed(_)) | None => continue,
+                ImageLook::Note(_) if !spot.note => continue,
+                look => look,
             };
             if let (ImageLook::Ready(..) | ImageLook::Pending(_), Some(file)) = (&look, &file)
                 && !visible.contains(file)
@@ -684,10 +672,7 @@ fn image_lines(
                 .as_deref()
                 .and_then(|file| natural_of_file(file, &mut store));
             let rows = match natural {
-                Some(natural) => {
-                    let (_, height) = fit(natural, pane.column_px, pane.pane_px);
-                    rows_for(height, pane.row_px)
-                }
+                Some(natural) => pane.rows(natural),
                 // A remote embed with no saved copy shows its placeholder.
                 None if embed.remote.is_some() && file.is_none() => remote_rows(),
                 None => 0,

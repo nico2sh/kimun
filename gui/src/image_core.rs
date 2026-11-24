@@ -13,7 +13,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui_kit::{Bounds, Corners, Pixels, RenderImage, Rgba, SharedString, Window, fill};
+use gpui_kit::{
+    Bounds, Corners, Pixels, Point, RenderImage, Rgba, SharedString, Window, fill, px, size,
+};
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
 use kimun_core::note::scan::link_target_filename;
@@ -21,7 +23,7 @@ use kimun_core::note::{
     FoundEmbed, ImageEmbed, RemoteImageEmbed, all_image_embeds, resolve_image_embed,
 };
 
-use crate::inline_image::{Failure, ImageState, ImageStore, fit};
+use crate::inline_image::{Failure, ImageState, ImageStore, fit, rows_for};
 use crate::remote_image::{RemoteImages, RemoteState};
 
 /// The room an image is fitted to, in device pixels (the unit of
@@ -32,6 +34,29 @@ pub(crate) struct ImagePane {
     pub(crate) column_px: f32,
     pub(crate) pane_px: f32,
     pub(crate) row_px: f32,
+}
+
+impl ImagePane {
+    /// The size a natural size is drawn at in this pane, in device pixels.
+    pub(crate) fn fit(&self, natural: (u32, u32)) -> (f32, f32) {
+        fit(natural, self.column_px, self.pane_px)
+    }
+
+    /// The lines an image of that natural size takes in this pane.
+    pub(crate) fn rows(&self, natural: (u32, u32)) -> usize {
+        rows_for(self.fit(natural).1, self.row_px)
+    }
+}
+
+/// Where an image of `fitted` device pixels is drawn from `origin`, at
+/// `scale` device pixels per logical one: device pixels to logical ones,
+/// pixel exact.
+pub(crate) fn device_bounds(
+    origin: Point<Pixels>,
+    fitted: (f32, f32),
+    scale: f32,
+) -> Bounds<Pixels> {
+    Bounds::new(origin, size(px(fitted.0 / scale), px(fitted.1 / scale)))
 }
 
 /// The web address of a remote embed, as the finder gave it.
@@ -211,10 +236,10 @@ pub(crate) fn embeds_of(
 }
 
 /// Where the image of `embed` comes from now: a file (or `None`, not
-/// resolved), or the remote look of a remote embed with no saved copy.
-enum Source<'a> {
-    File(Option<&'a Path>),
-    Saved(PathBuf),
+/// resolved), or the remote look of a remote embed with no saved copy. A
+/// saved copy of a remote embed is a file like a vault image.
+pub(crate) enum Source {
+    File(Option<PathBuf>),
     Remote(RemoteLook),
 }
 
@@ -223,16 +248,16 @@ enum Source<'a> {
 /// disk once for each call: one call per embed per look. Add an index in
 /// memory only if a profile shows the need. It writes nothing and starts
 /// no fetch.
-fn source_of<'a>(embed: &'a Embed, remote: &RemoteImages) -> Source<'a> {
+pub(crate) fn source_of(embed: &Embed, remote: &RemoteImages) -> Source {
     let Some(r) = &embed.remote else {
-        return Source::File(embed.file.as_deref());
+        return Source::File(embed.file.clone());
     };
     let actions = |host: &str| Actions {
         load: true,
         always: !remote.is_allowed(host),
     };
     Source::Remote(match remote.state(&r.url) {
-        RemoteState::Saved(path) => return Source::Saved(path),
+        RemoteState::Saved(path) => return Source::File(Some(path)),
         RemoteState::Blocked { host } => RemoteLook::Placeholder {
             actions: actions(&host),
             host,
@@ -257,8 +282,7 @@ fn source_of<'a>(embed: &'a Embed, remote: &RemoteImages) -> Source<'a> {
 /// for. `None` for an unresolved embed and a remote embed with no copy.
 pub(crate) fn image_file(embed: &Embed, remote: &RemoteImages) -> Option<PathBuf> {
     match source_of(embed, remote) {
-        Source::File(file) => file.map(Path::to_path_buf),
-        Source::Saved(file) => Some(file),
+        Source::File(file) => file,
         Source::Remote(_) => None,
     }
 }
@@ -298,17 +322,35 @@ pub(crate) fn look_of(
     remote: &RemoteImages,
     pane: ImagePane,
 ) -> ImageLook {
-    let fitted = |natural| fit(natural, pane.column_px, pane.pane_px);
-    let state = match source_of(embed, remote) {
-        Source::File(file) => file.map(|file| store.size_of(file)),
-        Source::Saved(file) => Some(store.size_of(&file)),
+    look_from(embed, source_of(embed, remote), store, pane, false)
+}
+
+/// [`look_of`] for a source the caller already found. `note_row` is a row
+/// the display gave the room of a failed image's note: it always draws the
+/// note, the failure's own when the store has one and "not found" else.
+pub(crate) fn look_from(
+    embed: &Embed,
+    source: Source,
+    store: &mut ImageStore,
+    pane: ImagePane,
+    note_row: bool,
+) -> ImageLook {
+    let state = match source {
+        Source::File(file) => file.map(|file| store.size_of(&file)),
         Source::Remote(look) => return ImageLook::Remote(look),
     };
+    if note_row {
+        let failure = match state {
+            Some(ImageState::Failed(failure)) => failure,
+            _ => Failure::Missing,
+        };
+        return ImageLook::Note(failure.note(&embed.name, &embed.alt));
+    }
     match state {
         Some(ImageState::Ready(image, width, height)) => {
-            ImageLook::Ready(image, fitted((width, height)))
+            ImageLook::Ready(image, pane.fit((width, height)))
         }
-        Some(ImageState::Sized { width, height }) => ImageLook::Pending(fitted((width, height))),
+        Some(ImageState::Sized { width, height }) => ImageLook::Pending(pane.fit((width, height))),
         Some(ImageState::Failed(failure)) => ImageLook::Note(failure.note(&embed.name, &embed.alt)),
         None => ImageLook::Note(Failure::Missing.note(&embed.name, &embed.alt)),
     }
@@ -469,6 +511,22 @@ mod tests {
         match look_of(&ok, &mut store, &no_remote(), PANE) {
             ImageLook::Pending(size) => assert_eq!(size, fit((6, 3), 800.0, 1000.0)),
             _ => panic!("a sized, undecoded image is pending"),
+        }
+    }
+
+    #[test]
+    fn a_note_row_always_draws_the_note() {
+        let (v, _) = vault_with("", &[("ok.png", png(6, 3))]);
+        let mut store = ImageStore::default();
+        let ok = embed(
+            Some(v.vault.path_to_pathbuf(&VaultPath::new("ok.png"))),
+            "ok.png",
+            "",
+        );
+        let source = source_of(&ok, &no_remote());
+        match look_from(&ok, source, &mut store, PANE, true) {
+            ImageLook::Note(text) => assert_eq!(text, Failure::Missing.note("ok.png", "")),
+            _ => panic!("a note row draws a note"),
         }
     }
 
