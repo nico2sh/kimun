@@ -317,6 +317,9 @@ fn the_list_selects_with_clicks_and_keys_and_delete_removes_the_selected_host(
     s.pf_press("delete", cx);
     until_idle(&s, &rt, cx);
     assert!(shows(&s, REMOTE_NO_HOSTS_ID, cx));
+    // The emptied list keeps the keyboard, so Esc still closes the window.
+    s.pf_press("escape", cx);
+    assert!(!s.pf_is_open(cx), "Esc closes Preferences");
     settle(&rt, cx);
 }
 

@@ -159,7 +159,7 @@ If a saved copy is damaged, the note shows a failure note and the image has no m
 
 Open Preferences and choose Remote images to manage this feature.
 
-- The list shows each allowed host in alphabetical order. Click a host, or press Up and Down, to select it. **Remove** (or the Delete key) takes the selected host off the list and asks nothing. The saved copies of that host stay, and **Always load from** allows the host again.
+- The list shows each allowed host in alphabetical order. Click a host to select it. Or press `Tab` to move to the list, then press Up and Down. **Remove** (or the Delete key) takes the selected host off the list and asks nothing. The saved copies of that host stay, and **Always load from** allows the host again.
 - **Clear cached images** removes every saved copy. The cache size shows next to it. Every address starts again from its placeholder. Images on allowed hosts load again once they are on screen.
 
 ### Images in the attachment view

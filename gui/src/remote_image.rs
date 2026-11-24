@@ -82,6 +82,7 @@ impl FetchFailure {
         let reason = match self {
             FetchFailure::TimedOut => "timed out".to_string(),
             FetchFailure::Offline => "server not reachable".to_string(),
+            FetchFailure::Status(403) => "the site refused the download (HTTP 403)".to_string(),
             FetchFailure::Status(429) => "too many requests, try again later".to_string(),
             FetchFailure::Status(503) => "server busy, try again later".to_string(),
             FetchFailure::Status(code) => format!("HTTP {code}"),
@@ -2720,6 +2721,10 @@ mod tests {
     fn the_failure_notes_are_one_line() {
         assert_eq!(FetchFailure::TimedOut.note(), "Load failed: timed out");
         assert_eq!(FetchFailure::Status(404).note(), "Load failed: HTTP 404");
+        assert_eq!(
+            FetchFailure::Status(403).note(),
+            "Load failed: the site refused the download (HTTP 403)"
+        );
         assert_eq!(
             FetchFailure::Status(429).note(),
             "Load failed: too many requests, try again later"
