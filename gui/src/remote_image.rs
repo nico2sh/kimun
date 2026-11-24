@@ -667,6 +667,16 @@ impl RemoteImages {
         self.retry(url);
     }
 
+    /// Forgets every failure, blocked redirect and one-address redirect
+    /// permission of the session. Fetches under way go on. The Preferences
+    /// "Clear cached images" calls it after core empties the cache, so each
+    /// cleared address starts over from its placeholder.
+    pub(crate) fn forget_sessions(&mut self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.sessions.clear();
+        inner.permits.clear();
+    }
+
     /// Removes the saved copy of `url` through core.
     fn remove_copy(&self, url: &str) {
         let inner = self.inner.borrow();
@@ -1320,6 +1330,32 @@ mod tests {
         assert_eq!(state(cx, A), host("img.example.com"));
         assert!(env.cache.find(A).is_none());
         assert_eq!(count(cx), 1);
+    }
+
+    #[gpui_kit::test]
+    fn forget_sessions_drops_every_failure_and_redirect_permission(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[
+            (A, Hop::Redirect("https://tracker.example.net/x.png".into())),
+            (
+                "https://tracker.example.net/x.png",
+                Hop::Failed(FetchFailure::Status(503)),
+            ),
+        ]);
+        let env = env(cx, &fake);
+        load(&env, cx, A);
+        store(cx).allow_redirect_once(A);
+        load(&env, cx, A);
+        assert_eq!(state(cx, A), RemoteState::Failed(FetchFailure::Status(503)));
+        store(cx).forget_sessions();
+        assert_eq!(state(cx, A), host("img.example.com"), "the failure went");
+        load(&env, cx, A);
+        assert_eq!(
+            state(cx, A),
+            RemoteState::RedirectBlocked {
+                host: "tracker.example.net".into()
+            },
+            "the one-address permission went"
+        );
     }
 
     /// A local HTTP/1.1 server on 127.0.0.1. `answer` gets the request head

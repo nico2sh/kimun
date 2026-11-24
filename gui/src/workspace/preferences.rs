@@ -7,7 +7,8 @@
 //!
 //! **Layout.** A section list on the left (Workspaces, Appearance, Display,
 //! Sorting, Indexing, Editor, Server: the TUI's order, and like the TUI they
-//! open on Workspaces), the selected section's controls on the right, a
+//! open on Workspaces; then Remote images, which the TUI does not have),
+//! the selected section's controls on the right, a
 //! footer with `Cancel` and `Save`. In a narrow window the section list
 //! becomes a row of section tabs above the controls, so the controls keep
 //! the width.
@@ -17,6 +18,9 @@
 //! is asked for. A vault whose files differ only by case (found by a
 //! reindex, or by the window opening it) is shown in a panel over the
 //! sections.
+//!
+//! **Remote images** ([`remote_images`]) acts at once too: a removed host is
+//! written as it is removed, and the image cache is emptied as asked.
 //!
 //! **State.** The draft and its rules (ranges, steps, cycles, which settings
 //! the desktop app shows) are the logic `PreferencesModel`'s; this view
@@ -87,6 +91,7 @@ use super::note::Closing;
 use super::{LayoutStore, Workspace, reopen};
 use kimun_notes::logic::preferences::SavePlan;
 
+pub(crate) mod remote_images;
 pub(crate) mod workspaces;
 use crate::input;
 use crate::theme;
@@ -186,10 +191,11 @@ pub(crate) enum Section {
     Indexing,
     Editor,
     Server,
+    RemoteImages,
 }
 
 impl Section {
-    pub(crate) const ALL: [Section; 7] = [
+    pub(crate) const ALL: [Section; 8] = [
         Section::Workspaces,
         Section::Appearance,
         Section::Display,
@@ -197,6 +203,7 @@ impl Section {
         Section::Indexing,
         Section::Editor,
         Section::Server,
+        Section::RemoteImages,
     ];
 
     fn title(self) -> &'static str {
@@ -208,6 +215,7 @@ impl Section {
             Section::Sorting => "Sorting",
             Section::Editor => "Editor",
             Section::Server => "Server",
+            Section::RemoteImages => "Remote images",
         }
     }
 
@@ -220,6 +228,7 @@ impl Section {
             Section::Sorting => "sorting",
             Section::Editor => "editor",
             Section::Server => "server",
+            Section::RemoteImages => "remote-images",
         }
     }
 
@@ -429,6 +438,8 @@ pub(crate) struct PreferencesView {
     ws: workspaces::Workspaces,
     /// Preferences > Indexing, the reindex under way and its panels.
     index: workspaces::Indexing,
+    /// Preferences > Remote images ([`remote_images`]).
+    remote: remote_images::RemoteSection,
     _load: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -534,6 +545,7 @@ impl PreferencesView {
             theme_scroll: UniformListScrollHandle::new(),
             ws: workspaces::Workspaces::new(cx.focus_handle().tab_stop(true)),
             index: workspaces::Indexing::new(),
+            remote: remote_images::RemoteSection::default(),
             _load: Some(load),
             _subscriptions: subscriptions,
         }
@@ -754,6 +766,10 @@ impl PreferencesView {
         if section == Section::Display {
             // The family dropdown's list: read once, in the background.
             mono_families::ensure_loaded(cx);
+        }
+        if section == Section::RemoteImages {
+            // The cache size: read in the background each time it shows.
+            self.read_remote_size(cx);
         }
         if section == Section::Appearance
             && let Some(model) = self.model.as_ref()
@@ -2246,6 +2262,7 @@ impl PreferencesView {
                     Section::Sorting => self.render_sorting(model, cx),
                     Section::Editor => self.render_editor(model, window, cx),
                     Section::Server => self.render_server(cx),
+                    Section::RemoteImages => self.render_remote_images(cx),
                 },
             ),
         };

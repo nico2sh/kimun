@@ -142,14 +142,14 @@ pub(crate) struct Notice {
 }
 
 impl Notice {
-    fn info(text: impl Into<SharedString>) -> Self {
+    pub(crate) fn info(text: impl Into<SharedString>) -> Self {
         Self {
             text: text.into(),
             error: false,
         }
     }
 
-    fn error(text: impl Into<SharedString>) -> Self {
+    pub(crate) fn error(text: impl Into<SharedString>) -> Self {
         Self {
             text: text.into(),
             error: true,
@@ -407,7 +407,10 @@ impl PreferencesView {
 
     /// Something runs that every control waits for.
     pub(crate) fn busy(&self) -> bool {
-        self.saving.is_some() || self.index.running.is_some() || self.ws.task.is_some()
+        self.saving.is_some()
+            || self.index.running.is_some()
+            || self.ws.task.is_some()
+            || self.remote_working()
     }
 
     /// Whether one of the section's text fields has the keyboard (the New
@@ -1317,7 +1320,7 @@ impl PreferencesView {
 // ---- Rendering ---------------------------------------------------------------
 
 /// A result line under a section's controls.
-fn notice_line(id: &'static str, notice: &Notice, t: &Theme) -> AnyElement {
+pub(super) fn notice_line(id: &'static str, notice: &Notice, t: &Theme) -> AnyElement {
     div()
         .id(id)
         .test_support()
@@ -1334,7 +1337,7 @@ fn notice_line(id: &'static str, notice: &Notice, t: &Theme) -> AnyElement {
 }
 
 /// A row of buttons, wrapping in a narrow window.
-fn button_row() -> gpui_kit::Div {
+pub(super) fn button_row() -> gpui_kit::Div {
     div().flex().flex_row().flex_wrap().items_center().gap_2()
 }
 
