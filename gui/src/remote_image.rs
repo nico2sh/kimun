@@ -35,6 +35,11 @@ const MAX_RUNNING: usize = 4;
 /// [`MAX_RUNNING`]. A burst on one allowed host can make the server answer
 /// "too many requests".
 const MAX_PER_HOST: usize = 2;
+/// The wait before the one retry of a 429 or 503 answer that names no
+/// wait in seconds.
+const RETRY_WAIT: Duration = Duration::from_secs(2);
+/// The longest wait before the one retry of a 429 or 503 answer.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(10);
 /// The most redirects a fetch follows. The next one fails.
 const MAX_REDIRECTS: usize = 3;
 /// The wait for the connection and for each piece of data.
@@ -97,7 +102,30 @@ pub(crate) enum Hop {
     Body(Vec<u8>),
     /// A redirect, with the `Location` as the server wrote it.
     Redirect(String),
+    /// A 429 or 503 answer: the server asks us to come back later. It
+    /// holds the `Retry-After` wait in seconds, when the server wrote a
+    /// number. The store tries once more after the wait. A
+    /// `Failed(Status(..))` hop is never tried again.
+    Busy {
+        status: u16,
+        retry_after: Option<u64>,
+    },
     Failed(FetchFailure),
+}
+
+/// The wait before the one retry of a [`Hop::Busy`] answer: the server's
+/// `Retry-After` seconds, at most [`MAX_RETRY_WAIT`], or [`RETRY_WAIT`]
+/// when it named none.
+fn retry_wait(retry_after: Option<u64>) -> Duration {
+    match retry_after {
+        Some(secs) => Duration::from_secs(secs).min(MAX_RETRY_WAIT),
+        None => RETRY_WAIT,
+    }
+}
+
+/// The seconds of a `Retry-After` header. The HTTP date form gives none.
+fn retry_after_secs(value: Option<&str>) -> Option<u64> {
+    value?.trim().parse().ok()
 }
 
 /// The seam that makes one request. The real one uses the network. Tests
@@ -230,6 +258,10 @@ impl Fetcher for RealFetcher {
         }
         match request.call() {
             Ok(response) => self.read(response, deadline),
+            Err(ureq::Error::Status(status @ (429 | 503), response)) => Hop::Busy {
+                status,
+                retry_after: retry_after_secs(response.header("retry-after")),
+            },
             Err(ureq::Error::Status(code, _)) => Hop::Failed(FetchFailure::Status(code)),
             Err(ureq::Error::Transport(t)) => Hop::Failed(transport_failure(&t)),
         }
@@ -335,6 +367,12 @@ enum Outcome {
     Saved,
     RedirectBlocked(String),
     Failed(FetchFailure),
+    /// The server was busy: fetch once more after `wait`, within the same
+    /// `deadline`.
+    Retry {
+        wait: Duration,
+        deadline: Instant,
+    },
 }
 
 /// The inputs of one fetch, copied from the store when it starts.
@@ -348,6 +386,9 @@ struct Job {
     url: String,
     /// The limit for the whole fetch, every hop included.
     total: Duration,
+    /// For the one retry of a busy server, the deadline of the first try.
+    /// A retry makes no other retry.
+    retry_of: Option<Instant>,
 }
 
 impl Job {
@@ -357,7 +398,7 @@ impl Job {
         let Some(cache) = &self.cache else {
             return Outcome::Failed(FetchFailure::Other("no image cache".to_string()));
         };
-        let deadline = Instant::now() + self.total;
+        let deadline = self.retry_of.unwrap_or_else(|| Instant::now() + self.total);
         let origin = host_of(&self.url);
         let mut current = self.url.trim().to_string();
         let mut redirects = 0;
@@ -369,6 +410,18 @@ impl Job {
             let location = match self.fetcher.get_until(&current, deadline) {
                 Hop::Body(bytes) => return save(cache, &self.url, &bytes),
                 Hop::Failed(f) => return Outcome::Failed(f),
+                Hop::Busy {
+                    status,
+                    retry_after,
+                } => {
+                    let wait = retry_wait(retry_after);
+                    // A wait that ends past the deadline cannot help: fail
+                    // with the server's reason, not with "timed out".
+                    if self.retry_of.is_some() || Instant::now() + wait >= deadline {
+                        return Outcome::Failed(FetchFailure::Status(status));
+                    }
+                    return Outcome::Retry { wait, deadline };
+                }
                 Hop::Redirect(location) => location,
             };
             redirects += 1;
@@ -443,6 +496,8 @@ struct Queued {
     url: String,
     /// The host of `url`, in lower case: the per-host limit counts it.
     host: String,
+    /// For the one retry of a busy server, the deadline of the first try.
+    retry_of: Option<Instant>,
     /// A Reload: it fetches although a saved copy exists, and a failure
     /// keeps that copy.
     force: bool,
@@ -675,6 +730,7 @@ impl RemoteImages {
                 url: url.trim().to_string(),
                 host: host.to_ascii_lowercase(),
                 force,
+                retry_of: None,
             });
         }
         self.start_queued(cx);
@@ -690,9 +746,8 @@ impl RemoteImages {
                 if inner.running >= MAX_RUNNING {
                     return;
                 }
-                let free = |q: &Queued| {
-                    inner.per_host.get(&q.host).copied().unwrap_or(0) < MAX_PER_HOST
-                };
+                let free =
+                    |q: &Queued| inner.per_host.get(&q.host).copied().unwrap_or(0) < MAX_PER_HOST;
                 let Some(next) = inner.queue.iter().position(free) else {
                     return;
                 };
@@ -701,6 +756,7 @@ impl RemoteImages {
                     url,
                     host,
                     force,
+                    retry_of,
                 }) = inner.queue.remove(next)
                 else {
                     return;
@@ -715,6 +771,7 @@ impl RemoteImages {
                     permits: inner.permits.get(&key).cloned().unwrap_or_default(),
                     url: url.clone(),
                     total: TOTAL_LIMIT,
+                    retry_of,
                 };
                 (key, url, host, force, job)
             };
@@ -724,7 +781,7 @@ impl RemoteImages {
                 let outcome = work
                     .await
                     .unwrap_or_else(|e| Outcome::Failed(FetchFailure::Other(e)));
-                cx.update(|cx| this.finish(key, &url, &host, force, outcome, cx));
+                cx.update(|cx| this.finish(key, url, host, force, outcome, cx));
             })
             .detach();
         }
@@ -732,26 +789,43 @@ impl RemoteImages {
 
     /// Records how a fetch ended, starts the next queued fetch, and calls the
     /// callers of the address. A forced fetch that failed while a saved copy
-    /// is still there records nothing: the old copy stays drawn.
+    /// is still there records nothing: the old copy stays drawn. A busy
+    /// server gets its one retry: the address stays loading, and calls no
+    /// caller yet.
     fn finish(
         &self,
         key: String,
-        url: &str,
-        host: &str,
+        url: String,
+        host: String,
         force: bool,
         outcome: Outcome,
         cx: &mut App,
     ) {
-        let callers = {
+        {
             let mut inner = self.inner.borrow_mut();
             inner.running -= 1;
-            if let Some(n) = inner.per_host.get_mut(host) {
+            if let Some(n) = inner.per_host.get_mut(&host) {
                 *n -= 1;
                 if *n == 0 {
-                    inner.per_host.remove(host);
+                    inner.per_host.remove(&host);
                 }
             }
-            let kept = force && inner.cache.as_ref().and_then(|c| c.find(url)).is_some();
+        }
+        if let Outcome::Retry { wait, deadline } = outcome {
+            let queued = Queued {
+                key,
+                url,
+                host,
+                force,
+                retry_of: Some(deadline),
+            };
+            self.retry_later(queued, wait, cx);
+            self.start_queued(cx);
+            return;
+        }
+        let callers = {
+            let mut inner = self.inner.borrow_mut();
+            let kept = force && inner.cache.as_ref().and_then(|c| c.find(&url)).is_some();
             match outcome {
                 _ if kept => {}
                 Outcome::Saved => {}
@@ -763,6 +837,7 @@ impl RemoteImages {
                 Outcome::Failed(f) => {
                     inner.sessions.insert(key.clone(), Session::Failed(f));
                 }
+                Outcome::Retry { .. } => unreachable!("handled above"),
             }
             inner.in_flight.remove(&key).unwrap_or_default()
         };
@@ -770,6 +845,30 @@ impl RemoteImages {
         for on_done in callers {
             on_done(cx);
         }
+    }
+
+    /// Queues `queued` again after `wait`. The wait runs on tokio's timer,
+    /// off the UI thread, and holds no slot: the fetch has given back its
+    /// slots, so other fetches of the host run during the wait. When the
+    /// wait ends, the retry joins the queue like any other fetch.
+    fn retry_later(&self, queued: Queued, wait: Duration, cx: &mut App) {
+        let wake = tokio::spawn(tokio::time::sleep(wait));
+        let this = self.clone();
+        cx.spawn(async move |cx| {
+            // The runtime stops only when the app quits.
+            if wake.await.is_err() {
+                return;
+            }
+            cx.update(|cx| {
+                #[cfg(test)]
+                if this.inner.borrow().retired {
+                    return;
+                }
+                this.inner.borrow_mut().queue.push_back(queued);
+                this.start_queued(cx);
+            });
+        })
+        .detach();
     }
 
     /// Lets `url` follow its blocked redirect, to the host it names, for the
@@ -949,6 +1048,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         script: Mutex<HashMap<String, Hop>>,
+        /// Answers given one per call, before the script.
+        turns: Mutex<HashMap<String, VecDeque<Hop>>>,
         calls: Mutex<Vec<String>>,
         gate: Option<Gate>,
     }
@@ -980,6 +1081,20 @@ mod tests {
         fn answer(&self, url: &str, hop: Hop) {
             self.script.lock().unwrap().insert(url.to_string(), hop);
         }
+
+        /// Answers the next calls for `url` with `hops`, one per call, then
+        /// from the script.
+        fn answer_in_turn(&self, url: &str, hops: &[Hop]) {
+            self.turns
+                .lock()
+                .unwrap()
+                .insert(url.to_string(), hops.iter().cloned().collect());
+        }
+
+        /// The calls for `url` so far.
+        fn calls_of(&self, url: &str) -> usize {
+            self.calls().iter().filter(|c| *c == url).count()
+        }
     }
 
     impl Fetcher for Fake {
@@ -991,6 +1106,15 @@ mod tests {
                 while !*open {
                     open = gate.cv.wait(open).unwrap();
                 }
+            }
+            let turn = self
+                .turns
+                .lock()
+                .unwrap()
+                .get_mut(url)
+                .and_then(VecDeque::pop_front);
+            if let Some(hop) = turn {
+                return hop;
             }
             self.script
                 .lock()
@@ -1065,12 +1189,19 @@ mod tests {
     }
 
     /// Runs the app and the runtime until `done` holds.
-    fn settle(
+    fn settle(env: &Env, cx: &mut TestAppContext, done: impl FnMut(&mut TestAppContext) -> bool) {
+        settle_rounds(env, cx, 400, done);
+    }
+
+    /// Runs the app and the runtime until `done` holds, for at most
+    /// `rounds` rounds of at least 5 ms each.
+    fn settle_rounds(
         env: &Env,
         cx: &mut TestAppContext,
+        rounds: usize,
         mut done: impl FnMut(&mut TestAppContext) -> bool,
     ) {
-        for _ in 0..400 {
+        for _ in 0..rounds {
             let _guard = env.rt().enter();
             env.rt()
                 .block_on(tokio::time::sleep(Duration::from_millis(5)));
@@ -1551,6 +1682,220 @@ mod tests {
         assert_eq!(count(cx), 4);
     }
 
+    /// A 429 or 503 answer.
+    fn busy(status: u16, retry_after: Option<u64>) -> Hop {
+        Hop::Busy {
+            status,
+            retry_after,
+        }
+    }
+
+    /// Loads `url` and waits for its `on_done`, for at least 10 s: five
+    /// times the longest wait these tests ask a retry to make.
+    fn load_long(env: &Env, cx: &mut TestAppContext, url: &str) {
+        let done = Rc::new(std::cell::Cell::new(false));
+        let d = done.clone();
+        {
+            let _guard = env.rt().enter();
+            cx.update(|cx| store_of(cx).load(url, cx, move |_| d.set(true)));
+        }
+        settle_rounds(env, cx, 2000, |_| done.get());
+    }
+
+    /// A few more rounds, in which a fetch that should not start would.
+    fn idle(env: &Env, cx: &mut TestAppContext) {
+        for _ in 0..10 {
+            settle(env, cx, |_| true);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_busy_answer_is_tried_once_more_after_its_wait(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
+        fake.answer_in_turn(A, &[busy(429, Some(1))]);
+        let env = env(cx, &fake);
+        let start = Instant::now();
+        load_long(&env, cx, A);
+        assert!(
+            start.elapsed() >= Duration::from_secs(1),
+            "the wait was made"
+        );
+        assert_eq!(fake.calls_of(A), 2);
+        assert_eq!(saved_bytes(cx, A), PNG);
+    }
+
+    #[gpui_kit::test]
+    fn a_second_429_fails_with_the_rate_note(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
+        fake.answer_in_turn(A, &[busy(429, Some(0)), busy(429, Some(0))]);
+        let env = env(cx, &fake);
+        load_long(&env, cx, A);
+        idle(&env, cx);
+        assert_eq!(fake.calls_of(A), 2);
+        let RemoteState::Failed(f) = state(cx, A) else {
+            panic!("{:?}", state(cx, A));
+        };
+        assert_eq!(f.note(), "Load failed: too many requests, try again later");
+    }
+
+    /// A 503 with no `Retry-After` waits 2 s, then tries once more.
+    #[gpui_kit::test]
+    fn a_second_503_fails_with_the_busy_note(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
+        fake.answer_in_turn(A, &[busy(503, None), busy(503, Some(0))]);
+        let env = env(cx, &fake);
+        load_long(&env, cx, A);
+        idle(&env, cx);
+        assert_eq!(fake.calls_of(A), 2);
+        let RemoteState::Failed(f) = state(cx, A) else {
+            panic!("{:?}", state(cx, A));
+        };
+        assert_eq!(f.note(), "Load failed: server busy, try again later");
+    }
+
+    #[gpui_kit::test]
+    fn a_404_is_not_tried_again(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
+        fake.answer_in_turn(A, &[Hop::Failed(FetchFailure::Status(404))]);
+        let env = env(cx, &fake);
+        load(&env, cx, A);
+        idle(&env, cx);
+        assert_eq!(fake.calls_of(A), 1);
+        assert_eq!(state(cx, A), RemoteState::Failed(FetchFailure::Status(404)));
+    }
+
+    #[gpui_kit::test]
+    fn a_manual_retry_starts_a_fresh_fetch_with_its_own_retry(cx: &mut TestAppContext) {
+        let fake = Fake::new(&[(A, Hop::Body(PNG.to_vec()))]);
+        let three = [busy(429, Some(0)), busy(429, Some(0)), busy(429, Some(0))];
+        fake.answer_in_turn(A, &three);
+        let env = env(cx, &fake);
+        load_long(&env, cx, A);
+        assert_eq!(state(cx, A), RemoteState::Failed(FetchFailure::Status(429)));
+        assert_eq!(fake.calls_of(A), 2);
+        store(cx).retry(A);
+        load_long(&env, cx, A);
+        assert_eq!(fake.calls_of(A), 4, "a 429, then the retry");
+        assert_eq!(saved_bytes(cx, A), PNG);
+    }
+
+    /// During the wait before the retry, the address stays loading and its
+    /// fetch holds no slot: two other fetches of the same host run.
+    #[gpui_kit::test]
+    fn the_wait_before_a_retry_holds_no_slot(cx: &mut TestAppContext) {
+        let b = "https://img.example.com/b.png";
+        let c = "https://img.example.com/c.png";
+        let fake = Fake::gated(&[
+            (A, Hop::Body(PNG.to_vec())),
+            (b, Hop::Body(PNG.to_vec())),
+            (c, Hop::Body(PNG.to_vec())),
+        ]);
+        fake.answer_in_turn(A, &[busy(429, Some(1))]);
+        let env = env(cx, &fake);
+        let gate = fake.gate.as_ref().unwrap();
+        gate.release();
+        let done = Rc::new(std::cell::Cell::new(0));
+        let on_done = |done: &Rc<std::cell::Cell<usize>>| {
+            let d = done.clone();
+            move |_: &mut App| d.set(d.get() + 1)
+        };
+        {
+            let _guard = env.rt().enter();
+            let d = on_done(&done);
+            cx.update(|cx| store_of(cx).load(A, cx, d));
+        }
+        // The first try has ended and given back its slot.
+        settle(&env, cx, |cx| {
+            fake.calls_of(A) == 1 && store(cx).inner.borrow().running == 0
+        });
+        gate.close();
+        {
+            let _guard = env.rt().enter();
+            for u in [b, c] {
+                let d = on_done(&done);
+                cx.update(|cx| store_of(cx).load(u, cx, d));
+            }
+        }
+        settle(&env, cx, |_| gate.entered.load(Ordering::SeqCst) == 3);
+        assert_eq!(fake.calls_of(A), 1, "b and c ran before the retry");
+        assert_eq!(state(cx, A), RemoteState::Loading);
+        assert_eq!(done.get(), 0);
+        gate.release();
+        settle_rounds(&env, cx, 2000, |_| done.get() == 3);
+        assert_eq!(fake.calls_of(A), 2);
+        for u in [A, b, c] {
+            assert!(matches!(state(cx, u), RemoteState::Saved(_)), "{u}");
+        }
+    }
+
+    #[test]
+    fn the_wait_before_a_retry_is_at_most_10_seconds() {
+        assert_eq!(retry_wait(Some(0)), Duration::ZERO);
+        assert_eq!(retry_wait(Some(1)), Duration::from_secs(1));
+        assert_eq!(retry_wait(Some(10)), Duration::from_secs(10));
+        assert_eq!(retry_wait(Some(11)), Duration::from_secs(10));
+        assert_eq!(retry_wait(Some(u64::MAX)), Duration::from_secs(10));
+        assert_eq!(retry_wait(None), Duration::from_secs(2));
+        assert_eq!(retry_after_secs(Some(" 7 ")), Some(7));
+        assert_eq!(retry_after_secs(Some("-1")), None);
+        assert_eq!(
+            retry_after_secs(Some("Wed, 21 Oct 2015 07:28:00 GMT")),
+            None
+        );
+        assert_eq!(retry_after_secs(None), None);
+    }
+
+    /// A job for `A` with `fake`, a temp cache, and this limit.
+    fn job(
+        fake: &Arc<Fake>,
+        cache: &ImageCache,
+        total: Duration,
+        retry_of: Option<Instant>,
+    ) -> Job {
+        Job {
+            fetcher: fake.clone(),
+            fetches: Arc::new(AtomicUsize::new(0)),
+            cache: Some(cache.clone()),
+            allowed: AllowedHosts::default(),
+            permits: Vec::new(),
+            url: A.to_string(),
+            total,
+            retry_of,
+        }
+    }
+
+    #[test]
+    fn a_busy_answer_is_retried_only_inside_the_deadline_and_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ImageCache::at(SystemPath::try_absolute(dir.path()).unwrap());
+        // The wait of 10 s passes the limit of 1 s: no retry.
+        let fake = Fake::new(&[(A, busy(429, Some(10)))]);
+        let outcome = job(&fake, &cache, Duration::from_secs(1), None).run();
+        assert!(matches!(
+            outcome,
+            Outcome::Failed(FetchFailure::Status(429))
+        ));
+        // Inside the limit: one retry, with the deadline of the first try.
+        let before = Instant::now();
+        let outcome = job(&fake, &cache, Duration::from_secs(60), None).run();
+        let Outcome::Retry { wait, deadline } = outcome else {
+            panic!("expected a retry");
+        };
+        assert_eq!(wait, Duration::from_secs(10));
+        assert!(deadline >= before + Duration::from_secs(60));
+        // The retry keeps that deadline and makes no other retry.
+        let fake = Fake::new(&[(A, busy(503, Some(0)))]);
+        let outcome = job(&fake, &cache, Duration::from_secs(60), Some(deadline)).run();
+        assert!(matches!(
+            outcome,
+            Outcome::Failed(FetchFailure::Status(503))
+        ));
+        // A retry that starts past its deadline times out before a request.
+        let outcome = job(&fake, &cache, Duration::from_secs(60), Some(before)).run();
+        assert!(matches!(outcome, Outcome::Failed(FetchFailure::TimedOut)));
+        assert_eq!(fake.calls().len(), 1);
+    }
+
     /// Reloads `url` and waits for its `on_done`.
     fn reload(env: &Env, cx: &mut TestAppContext, url: &str) {
         let done = Rc::new(std::cell::Cell::new(false));
@@ -1782,6 +2127,34 @@ mod tests {
     }
 
     #[test]
+    fn the_real_fetcher_reads_the_retry_after_of_a_429_or_503() {
+        let server = serve(|head, _| {
+            let answer = |status: &str, extra: &str| {
+                format!("HTTP/1.1 {status}\r\n{extra}Content-Length: 0\r\n\r\n").into_bytes()
+            };
+            let bytes = match path_of(head) {
+                "/429" => answer("429 Too Many Requests", "Retry-After: 1\r\n"),
+                "/date" => answer(
+                    "429 Too Many Requests",
+                    "Retry-After: Wed, 21 Oct 2015 07:28:00 GMT\r\n",
+                ),
+                "/503" => answer("503 Service Unavailable", ""),
+                _ => answer("404 Not Found", "Retry-After: 1\r\n"),
+            };
+            (bytes, false)
+        });
+        let fetcher = RealFetcher::new();
+        let url = |p: &str| format!("{}{p}", server.base);
+        assert_eq!(fetcher.get(&url("/429")), busy(429, Some(1)));
+        assert_eq!(fetcher.get(&url("/date")), busy(429, None));
+        assert_eq!(fetcher.get(&url("/503")), busy(503, None));
+        assert_eq!(
+            fetcher.get(&url("/404")),
+            Hop::Failed(FetchFailure::Status(404))
+        );
+    }
+
+    #[test]
     fn the_real_fetcher_stops_a_body_over_the_limit_and_sends_no_cookie_or_referer() {
         let server = serve(|head, base| match path_of(head) {
             // No length: the body streams far past the limit.
@@ -1910,6 +2283,7 @@ mod tests {
             // Long enough that the first hop, which answers at once, ends
             // well inside it on a slow machine. The second hop waits for it.
             total: Duration::from_millis(500),
+            retry_of: None,
         };
         assert!(matches!(job.run(), Outcome::Failed(FetchFailure::TimedOut)));
         // The second hop ends past the limit, so the third never starts.
