@@ -159,7 +159,7 @@ If a saved copy is damaged, the note shows a failure note and the image has no m
 
 Open Preferences and choose Remote images to manage this feature.
 
-- The list shows each allowed host. **Remove** takes a host off the list. The saved copies of that host stay.
+- The list shows each allowed host in alphabetical order. Click a host to select it. Or press `Tab` to move to the list, then press Up and Down. **Remove** (or the Delete key) takes the selected host off the list and asks nothing. The saved copies of that host stay, and **Always load from** allows the host again.
 - **Clear cached images** removes every saved copy. The cache size shows next to it. Every address starts again from its placeholder. Images on allowed hosts load again once they are on screen.
 
 ### Images in the attachment view
@@ -227,7 +227,7 @@ Press `F4` or `Ctrl+,`. The list on the left has these sections:
 
 ![The Display section of Preferences](/img/gui-preferences.png)
 
-Click `Save` or press `Ctrl+S` to keep your changes.
+Click `Save` or press `Ctrl+S` to keep your changes. If you changed nothing, the button next to it reads `Close`. Once you change something, it reads `Cancel` and asks before it throws your changes away.
 
 Reduce motion stops the bouncing logo and the loading spinners. The default, System, follows the animation setting of your operating system. Choose Reduce or Allow to override it.
 
