@@ -16,9 +16,11 @@ use gpui_kit::{AppContext as _, Entity, TestAppContext};
 use kimun_core::nfs::VaultPath;
 use tokio::runtime::Runtime;
 
+use kimun_notes::logic::attachment::human_size;
+
 use super::LayoutStore;
 use super::preferences::remote_images::{
-    NO_HOSTS, REMOTE_CLEAR_ID, REMOTE_MESSAGE_ID, REMOTE_NO_HOSTS_ID, REMOTE_SIZE_ID, human_size,
+    NO_HOSTS, REMOTE_CLEAR_ID, REMOTE_MESSAGE_ID, REMOTE_NO_HOSTS_ID, REMOTE_SIZE_ID,
     remote_host_row_id, remote_remove_id, size_text,
 };
 use super::preferences::{CANCEL_ID, Section};
