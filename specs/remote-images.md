@@ -1,6 +1,6 @@
 # Remote images
 
-Date: 2026-11-23. Status: draft, waiting for the user's approval. The builder check is done. The decisions are also in `adr/0063-remote-images-load-only-on-request.md`. My own calls are in the last section.
+Date: 2026-11-23. Status: approved by the user on 2026-11-23 (the design and the plan). The builder check is done. The decisions are also in `adr/0063-remote-images-load-only-on-request.md`. My own calls are in the last section.
 
 ## Intent
 
@@ -89,7 +89,7 @@ A fetch never runs on the UI thread. When it ends, the surfaces that show the ad
 
 Core owns a folder under the app folder (`app_dir`). A saved copy has a name that comes from the address, and a size and time that the loader reads like any file. Core offers six steps. They save the bytes for an address and find the saved file for an address. They remove one copy and report the total size. They empty the cache. They remove the oldest copies until the total is under 200 MB. A save writes a temporary file and then renames it, so a copy is never half written. The cache is never in the vault, and the vault walker never sees it.
 
-A copy that cannot be decoded, because the file is damaged, shows the usual failure note. "Reload" and "Clear image cache" remove the copy.
+A copy that cannot be decoded, because the file is damaged, shows the usual failure note. "Clear cached images" in Preferences removes it.
 
 ### The placeholder
 
@@ -103,7 +103,7 @@ Where the vault image follows Reveal, the remote image does too. In the editor, 
 
 ### The editor menu
 
-A right-click on a loaded remote image opens a menu of four actions: "Open in browser", "Copy image address", "Reload", and "Clear image cache". The last one removes only this image's saved copy and returns the line to the placeholder. "Reload" removes the copy and loads at once. "Open in browser" uses the system handler that web links already use. Double-click and FollowLink do the same. The vault entry menu does not appear for a remote image.
+A right-click on a loaded remote image opens a menu of four actions: "Open in browser", "Copy image address", "Reload", and "Clear image cache". The last one removes only this image's saved copy and returns the line to the placeholder. "Reload" fetches the image again. The old copy stays, and stays drawn, until the new bytes arrive and replace it. A failed reload keeps the old copy. "Open in browser" uses the system handler that web links already use. Double-click and FollowLink do the same. The vault entry menu does not appear for a remote image.
 
 The facet view and the preview show a loaded image with a tooltip. The tooltip holds the alt text, or the title, or the host and file name when both are empty. These views have no menu.
 

@@ -133,11 +133,12 @@ The placeholder looks the same in the note, the facet view, the search preview, 
 How it works:
 
 - An allowed host is one exact name. `cdn.example.com` does not allow `example.com` or `tracker.example.com`.
-- An image on an allowed host loads on its own once it is on screen.
+- An image on an allowed host loads on its own once it is on screen. In the note, the image on the line that you edit waits until you leave that line.
 - Kimün saves each loaded image in a cache in its own folder, never in your vault. A saved image shows with no network request, so it also shows offline. A changed image keeps its old saved copy until you reload it.
 - The cache can hold 200 MB. When it is full, the oldest copies go first.
 - A redirect to a host that is not allowed stops and names the new host. **Load** there lets that one address follow the redirect until you close the app. **Always load from** allows the new host.
 - Kimün never loads an `http` address. The note says "Not loaded: http is not secure".
+- A remote address can point at a device on your own network. Click **Load** only for addresses that you trust.
 - Kimün draws PNG, JPEG, GIF (first frame), and WebP. It does not draw an SVG or any other format.
 - An image can be at most 20 MB. A load stops after 15 seconds without data, and after 60 seconds in total.
 - If a load fails, the placeholder gives a short reason and a Retry action. Kimün does not save the failure.
@@ -146,7 +147,7 @@ In the note, right-click a loaded remote image to open its menu.
 
 - **Open in browser** opens the address in your default browser.
 - **Copy image address** copies the address.
-- **Reload** fetches the image again and replaces the saved copy.
+- **Reload** fetches the image again. The new image replaces the saved copy. If the fetch fails, Kimün keeps the old saved copy and shows it.
 - **Clear image cache** removes the saved copy of this image only. On an allowed host, the image loads again at once.
 
 Double-click a remote image, or press `Ctrl+Enter` on its line, to open the address in your browser. The facet view and the preview show a loaded image with its tooltip only.
