@@ -4979,6 +4979,59 @@ mod image_reserve_tests {
         (2, false),
     ];
 
+    /// The flag that conceals every embed row whatever the caret is the
+    /// read-only display's ([`EditorDisplay::set_reveal_caret_row`] off: a
+    /// facet chunk). It is off by default, so the TUI and the note editor
+    /// keep revealing the caret row, and a note without images is laid out
+    /// as before.
+    #[test]
+    fn reveal_off_conceals_the_caret_row_embed_and_reveal_on_is_the_default() {
+        let image = [ImageLine { row: 1, rows: 3 }];
+        // By default the caret row shows its markdown, the image below it.
+        let mut v = EditorDisplay::new();
+        update_view(&mut v, &note(), (1, 3), rect(10), 1, None);
+        v.set_image_lines(&image);
+        assert_eq!(shape(&v), PADDED, "the caret row reveals its embed");
+        assert_eq!(drawn(&v)[1], "![a](x.png)");
+
+        // A note without images: no pads, no spots, the same lines.
+        let mut plain = EditorDisplay::new();
+        update_view(&mut plain, &note(), (1, 3), rect(10), 1, None);
+        let before = shape(&plain);
+        plain.set_image_lines(&[]);
+        assert_eq!(shape(&plain), before);
+        assert_eq!(before, [(0, false), (1, false), (2, false)]);
+        assert!(plain.image_spots().is_empty());
+
+        // Concealing all (a read-only display): the embed on the caret row
+        // draws nothing and takes the image's full row count.
+        let mut ro = EditorDisplay::new();
+        ro.set_reveal_caret_row(false);
+        update_view(&mut ro, &note(), (1, 3), rect(10), 1, None);
+        ro.set_image_lines(&image);
+        assert_eq!(
+            shape(&ro),
+            [(0, false), (1, false), (1, true), (1, true), (2, false)]
+        );
+        // A read-only display draws no caret.
+        let ro_rows: Vec<String> = ro
+            .frame(40, false)
+            .rows
+            .iter()
+            .map(super::tests::frame_row_text)
+            .collect();
+        assert_eq!(ro_rows[1], "", "no raw text");
+        assert_eq!(
+            ro.image_spots(),
+            [ImageSpot {
+                row: 1,
+                top: 1,
+                lines: 3,
+                note: false
+            }]
+        );
+    }
+
     #[test]
     fn an_image_row_reserves_nothing_until_a_frontend_asks() {
         let mut v = EditorDisplay::new();

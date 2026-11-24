@@ -27,6 +27,8 @@
 //! **Right-click.** With a selection a right press copies it and asks for
 //! nothing. Without one, a right press on a drawn **Inline image** opens its
 //! attachment's **Entry menu** (built by the owner, [`EditorView::set_entry_menu`]),
+//! a right press on a loaded **Remote image** opens the remote menu, and a
+//! right press on a remote placeholder opens nothing;
 //! on a link or a label it asks the owner
 //! for the Link menu ([`EditorEvent::LinkMenu`]), and anywhere else for the
 //! note menu ([`EditorEvent::ContextMenu`]). Neither moves the caret: the
@@ -82,20 +84,25 @@ mod painted;
 mod pointer;
 mod popup;
 mod read_only;
+mod remote;
 
-pub(crate) use self::images::{EntryMenu, ImageDraw, ImageLook, ImagePane};
+pub(crate) use self::images::{EntryMenu, ImageDraw};
 #[cfg(test)]
 pub(crate) use self::measure::probe as measure_probe;
 pub(crate) use self::measure::{EditStamp, SLACK, line_height, measure_width};
 #[cfg(test)]
 pub use self::painted::ModeLine;
-#[cfg(test)]
-pub use self::painted::PaintedImage;
 pub use self::painted::{CaretShape, Painted};
+#[cfg(test)]
+pub use self::painted::{PaintedImage, PaintedRemote};
 use self::pointer::ClickRun;
 #[cfg(test)]
 pub(crate) use self::pointer::frozen_clock;
 use self::read_only::ReadOnlyClicks;
+#[cfg(test)]
+pub(crate) use self::remote::CLEAR_CACHE_ITEM_ID;
+pub(crate) use self::remote::{RemoteHit, RemoteMenu};
+pub(crate) use crate::image_core::{ImageLook, ImagePane};
 
 /// The pane's padding at each side of the grid, in rems (`px_4`). A facet
 /// piece's height table reads it too (`workspace::facet::rows`).
@@ -158,6 +165,14 @@ pub enum EditorEvent {
         at: Point<Pixels>,
         target: FollowTarget,
     },
+    /// "Open in browser" on a loaded **Remote image**, a double-click on a
+    /// remote embed, or the follow from its line: hand `url` to the
+    /// system's handler.
+    OpenRemoteImage { url: String },
+    /// "Always load from" `host` on a placeholder: add the host to the
+    /// allowed hosts, then load `url` in this editor
+    /// ([`EditorView::load_remote`]).
+    AlwaysLoadFrom { host: String, url: String },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -237,6 +252,9 @@ pub struct EditorView {
     /// Builds the **Entry menu** a right press on an inline image opens,
     /// once its owner hands one ([`Self::set_entry_menu`]).
     entry_menu: Option<EntryMenu>,
+    /// The placeholders of **Remote image**s the last frame painted, and
+    /// their buttons: where a press acts.
+    pub(crate) remote_hits: Vec<RemoteHit>,
     /// Drains the editor's own channel, when it has one (the tests'
     /// stand-alone `EditorView::new`).
     _messages: Option<Task<()>>,
@@ -419,6 +437,7 @@ impl EditorView {
             ac_revision,
             images: None,
             entry_menu: None,
+            remote_hits: Vec::new(),
             _messages: messages,
         }
     }

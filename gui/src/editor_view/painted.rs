@@ -69,6 +69,20 @@ pub struct Painted {
     /// The failed images' notes painted: (screen row, text) (tests).
     #[cfg(test)]
     pub image_notes: Vec<(u16, String)>,
+    /// The remote looks painted (tests).
+    #[cfg(test)]
+    pub remote_looks: Vec<PaintedRemote>,
+}
+
+/// A remote look as the last frame painted it (tests).
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintedRemote {
+    /// The embed's logical row.
+    pub row: usize,
+    /// The look's full box, its two lines, in window coordinates.
+    pub rect: Bounds<Pixels>,
+    pub look: crate::image_core::RemoteLook,
 }
 
 /// An inline image as the last frame painted it (tests).

@@ -346,6 +346,7 @@ fn workspaces_and_indexing_sit_in_the_tui_order(cx: &mut TestAppContext) {
             Section::Indexing,
             Section::Editor,
             Section::Server,
+            Section::RemoteImages,
         ]
     );
     for _ in 0..4 {

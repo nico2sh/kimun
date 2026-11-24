@@ -61,6 +61,7 @@ impl FacetView {
         #[cfg(test)]
         self.checked.set(0);
         let n = self.members.len();
+        self.fit_images(window, cx);
         let gaps = self.piece_gaps(n);
         let fit = self.fit(title_size, window, cx);
         let shapes = gaps.iter().map(|g| self.shape(g)).collect();
@@ -231,6 +232,16 @@ impl FacetView {
         }
     }
 
+    /// Hand the chunks the column's height when it changed, before they lay
+    /// out: an image takes at most 60% of it.
+    fn fit_images(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let height = f32::from(column_height(&self.scroll, window)) * window.scale_factor();
+        if height != self.image_viewport_px {
+            self.image_viewport_px = height;
+            self.sync_image_sources(cx);
+        }
+    }
+
     /// The pieces near the viewport, from the column's scroll offset; every
     /// piece in tests that draw them all.
     fn near(&self, rem: Pixels, window: &Window, heights: &Heights) -> Range<usize> {
@@ -277,17 +288,22 @@ fn near_range(
     window: &Window,
     heights: &Heights,
 ) -> Range<usize> {
-    let bounds = scroll.bounds();
-    // Before the first layout the column has no height: the window's.
-    let viewport = if bounds.size.height > px(0.) {
-        bounds.size.height
-    } else {
-        window.viewport_size().height
-    };
+    let viewport = column_height(scroll, window);
     // The offset is negative down the column; the table starts under
     // the column's padding.
     let offset = -scroll.offset().y - to_px(rows::column_pad(), rem);
     drawn_range(offset, viewport, heights)
+}
+
+/// The height of the column that `scroll` tracks. Before the first layout
+/// the column has no height: the window's.
+fn column_height(scroll: &ScrollHandle, window: &Window) -> Pixels {
+    let height = scroll.bounds().size.height;
+    if height > px(0.) {
+        height
+    } else {
+        window.viewport_size().height
+    }
 }
 
 /// A hash of what the editor face is chosen from. The family changes the
