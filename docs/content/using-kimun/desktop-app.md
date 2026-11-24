@@ -233,6 +233,30 @@ Reduce motion stops the bouncing logo and the loading spinners. The default, Sys
 
 If the title bar looks wrong on your desktop, add `window_decorations = "system"` to the `[gui]` section of `config.toml`. Restart the app to apply it.
 
+### The folder chooser
+
+The folder chooser is a panel where you pick a folder on your computer. The setup assistant opens it. Preferences > Workspaces opens it with `Choose folder…`. In Preferences > Keyboard, `Choose folder…` for Export and `Choose file…` for Import open it too.
+
+The cursor starts in the Location field. The panel lists the folders inside the folder it shows.
+
+To narrow the list, type part of a name. The list keeps the folders that match and puts the best match first.
+
+To go to another folder, type or paste its path in the Location field. Then press `Enter`. A path starts with `~`, is a full path, or has a path separator or `..` in it.
+
+In the Import chooser, a path to a keymap file picks that file. In a folder chooser, a path to a file shows `That is a file, not a folder`. A path that does not exist shows `That folder does not exist`. The message goes away at your next key.
+
+The list grows and shrinks with the height of the window.
+
+These keys work in the chooser:
+
+- `Up` and `Down` move the selection.
+- `Enter` opens the selected folder, or goes to the path you typed.
+- `Esc` clears the text in the Location field. When the field is empty, `Esc` closes the chooser.
+- `Alt+Up` goes up one folder. On macOS, press `Cmd+Up`.
+- `Backspace` in an empty Location field also goes up one folder.
+- `Ctrl+Enter` chooses the folder the panel shows. On macOS, press `Cmd+Enter`.
+- `Ctrl+N` makes a new folder inside the folder the panel shows. On macOS, press `Cmd+N`. The Import chooser has no new folder.
+
 ### Keyboard shortcuts
 
 Open Preferences and choose Keyboard. The list shows every action in groups, such as Notes, Editor, and Tabs. Each row shows the action and its shortcut. A row with no shortcut shows `none`. The leader key is one of the rows, named Leader.
@@ -288,14 +312,14 @@ To export:
 1. Check the path in the Export field. It starts as `kimun-keys.toml` in your home folder.
 2. Click `Export`.
 
-The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder. If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds only the shortcuts you changed.
+The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder with the [folder chooser](#the-folder-chooser). If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds only the shortcuts you changed.
 
 To import:
 
 1. Type the path of the file in the Import field, or click `Choose file…`.
 2. Click `Import`.
 
-The path must be a full path or start with `~`. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
+The path must be a full path or start with `~`. The `Choose file…` button opens the same chooser. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
 
 Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. Import never takes a shortcut from another action. If a line asks for a shortcut that another action already has, Kimün skips that shortcut and tells you why. A default shortcut of another action counts too. If two lines ask for the same shortcut, only one of them gets it. A line replaces all the default shortcuts of its action. So if Kimün skips the only shortcut of a line, that action has no shortcut at all. To prevent this, clear the action that has the shortcut in the same file, for example with `OpenFileBrowser = []`.
 
