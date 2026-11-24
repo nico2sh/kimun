@@ -1021,7 +1021,7 @@ impl Workspace {
             }
             EditorEvent::OpenRemoteImage { url } => self.open_remote_image(url, cx),
             EditorEvent::AlwaysLoadFrom { host, url } => {
-                self.always_load_from(editor.clone(), host.clone(), url.clone(), cx)
+                self.always_load_in_editor(editor.clone(), host.clone(), url.clone(), cx)
             }
         }
     }

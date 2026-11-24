@@ -50,17 +50,17 @@ fn png(w: u32, h: u32) -> Vec<u8> {
 /// A fetcher that answers from a script (404 for any other address) and
 /// logs the calls.
 #[derive(Default)]
-struct Fake {
+pub(super) struct Fake {
     script: Mutex<HashMap<String, Hop>>,
     calls: Mutex<Vec<String>>,
 }
 
 impl Fake {
-    fn answer(&self, url: &str, hop: Hop) {
+    pub(super) fn answer(&self, url: &str, hop: Hop) {
         self.script.lock().unwrap().insert(url.to_string(), hop);
     }
 
-    fn calls(&self) -> Vec<String> {
+    pub(super) fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
 }
@@ -78,15 +78,15 @@ impl Fetcher for Fake {
 }
 
 /// The fake fetcher and the temp cache the app's store uses.
-struct Env {
+pub(super) struct Env {
     _dir: tempfile::TempDir,
-    cache: ImageCache,
-    fake: Arc<Fake>,
+    pub(super) cache: ImageCache,
+    pub(super) fake: Arc<Fake>,
 }
 
 /// Install a fake fetcher that answers `script` and a temp cache in the
 /// app's store.
-fn install(cx: &mut TestAppContext, script: &[(&str, Hop)]) -> Env {
+pub(super) fn install(cx: &mut TestAppContext, script: &[(&str, Hop)]) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let cache = ImageCache::at(
         SystemPath::try_absolute(dir.path())

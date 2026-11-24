@@ -257,6 +257,9 @@ impl Workspace {
                     self.refresh_collection(group, cx);
                 }
             }
+            FacetEvent::AlwaysLoadFrom { chunk, host, url } => {
+                self.always_load_in_editor(chunk.clone(), host.clone(), url.clone(), cx)
+            }
         }
     }
 

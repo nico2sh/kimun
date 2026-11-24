@@ -16,6 +16,7 @@ use gpui_kit::{
 use kimun_notes::settings::themes::Theme;
 
 use crate::image_core::{RemoteLook, remote_rows};
+use crate::remote_image::RemoteImages;
 use crate::theme;
 
 /// The padding of a button on each side, and the gap between two buttons,
@@ -178,6 +179,39 @@ pub(crate) fn action_at(
     hits.iter()
         .find(|(bounds, _)| bounds.contains(&point))
         .map(|(_, action)| *action)
+}
+
+/// Runs the button `action` of the placeholder of the remote embed `url`
+/// in the shared store. Every surface that shows a placeholder calls it.
+///
+/// - "Load" lets a blocked redirect follow once, then loads.
+/// - "Retry" forgets the failure, then loads.
+/// - "Always load from" loads nothing here. It returns `host`, and the
+///   surface asks its owner to allow the host first and to load after. With
+///   no host it loads.
+///
+/// `on_done` runs on the UI thread when the fetch ends.
+pub(crate) fn run_action(
+    url: &str,
+    host: Option<String>,
+    action: RemoteAction,
+    cx: &mut App,
+    on_done: impl FnOnce(&mut App) + 'static,
+) -> Option<String> {
+    let mut store = cx.default_global::<RemoteImages>().clone();
+    match action {
+        // On a blocked redirect, "Load" follows it once. Elsewhere the
+        // permission call does nothing.
+        RemoteAction::Load => store.allow_redirect_once(url),
+        RemoteAction::Retry => store.retry(url),
+        RemoteAction::AlwaysLoad => {
+            if host.is_some() {
+                return host;
+            }
+        }
+    }
+    store.load(url, cx, on_done);
+    None
 }
 
 #[cfg(test)]
@@ -448,5 +482,67 @@ mod tests {
             buttons_of(&failed),
             vec![("Retry".to_string(), RemoteAction::Retry)]
         );
+    }
+
+    /// Every GUI source file but this one, with its text.
+    fn other_sources() -> Vec<(std::path::PathBuf, String)> {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        let mut dirs = vec![src];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("src/remote_placeholder.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    found.push((path, text));
+                }
+            }
+        }
+        found
+    }
+
+    /// The editor, the facet view (its chunks are read-only editors) and
+    /// the preview paint a remote look only through this piece, and find a
+    /// press only with `action_at`. No other file paints a placeholder text
+    /// or button, or has a paint or hit test of its own.
+    #[test]
+    fn the_editor_and_the_read_only_views_use_the_one_placeholder_piece() {
+        // Built from parts, so this file does not match itself.
+        let needles = [
+            ["\"Remote image from", " {"].concat(),
+            ["\"Remote image redirects to", " {"].concat(),
+            ["\"Loading image from", " {"].concat(),
+            ["\"Always load from", " {"].concat(),
+            ["\"Not loaded: http", " is not secure"].concat(),
+            ["fn paint_remote", "_look"].concat(),
+            ["fn action", "_at("].concat(),
+            ["fn buttons", "_of("].concat(),
+        ];
+        let sources = other_sources();
+        let mut found = Vec::new();
+        for (path, text) in &sources {
+            for needle in &needles {
+                if text.contains(needle.as_str()) {
+                    found.push(format!("{}: {needle}", path.display()));
+                }
+            }
+        }
+        assert!(found.is_empty(), "{found:#?}");
+        // Each surface paints and hit-tests through the piece.
+        let calls = |file: &str, call: &str| {
+            sources
+                .iter()
+                .any(|(path, text)| path.ends_with(file) && text.contains(call))
+        };
+        let paint = ["paint_remote", "_look("].concat();
+        let hit = ["action", "_at("].concat();
+        assert!(calls("src/editor_element.rs", &paint), "the editor element");
+        assert!(calls("src/workspace/search.rs", &paint), "the preview");
+        assert!(calls("src/editor_view/remote.rs", &hit), "the editor press");
+        assert!(calls("src/workspace/search.rs", &hit), "the preview press");
     }
 }

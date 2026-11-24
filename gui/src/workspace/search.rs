@@ -38,6 +38,20 @@
 //! becomes its note row, by one re-wrap that keeps the same text in view.
 //! An image row does nothing on a press, as a text row.
 //!
+//! **Remote images.** A **Remote image** (CONTEXT.md) with no saved copy
+//! takes the placeholder's rows ([`remote_rows`]). Each of them paints its
+//! part of the one placeholder piece ([`paint_remote_look`]) over the
+//! whole look, clipped to the row. A left press on a button runs it as the
+//! editor does ([`run_action`]), and stops there: it never selects a
+//! result. "Always load from" asks the workspace through
+//! [`PreviewEvent::AlwaysLoadFrom`]. A press anywhere else keeps its
+//! meaning. A saved copy draws as a vault image, its rows from the header of
+//! the saved file. The planner runs on tokio, where the store cannot go, so
+//! it finds the saved copies with the store's cache handle. When a fetch
+//! ends, or a copy comes or goes from another view, the rows are made again
+//! on tokio, with the same text in view. The embeds on screen on an allowed
+//! host load on their own. A loaded remote image has the tooltip only.
+//!
 //! **Opening.** Enter (or a double-click: a click only selects, the
 //! preview follows) on a note opens it with the
 //! query's needles emphasised in the editor (cleared by the first edit).
@@ -70,14 +84,16 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Bounds, Context, FontWeight, HighlightStyle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, RenderImage, Rgba,
-    Role, ScrollEvent, ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _,
-    Styled as _, StyledText, Task, UniformListScrollHandle, Window, canvas, div, font, point, px,
-    rems, size, uniform_list,
+    AnyElement, App, AppContext as _, Bounds, Context, DispatchPhase, Entity, EventEmitter,
+    FontWeight, HighlightStyle, HitboxBehavior, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement as _, Pixels, Render, RenderImage, Rgba, Role, ScrollEvent,
+    ScrollStrategy, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    StyledText, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, canvas, div, font,
+    point, px, rems, size, uniform_list,
 };
 use kimun_core::NoteVault;
 use kimun_core::nfs::VaultPath;
+use kimun_core::system::ImageCache;
 use kimun_notes::ask::locate;
 use kimun_notes::logic::layout_tree::GroupId;
 use kimun_notes::logic::preview::{split_ranges, wrap_ranges};
@@ -95,9 +111,15 @@ use super::note::{Closing, flush_problem};
 use crate::attachment_index::AttachmentIndex;
 use crate::editor_element::image_tooltip;
 use crate::grid::CellMetrics;
-use crate::image_core::{Embed, ImageLook, ImagePane, embeds_of, look_of, paint_look};
+use crate::image_core::{
+    Embed, ImageLook, ImagePane, RemoteLook, embeds_of, image_file, look_of, paint_look,
+    remote_rows,
+};
 use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
 use crate::remote_image::RemoteImages;
+use crate::remote_placeholder::{
+    PlaceholderStyle, RemoteAction, action_at, paint_remote_look, run_action,
+};
 use crate::theme;
 
 /// Element ids, for tests.
@@ -170,6 +192,9 @@ pub(crate) enum RowKind {
     Image { image: usize, index: usize },
     /// The one-line note of image `image`, which cannot be drawn.
     Note { image: usize },
+    /// Row `index` of the [`remote_rows`] rows of the placeholder of image
+    /// `image`: a remote embed with no saved copy.
+    Remote { image: usize, index: usize },
 }
 
 /// One wrapped row as the preview draws it: a piece of a note line, or one
@@ -180,7 +205,7 @@ struct PreviewRow {
     /// length plus its index plus one.
     line: usize,
     start: usize,
-    /// Empty for an image row or a note row.
+    /// Empty for an image row, a note row or a placeholder row.
     text: SharedString,
     /// The needle matches in this piece (a match across a row edge is cut).
     hits: Vec<Range<usize>>,
@@ -192,14 +217,16 @@ struct PreviewRow {
 pub(crate) struct PreviewImage {
     /// Its embed in [`ImagePlan::embeds`].
     pub(crate) embed: usize,
-    /// The attachment's file, when the embed resolved.
+    /// The file it draws: the attachment's when the embed resolved, or the
+    /// saved copy of a remote embed. `None` for a placeholder.
     pub(crate) file: Option<PathBuf>,
     /// The file name as written, and the alt text.
     pub(crate) name: String,
     pub(crate) alt: String,
     /// The size it is drawn at, in device pixels.
     pub(crate) fitted: (f32, f32),
-    /// Its image rows (0 for one that cannot be drawn), the first of them.
+    /// Its image rows (0 for one that cannot be drawn, [`remote_rows`] for
+    /// a placeholder), the first of them.
     pub(crate) rows: usize,
     pub(crate) first_row: usize,
     /// Why it cannot be drawn: its one row is a [`RowKind::Note`].
@@ -229,8 +256,13 @@ impl RawRule {
 /// read: a re-wrap at another width or height reads no file.
 #[derive(Clone, Debug)]
 pub(crate) struct ImagePlan {
-    /// The embeds of the (capped) text, at most [`PREVIEW_EMBEDS`].
+    /// The embeds of the (capped) text, at most [`PREVIEW_EMBEDS`]. Remote
+    /// embeds count.
     pub(crate) embeds: Vec<Embed>,
+    /// The file each embed draws: the vault file, or the saved copy of a
+    /// remote embed when the plan was made. `None` for an unresolved embed
+    /// and for a remote embed with no copy (a placeholder).
+    pub(crate) files: Vec<Option<PathBuf>>,
     /// Each embed's natural size from its file's header; `None` when it
     /// cannot be drawn, and then why in `failures`.
     pub(crate) naturals: Vec<Option<(u32, u32)>>,
@@ -241,6 +273,9 @@ pub(crate) struct ImagePlan {
     /// Bumped each time a decode failed after the header read and its
     /// image was turned into a note here: a wrap made before is stale.
     pub(crate) failed: usize,
+    /// Bumped each time the remote embeds were resolved again (a fetch
+    /// ended, a copy came or went): a wrap made before is stale.
+    pub(crate) remote: usize,
 }
 
 impl ImagePlan {
@@ -248,12 +283,40 @@ impl ImagePlan {
     fn none(pane: ImagePane) -> Self {
         Self {
             embeds: Vec::new(),
+            files: Vec::new(),
             naturals: Vec::new(),
             failures: Vec::new(),
             pane,
             raw: RawRule::Hits,
             failed: 0,
+            remote: 0,
         }
+    }
+
+    /// Whether embed `e` shows the placeholder: a remote embed with no
+    /// saved copy.
+    fn is_placeholder(&self, e: usize) -> bool {
+        self.embeds
+            .get(e)
+            .is_some_and(|embed| embed.remote.is_some())
+            && self.files.get(e).is_some_and(Option::is_none)
+    }
+
+    /// Find each remote embed's saved copy in `cache` again, and read its
+    /// header. Vault embeds keep what they have. Runs on tokio.
+    fn resolve_remote(&mut self, cache: Option<&ImageCache>) {
+        let mut store = ImageStore::default();
+        for (e, embed) in self.embeds.iter().enumerate() {
+            let Some(remote) = &embed.remote else {
+                continue;
+            };
+            let file = cache.and_then(|cache| cache.find(&remote.url));
+            let (natural, failure) = header_of(file.as_deref(), embed, &mut store);
+            self.files[e] = file;
+            self.naturals[e] = natural;
+            self.failures[e] = failure;
+        }
+        self.remote += 1;
     }
 }
 
@@ -266,13 +329,16 @@ struct Wrapped {
     /// The row holding the first match, scrolled to when the preview lands.
     first_hit: Option<usize>,
     images: Vec<PreviewImage>,
-    /// The plan's [`ImagePlan::failed`] it was wrapped with.
+    /// The plan's [`ImagePlan::failed`] and [`ImagePlan::remote`] it was
+    /// wrapped with.
     failed: usize,
+    remote: usize,
 }
 
 /// `lines` wrapped to `columns`, each embed line of `images` followed by
-/// its image's rows (or the one note row of an image that cannot be drawn)
-/// and keeping its own text rows only where `images.raw` says; the row of
+/// its image's rows (or the one note row of an image that cannot be drawn,
+/// or the placeholder's rows of a remote embed with no saved copy) and
+/// keeping its own text rows only where `images.raw` says; the row of
 /// `first_match` (line, byte) found. Pure; runs on tokio.
 fn wrap_lines(
     lines: &[NoteLine],
@@ -297,7 +363,7 @@ fn wrap_lines(
         let image = drawn.len();
         let mut drawn_image = PreviewImage {
             embed: e,
-            file: embed.file.clone(),
+            file: images.files.get(e).cloned().flatten(),
             name: embed.name.clone(),
             alt: embed.alt.clone(),
             fitted: (0.0, 0.0),
@@ -305,12 +371,24 @@ fn wrap_lines(
             first_row: rows.len(),
             failed: None,
         };
+        let end = line.text.len();
         match images.naturals.get(e).copied().flatten() {
+            // A remote embed with no saved copy: the placeholder's rows,
+            // below the raw line when it shows.
+            None if images.is_placeholder(e) => {
+                drawn_image.rows = remote_rows();
+                rows.extend((0..drawn_image.rows).map(|index| PreviewRow {
+                    line: i,
+                    start: end + index + 1,
+                    text: SharedString::default(),
+                    hits: Vec::new(),
+                    kind: RowKind::Remote { image, index },
+                }));
+            }
             Some(natural) => {
                 let pane = images.pane;
                 drawn_image.fitted = fit(natural, pane.column_px, pane.pane_px);
                 drawn_image.rows = rows_for(drawn_image.fitted.1, pane.row_px);
-                let end = line.text.len();
                 rows.extend((0..drawn_image.rows).map(|index| PreviewRow {
                     line: i,
                     start: end + index + 1,
@@ -343,6 +421,7 @@ fn wrap_lines(
         first_hit,
         images: drawn,
         failed: images.failed,
+        remote: images.remote,
     }
 }
 
@@ -401,6 +480,7 @@ impl PreviewText {
         self.wrapped.columns == columns
             && (self.plan.embeds.is_empty() || self.wrapped.pane == pane)
             && self.wrapped.failed == self.plan.failed
+            && self.wrapped.remote == self.plan.remote
     }
 }
 
@@ -479,50 +559,67 @@ pub(crate) fn header_reads() -> usize {
 
 /// The images of `text` (the capped note at `note`) for the preview: its
 /// first [`PREVIEW_EMBEDS`] embeds resolved against `found` (the vault and
-/// its attachments; `None`: no images), and each one's header read. Runs
-/// on tokio, as the note is read.
+/// its attachments; `None`: no images), and each one's header read. A
+/// remote embed's saved copy is found in `cache` (the store's cache handle;
+/// the store itself lives on the UI thread). Runs on tokio, as the note is
+/// read.
 fn plan_images(
     text: &str,
     note: &VaultPath,
     found: Option<(&NoteVault, &[VaultPath])>,
     pane: ImagePane,
+    cache: Option<&ImageCache>,
 ) -> ImagePlan {
     let Some((vault, attachments)) = found else {
         return ImagePlan::none(pane);
     };
-    let mut embeds = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
-    // The preview does not draw remote embeds yet: their lines stay text.
-    embeds.retain(|embed| embed.remote.is_none());
+    let embeds = embeds_of(text, note, attachments, vault, Some(PREVIEW_EMBEDS));
     if embeds.is_empty() {
         return ImagePlan::none(pane);
     }
     // A store of this read's own: the headers only, nothing decoded (the
     // app's store is the UI thread's).
     let mut store = ImageStore::default();
+    let files: Vec<Option<PathBuf>> = embeds
+        .iter()
+        .map(|embed| match &embed.remote {
+            None => embed.file.clone(),
+            Some(remote) => cache.and_then(|cache| cache.find(&remote.url)),
+        })
+        .collect();
     let (naturals, failures) = embeds
         .iter()
-        .map(|embed| header_of(embed, &mut store))
+        .zip(&files)
+        .map(|(embed, file)| header_of(file.as_deref(), embed, &mut store))
         .unzip();
     ImagePlan {
         embeds,
+        files,
         naturals,
         failures,
         pane,
         raw: RawRule::Hits,
         failed: 0,
+        remote: 0,
     }
 }
 
-/// The natural size of the embed's image from its file's header, or why it
-/// cannot be drawn.
-fn header_of(embed: &Embed, store: &mut ImageStore) -> (Option<(u32, u32)>, Option<Failure>) {
+/// The natural size of the image in `file` (the file `embed` draws) from
+/// its header, or why it cannot be drawn. A remote embed with no saved
+/// copy has neither: it shows the placeholder.
+fn header_of(
+    file: Option<&std::path::Path>,
+    embed: &Embed,
+    store: &mut ImageStore,
+) -> (Option<(u32, u32)>, Option<Failure>) {
     #[cfg(test)]
     HEADER_READS.with(|reads| reads.set(reads.get() + 1));
-    match embed.file.as_ref().map(|file| store.size_of(file)) {
+    match file.map(|file| store.size_of(file)) {
         Some(ImageState::Sized { width, height } | ImageState::Ready(_, width, height)) => {
             (Some((width, height)), None)
         }
         Some(ImageState::Failed(failure)) => (None, Some(failure)),
+        None if embed.remote.is_some() => (None, None),
         // Not resolved to an attachment.
         None => (None, Some(Failure::Missing)),
     }
@@ -556,11 +653,9 @@ pub(crate) fn preview_text(
     marked_text(path, text, &mark, columns, FALLBACK_PANE, None)
 }
 
-/// Lay out `text` for the preview with any [`Mark`]: capped, split into
-/// lines, the needles or the reader's section (resolved in the capped
-/// text) marked, its images found (from `found`, the vault and its
-/// attachments; `None`: none) and fitted to `pane`, wrapped to `columns`.
-/// Reads the images' headers; runs on tokio.
+/// [`marked_text`] with no image cache: a remote embed shows the
+/// placeholder (tests).
+#[cfg(test)]
 pub(crate) fn marked_text(
     path: VaultPath,
     text: String,
@@ -569,8 +664,26 @@ pub(crate) fn marked_text(
     pane: ImagePane,
     found: Option<(&NoteVault, &[VaultPath])>,
 ) -> PreviewText {
+    marked_text_cached(path, text, mark, columns, pane, found, None)
+}
+
+/// Lay out `text` for the preview with any [`Mark`]: capped, split into
+/// lines, the needles or the reader's section (resolved in the capped
+/// text) marked, its images found (from `found`, the vault and its
+/// attachments; `None`: none) and fitted to `pane`, wrapped to `columns`.
+/// A remote embed's saved copy is found in `cache`. Reads the images'
+/// headers; runs on tokio.
+pub(crate) fn marked_text_cached(
+    path: VaultPath,
+    text: String,
+    mark: &Mark,
+    columns: usize,
+    pane: ImagePane,
+    found: Option<(&NoteVault, &[VaultPath])>,
+    cache: Option<&ImageCache>,
+) -> PreviewText {
     let (text, truncated) = cap_text(text, PREVIEW_BYTES);
-    let plan = plan_images(&text, &path, found, pane);
+    let plan = plan_images(&text, &path, found, pane, cache);
     lay_out(path, text.into(), mark, truncated, columns, plan)
 }
 
@@ -657,6 +770,7 @@ async fn load_preview(
     columns: usize,
     pane: ImagePane,
     attachments: Option<Arc<Vec<VaultPath>>>,
+    cache: Option<ImageCache>,
 ) -> Result<PreviewText, String> {
     let text = vault
         .get_note_text(&path)
@@ -665,7 +779,15 @@ async fn load_preview(
     let found = attachments
         .as_deref()
         .map(|list| (&*vault, list.as_slice()));
-    Ok(marked_text(path, text, &mark, columns, pane, found))
+    Ok(marked_text_cached(
+        path,
+        text,
+        &mark,
+        columns,
+        pane,
+        found,
+        cache.as_ref(),
+    ))
 }
 
 /// Where a note that landed is scrolled to: the first match centred, the
@@ -691,21 +813,22 @@ impl<T> Drop for AbortOnDrop<T> {
 // ---- The preview -------------------------------------------------------------
 
 /// How a preview row is drawn: in the needles' or the section's mark, a
-/// failed image's note and an image's empty box colours, at `scale` device
-/// pixels per logical one.
-#[derive(Clone, Copy)]
+/// failed image's note and an image's empty box colours, the style of the
+/// placeholder piece, at `scale` device pixels per logical one.
+#[derive(Clone)]
 struct RowStyle {
     mark: HighlightStyle,
     note: Rgba,
     placeholder: Rgba,
+    remote: PlaceholderStyle,
     scale: f32,
 }
 
-/// The pixels of each image the rows of one render draw, looked up once
-/// per image. `None` store: the note draws no image.
+/// The look of each image the rows of one render draw, looked up once per
+/// image. `None` store: the note draws no image.
 struct ImagePixels {
     store: Option<(ImageStore, RemoteImages)>,
-    found: Vec<(usize, Option<Arc<RenderImage>>)>,
+    found: Vec<(usize, Option<ImageLook>)>,
 }
 
 impl ImagePixels {
@@ -716,12 +839,11 @@ impl ImagePixels {
         }
     }
 
-    /// The decoded pixels of image `image` of `shown`, `None` while it is
-    /// not decoded (or any more, or its decode failed: the note it becomes
-    /// lands with a re-wrap).
-    fn of(&mut self, image: usize, shown: &PreviewText) -> Option<Arc<RenderImage>> {
-        if let Some((_, pixels)) = self.found.iter().find(|(i, _)| *i == image) {
-            return pixels.clone();
+    /// What image `image` of `shown` looks like now. Only its state counts:
+    /// the size is the model's own `fitted`.
+    fn look(&mut self, image: usize, shown: &PreviewText) -> Option<ImageLook> {
+        if let Some((_, look)) = self.found.iter().find(|(i, _)| *i == image) {
+            return look.clone();
         }
         let (store, remote) = self.store.as_mut()?;
         let embed = shown
@@ -729,21 +851,29 @@ impl ImagePixels {
             .images
             .get(image)
             .and_then(|i| shown.plan.embeds.get(i.embed))?;
-        // The look's state only: the size is the model's own `fitted`.
-        let pixels = match look_of(embed, store, remote, shown.wrapped.pane) {
+        let look = Some(look_of(embed, store, remote, shown.wrapped.pane));
+        self.found.push((image, look.clone()));
+        look
+    }
+
+    /// The decoded pixels of image `image` of `shown`, `None` while it is
+    /// not decoded (or any more, or its decode failed: the note it becomes
+    /// lands with a re-wrap).
+    fn of(&mut self, image: usize, shown: &PreviewText) -> Option<Arc<RenderImage>> {
+        match self.look(image, shown)? {
             ImageLook::Ready(pixels, _) => Some(pixels),
             ImageLook::Pending(_) | ImageLook::Note(_) | ImageLook::Remote(_) => None,
-        };
-        self.found.push((image, pixels.clone()));
-        pixels
+        }
     }
 }
 
-/// Where an image row records the slice it paints, and its row (tests).
+/// Where an image row records the slice it paints, a placeholder row the
+/// part of the look it paints, and its row (tests).
 #[cfg(test)]
 #[derive(Clone)]
 struct SliceLog {
     painted: Rc<RefCell<Vec<PaintedSlice>>>,
+    remote: Rc<RefCell<Vec<PaintedRemote>>>,
     row: usize,
 }
 
@@ -764,6 +894,7 @@ fn render_row(
     shown: &PreviewText,
     pixels: &mut ImagePixels,
     style: &RowStyle,
+    preview: &WeakEntity<SearchPreview>,
 ) -> Stateful<gpui_kit::Div> {
     #[cfg(test)]
     let (item, log) = item;
@@ -830,7 +961,91 @@ fn render_row(
                 .test_support();
             item.relative().w_full().child(paint).child(hover)
         }
+        RowKind::Remote { image, index } => {
+            let url = image_of(image)
+                .and_then(|drawn| shown.plan.embeds.get(drawn.embed))
+                .and_then(|embed| embed.remote.as_ref())
+                .map(|remote| remote.url.clone());
+            // A copy that came since the rows were made draws nothing here:
+            // the rows are made again at once.
+            let (Some(url), Some(ImageLook::Remote(look))) = (url, pixels.look(image, shown))
+            else {
+                return item;
+            };
+            let style = style.remote.clone();
+            let preview = preview.clone();
+            // The canvas spans the row: it paints its part of the whole look
+            // over the placeholder's rows, clipped to the row, through the
+            // one placeholder piece. A left press on a button it painted runs
+            // the button and goes no further: the result is not selected.
+            let paint = canvas(
+                |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+                move |bounds, hitbox, window, cx| {
+                    let rect = Bounds::new(
+                        point(
+                            bounds.origin.x,
+                            bounds.origin.y - bounds.size.height * index as f32,
+                        ),
+                        size(bounds.size.width, bounds.size.height * remote_rows() as f32),
+                    );
+                    let hits = paint_remote_look(window, cx, rect, bounds, &look, &style);
+                    #[cfg(test)]
+                    log.remote.borrow_mut().push(PaintedRemote {
+                        row: log.row,
+                        index,
+                        rect,
+                        clip: bounds,
+                        url: url.clone(),
+                        look: look.clone(),
+                        buttons: hits.clone(),
+                    });
+                    if hits.is_empty() {
+                        return;
+                    }
+                    let host = look.always_host();
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if phase != DispatchPhase::Bubble
+                            || event.button != MouseButton::Left
+                            || !hitbox.is_hovered(window)
+                        {
+                            return;
+                        }
+                        let Some(action) = action_at(&hits, event.position) else {
+                            return;
+                        };
+                        cx.stop_propagation();
+                        let (url, host) = (url.clone(), host.clone());
+                        preview
+                            .update(cx, |preview, cx| {
+                                preview.run_remote_action(url, host, action, cx)
+                            })
+                            .ok();
+                    });
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full();
+            item.relative().w_full().child(paint)
+        }
     }
+}
+
+/// One placeholder row as painted (tests).
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct PaintedRemote {
+    /// The row, and its index in the placeholder's rows.
+    pub(crate) row: usize,
+    pub(crate) index: usize,
+    /// The whole look, and the row it is clipped to.
+    pub(crate) rect: Bounds<Pixels>,
+    pub(crate) clip: Bounds<Pixels>,
+    pub(crate) url: String,
+    pub(crate) look: RemoteLook,
+    /// The buttons inside the row, from the placeholder piece.
+    pub(crate) buttons: Vec<(Bounds<Pixels>, RemoteAction)>,
 }
 
 /// One image row's slice as painted (tests).
@@ -867,6 +1082,15 @@ fn slice_rect(
 
 /// What the preview should show: a note and what to mark in it.
 type Wanted = (VaultPath, Mark);
+
+/// What the preview asks of the workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PreviewEvent {
+    /// "Always load from" `host` on a remote image placeholder: the
+    /// workspace adds `host` to the allowed hosts, then the preview loads
+    /// `url` ([`SearchPreview::load_remote`]).
+    AlwaysLoadFrom { host: String, url: String },
+}
 
 /// The search browser's preview column. See the module docs.
 pub(crate) struct SearchPreview {
@@ -919,9 +1143,18 @@ pub(crate) struct SearchPreview {
     listed: u64,
     /// The read under way is such a re-read: it keeps the reader's place.
     reloading: bool,
+    /// The remote embeds of the shown note being resolved again (a fetch
+    /// ended, a copy came or went), and the rows made again with them.
+    replan: Option<Task<()>>,
     /// The image slices painted at the last render (tests).
     #[cfg(test)]
     painted: Rc<RefCell<Vec<PaintedSlice>>>,
+    /// The placeholder rows painted at the last render (tests).
+    #[cfg(test)]
+    painted_remote: Rc<RefCell<Vec<PaintedRemote>>>,
+    /// How many times the remote embeds were resolved again (tests).
+    #[cfg(test)]
+    pub(crate) replans: usize,
     /// How many times the images on screen were checked (tests: a note
     /// without any checks none).
     #[cfg(test)]
@@ -933,6 +1166,8 @@ pub(crate) struct SearchPreview {
     #[cfg(test)]
     pub(crate) read_paths: Vec<VaultPath>,
 }
+
+impl EventEmitter<PreviewEvent> for SearchPreview {}
 
 impl SearchPreview {
     pub(crate) fn new(vault: Arc<NoteVault>, cx: &mut Context<Self>) -> Self {
@@ -956,8 +1191,13 @@ impl SearchPreview {
             check_deferred: false,
             listed: 0,
             reloading: false,
+            replan: None,
             #[cfg(test)]
             painted: Rc::default(),
+            #[cfg(test)]
+            painted_remote: Rc::default(),
+            #[cfg(test)]
+            replans: 0,
             #[cfg(test)]
             visible_checks: 0,
             #[cfg(test)]
@@ -1060,6 +1300,12 @@ impl SearchPreview {
     #[cfg(test)]
     pub(crate) fn painted_slices(&self) -> Vec<PaintedSlice> {
         self.painted.borrow().clone()
+    }
+
+    /// The placeholder rows painted at the last render (tests).
+    #[cfg(test)]
+    pub(crate) fn painted_remote(&self) -> Vec<PaintedRemote> {
+        self.painted_remote.borrow().clone()
     }
 
     /// How many failed decodes turned the shown note's images into notes
@@ -1237,6 +1483,8 @@ impl SearchPreview {
         // The width and height as of now: a later change re-wraps what lands.
         let (columns, pane) = (self.wrap_columns(), self.wrap_pane());
         let vault = self.vault.clone();
+        // The cache handle, not the store: the store cannot go to tokio.
+        let cache = cx.default_global::<RemoteImages>().cache();
         self.load = Some(cx.spawn(async move |this, cx| {
             let mut read = AbortOnDrop(tokio::spawn(load_preview(
                 vault,
@@ -1245,6 +1493,7 @@ impl SearchPreview {
                 columns,
                 pane,
                 attachments,
+                cache,
             )));
             let loaded = (&mut read.0).await;
             this.update(cx, |preview, cx| preview.loaded((path, mark), loaded, cx))
@@ -1380,10 +1629,12 @@ impl SearchPreview {
             .as_ref()
             .is_some_and(|s| !s.plan.embeds.is_empty());
         let failed = self.shown.as_ref().map_or(0, |s| s.plan.failed);
+        let remote = self.shown.as_ref().map_or(0, |s| s.plan.remote);
         if !current
             || wrapped.columns != self.wrap_columns()
             || (images && wrapped.pane != self.wrap_pane())
             || wrapped.failed != failed
+            || wrapped.remote != remote
         {
             return;
         }
@@ -1487,12 +1738,43 @@ impl SearchPreview {
         }
         let range = self.seen.take().unwrap_or(0..0);
         let mut store = cx.default_global::<ImageStore>().clone();
+        let remote = cx.default_global::<RemoteImages>().clone();
         let mut visible: Vec<PathBuf> = Vec::new();
         let mut failed = Vec::new();
+        // The placeholders on screen whose host is allowed and that wait for
+        // their first load.
+        let mut to_load: Vec<(String, String)> = Vec::new();
+        // The remote embeds on screen, by their index in the plan.
+        let mut on_screen: Vec<usize> = Vec::new();
         if let Some(shown) = &self.shown {
             let rows = &shown.wrapped.rows;
             let range = range.start.min(rows.len())..range.end.min(rows.len());
             for row in &rows[range] {
+                if let RowKind::Image { image, .. } | RowKind::Remote { image, .. } = row.kind
+                    && let Some(drawn) = shown.wrapped.images.get(image)
+                    && shown
+                        .plan
+                        .embeds
+                        .get(drawn.embed)
+                        .is_some_and(|embed| embed.remote.is_some())
+                    && !on_screen.contains(&drawn.embed)
+                {
+                    on_screen.push(drawn.embed);
+                }
+                if let RowKind::Remote { image, index: 0 } = row.kind
+                    && let Some(embed) = shown
+                        .wrapped
+                        .images
+                        .get(image)
+                        .and_then(|i| shown.plan.embeds.get(i.embed))
+                    && let Some(r) = &embed.remote
+                    && let ImageLook::Remote(RemoteLook::Placeholder { host, actions }) =
+                        look_of(embed, &mut store, &remote, shown.wrapped.pane)
+                    && !actions.always
+                    && !to_load.iter().any(|(url, _)| *url == r.url)
+                {
+                    to_load.push((r.url.clone(), host));
+                }
                 let RowKind::Image { image, .. } = row.kind else {
                     continue;
                 };
@@ -1531,9 +1813,152 @@ impl SearchPreview {
             }
         }
         self.visible = visible;
+        if !to_load.is_empty() {
+            // The store skips an address that is saved, loading, or failed in
+            // this session, so a dead address is asked once.
+            let preview = cx.weak_entity();
+            let mut remote = remote.clone();
+            remote.auto_load(&to_load, cx, move |cx| fetch_ended(&preview, cx));
+        }
         if !failed.is_empty() {
             self.decodes_failed(&failed, cx);
         }
+        if !on_screen.is_empty() {
+            self.replan_if_stale(Some(&on_screen), cx);
+        }
+    }
+
+    /// Run the placeholder button `action` for the remote embed `url`, as
+    /// the editor does. `host` is the host the "Always load from" button
+    /// names: the workspace allows it, then calls [`Self::load_remote`].
+    pub(crate) fn run_remote_action(
+        &mut self,
+        url: String,
+        host: Option<String>,
+        action: RemoteAction,
+        cx: &mut Context<Self>,
+    ) {
+        let preview = cx.weak_entity();
+        if let Some(host) = run_action(&url, host, action, cx, move |cx| fetch_ended(&preview, cx))
+        {
+            cx.emit(PreviewEvent::AlwaysLoadFrom { host, url });
+        }
+        cx.notify();
+    }
+
+    /// Load the remote image `url` at the reader's request. When the fetch
+    /// ends, the rows are made again.
+    pub(crate) fn load_remote(&mut self, url: &str, cx: &mut Context<Self>) {
+        let mut store = cx.default_global::<RemoteImages>().clone();
+        let preview = cx.weak_entity();
+        store.load(url, cx, move |cx| fetch_ended(&preview, cx));
+        cx.notify();
+    }
+
+    /// Make the rows again when a remote embed of the shown note gained or
+    /// lost its saved copy since they were made: a fetch ended, or another
+    /// view loaded or cleared it. Only the embeds of `only` (indexes in the
+    /// plan) are checked when it is given: the ones on screen, so a frame
+    /// checks the disk for those alone. Nothing while a re-plan runs.
+    fn replan_if_stale(&mut self, only: Option<&[usize]>, cx: &mut Context<Self>) {
+        if self.replan.is_some() {
+            return;
+        }
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let plan = &shown.plan;
+        if plan.embeds.iter().all(|embed| embed.remote.is_none()) {
+            return;
+        }
+        let remote = cx.default_global::<RemoteImages>().clone();
+        let stale = plan
+            .embeds
+            .iter()
+            .zip(&plan.files)
+            .enumerate()
+            .filter(|(e, _)| only.is_none_or(|only| only.contains(e)))
+            .any(|(_, (embed, file))| {
+                embed.remote.is_some() && image_file(embed, &remote).is_some() != file.is_some()
+            });
+        if stale {
+            self.replan(cx);
+        }
+    }
+
+    /// Resolve the shown note's remote embeds again and make the rows with
+    /// them, on tokio (the saved copies' headers are read there). The rows
+    /// keep the same text in view, the first match or the section's top
+    /// until the reader scrolls.
+    fn replan(&mut self, cx: &mut Context<Self>) {
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        #[cfg(test)]
+        {
+            self.replans += 1;
+        }
+        let cache = cx.default_global::<RemoteImages>().cache();
+        let lines = shown.lines.clone();
+        let first_match = shown.first_match;
+        let mut plan = shown.plan.clone();
+        plan.pane = self.wrap_pane();
+        let columns = self.wrap_columns();
+        self.replan = Some(cx.spawn(async move |this, cx| {
+            let job = {
+                let lines = lines.clone();
+                tokio::spawn(async move {
+                    plan.resolve_remote(cache.as_ref());
+                    let wrapped = wrap_lines(&lines, columns, first_match, &plan);
+                    (plan, wrapped)
+                })
+            };
+            let mut job = AbortOnDrop(job);
+            let done = (&mut job.0).await;
+            this.update(cx, |preview, cx| preview.replanned(&lines, done, cx))
+                .ok();
+        }));
+    }
+
+    /// A re-plan finished: show its rows if it is still the shown note, with
+    /// the same text in view. A size changed since is wrapped again.
+    fn replanned(
+        &mut self,
+        lines: &Arc<[NoteLine]>,
+        done: Result<(ImagePlan, Wrapped), JoinError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.replan = None;
+        let Ok((plan, wrapped)) = done else {
+            return;
+        };
+        let current = self
+            .shown
+            .as_ref()
+            .is_some_and(|s| Arc::ptr_eq(&s.lines, lines));
+        if !current {
+            return;
+        }
+        let anchor = self.view_anchor();
+        let Some(shown) = self.shown.as_mut() else {
+            return;
+        };
+        // A decode failed meanwhile: its note is not in this plan. Resolve
+        // again from the plan as it is now.
+        if plan.failed != shown.plan.failed {
+            self.replan(cx);
+            return;
+        }
+        shown.plan = plan;
+        shown.wrapped = wrapped;
+        // Strict: the anchor row is often still in view, and a plain scroll
+        // to an item in view does not move, so the text would shift.
+        if let Some((line, at, strategy)) = anchor {
+            self.scroll
+                .scroll_to_item_strict(row_of(&shown.wrapped.rows, line, at), strategy);
+        }
+        self.rewrap(cx);
+        cx.notify();
     }
 
     /// The decodes of `failed` failed after their headers read: their
@@ -1546,9 +1971,8 @@ impl SearchPreview {
         };
         let plan = &mut shown.plan;
         let mut changed = false;
-        for (e, embed) in plan.embeds.iter().enumerate() {
-            let Some((_, failure)) = failed.iter().find(|(f, _)| embed.file.as_ref() == Some(f))
-            else {
+        for (e, file) in plan.files.iter().enumerate() {
+            let Some((_, failure)) = failed.iter().find(|(f, _)| file.as_ref() == Some(f)) else {
                 continue;
             };
             if plan.naturals.get_mut(e).and_then(Option::take).is_some() {
@@ -1678,10 +2102,14 @@ impl Render for SearchPreview {
                     mark,
                     note: theme::image_note(t),
                     placeholder: theme::image_placeholder(t),
+                    remote: PlaceholderStyle::of(t, font(family.clone()), size),
                     scale: window.scale_factor(),
                 };
                 #[cfg(test)]
-                self.painted.borrow_mut().clear();
+                {
+                    self.painted.borrow_mut().clear();
+                    self.painted_remote.borrow_mut().clear();
+                }
                 uniform_list(
                     SharedString::from(format!("{}-lines", self.ids.0)),
                     shown.wrapped.rows.len(),
@@ -1689,6 +2117,7 @@ impl Render for SearchPreview {
                         let Some(shown) = this.shown.as_ref() else {
                             return Vec::new();
                         };
+                        let preview = cx.weak_entity();
                         // Most notes embed nothing: no image work at all.
                         let images = !shown.wrapped.images.is_empty();
                         let mut pixels = ImagePixels::new(images.then(|| {
@@ -1707,10 +2136,12 @@ impl Render for SearchPreview {
                                     item,
                                     SliceLog {
                                         painted: this.painted.clone(),
+                                        remote: this.painted_remote.clone(),
                                         row: ix,
                                     },
                                 );
-                                render_row(item, row, shown, &mut pixels, &style).test_support()
+                                render_row(item, row, shown, &mut pixels, &style, &preview)
+                                    .test_support()
                             })
                             .collect::<Vec<_>>();
                         if images || !this.visible.is_empty() {
@@ -1788,6 +2219,17 @@ impl Render for SearchPreview {
     }
 }
 
+/// A remote fetch for `preview` ended: its rows are made again when the
+/// copy changed them, and it redraws (a failure shows its note).
+fn fetch_ended(preview: &WeakEntity<SearchPreview>, cx: &mut App) {
+    preview
+        .update(cx, |preview, cx| {
+            preview.replan_if_stale(None, cx);
+            cx.notify();
+        })
+        .ok();
+}
+
 // ---- The query-syntax reference ----------------------------------------------
 
 /// The reference card's body: each section of [`SYNTAX`], its keys beside
@@ -1843,6 +2285,29 @@ pub(crate) fn label_query(label: &str) -> String {
 }
 
 impl Workspace {
+    /// Listen to `preview` (the search browser's, FIND's, SEM's, or the
+    /// Source reader's): "Always load from" on one of its placeholders
+    /// writes the host to the allowed hosts, then loads the image there.
+    pub(crate) fn watch_preview(
+        &self,
+        preview: &Entity<SearchPreview>,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe(
+            preview,
+            |this, preview, event: &PreviewEvent, cx| match event {
+                PreviewEvent::AlwaysLoadFrom { host, url } => {
+                    let url = url.clone();
+                    this.always_load_from(
+                        host.clone(),
+                        move |cx| preview.update(cx, |preview, cx| preview.load_remote(&url, cx)),
+                        cx,
+                    );
+                }
+            },
+        )
+    }
+
     /// Open the search browser on `query` (empty: the recent notes).
     /// Refused while a modal is open; says so without a workspace.
     pub(crate) fn open_search(
@@ -1877,6 +2342,8 @@ impl Workspace {
             open.clone(),
         ));
         let preview = cx.new(|cx| SearchPreview::new(vault, cx));
+        // It goes with the preview when the browser closes.
+        self.watch_preview(&preview, cx).detach();
         self.open_search_picker(source, query.unwrap_or_default(), open, preview, window, cx);
     }
 

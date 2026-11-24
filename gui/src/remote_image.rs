@@ -493,6 +493,13 @@ impl RemoteImages {
             .any(|allowed| host_matches(allowed, host))
     }
 
+    /// The image cache the store saves to and finds copies in: a cheap
+    /// handle over a folder path. The preview's planner, which runs off
+    /// the UI thread where the store cannot go, finds saved copies with it.
+    pub(crate) fn cache(&self) -> Option<ImageCache> {
+        self.inner.borrow().cache.clone()
+    }
+
     /// The state of `url` now. It starts no work. A saved copy wins, then a
     /// failure of the session, then a fetch under way, then the scheme. An
     /// address on an allowed host is `Blocked` too, until `auto_load`

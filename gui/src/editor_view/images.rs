@@ -30,13 +30,14 @@
 //! evicted to make room for another, and a decode that lands never asks for
 //! another.
 //!
-//! An editor that edits also draws **Remote image**s (CONTEXT.md). Until an
+//! Both kinds of editor also draw **Remote image**s (CONTEXT.md). Until an
 //! address has a saved copy, its embed takes the two lines of the
 //! placeholder ([`remote_rows`]). A saved copy is a file like a vault image:
 //! its header gives its rows, and it is pinned and decoded as one. Only the
 //! embeds on screen on an allowed host load on their own. When a fetch
-//! ends, the lines are sized again once. A read-only editor keeps its
-//! remote embed lines as text for now.
+//! ends, the lines are sized again once. Remote embeds count in the first
+//! 100 embeds of a read-only editor. A read-only editor shows a loaded
+//! remote image with its tooltip only: no menu and no follow.
 //!
 //! [`EditorSession::set_image_lines`]: kimun_notes::logic::editor::session::EditorSession::set_image_lines
 
@@ -414,21 +415,13 @@ impl EditorView {
         }
         let limit = images.source.as_ref().map(|_| READ_ONLY_EMBEDS);
         images.embeds = match (&note, &images.attachments) {
-            (Some(note), Some(attachments)) => {
-                let mut embeds = embeds_of(
-                    &self.editor.get_text(),
-                    note,
-                    attachments,
-                    &images.vault,
-                    limit,
-                );
-                // A read-only editor does not draw remote embeds yet: their
-                // lines stay text there.
-                if images.source.is_some() {
-                    embeds.retain(|embed| embed.remote.is_none());
-                }
-                embeds
-            }
+            (Some(note), Some(attachments)) => embeds_of(
+                &self.editor.get_text(),
+                note,
+                attachments,
+                &images.vault,
+                limit,
+            ),
             // Until the attachments are listed no embed resolves: the lines
             // stay text rather than flash "not found".
             _ => Vec::new(),

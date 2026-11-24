@@ -476,3 +476,354 @@ fn a_chunk_editor_reused_for_another_note_resolves_from_its_new_note(cx: &mut Te
     assert_eq!(shown_files(&view, 0, cx), [file("b/same.png")]);
     assert_eq!(pinned(cx), [file("b/same.png")]);
 }
+
+// ---- Remote images in a chunk ---------------------------------------------------
+
+mod remote {
+    //! A **Remote image** (CONTEXT.md) in a facet chunk: the placeholder
+    //! through the one placeholder piece, its buttons, the load, a saved
+    //! copy, and the tooltip only. The fetcher is a fake and the image cache
+    //! a temp folder: no test uses the network.
+
+    use std::time::Duration;
+
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext};
+    use tokio::runtime::Runtime;
+
+    use super::super::facet::{FacetEvent, FacetView};
+    use super::super::facet_tests::{Events, chunk, press};
+    use super::super::remote_image_tests::{Env, install};
+    use super::super::search::{PREVIEW_ROW_ID, SearchPreview};
+    use super::{image_rows, open_note, png, rest, vault_with};
+    use crate::editor_element::image_hover_id;
+    use crate::image_core::{Actions, RemoteLook};
+    use crate::remote_image::{Hop, RemoteImages, fetch_count};
+    use crate::remote_placeholder::RemoteAction;
+
+    const HOST: &str = "img.example.com";
+    const URL: &str = "https://img.example.com/pic.png";
+    const NOTE: &str = "intro\n![a cat](https://img.example.com/pic.png)\nafter";
+
+    fn runtime() -> Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// Draw and let the fetches run until `done`.
+    fn drive(
+        rt: &Runtime,
+        cx: &mut VisualTestContext,
+        mut done: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        for _ in 0..500 {
+            rest(cx);
+            if done(cx) {
+                return;
+            }
+            rt.block_on(tokio::time::sleep(Duration::from_millis(2)));
+        }
+        panic!("never settled");
+    }
+
+    fn allow(cx: &mut TestAppContext, hosts: &[&str]) {
+        let hosts: Vec<String> = hosts.iter().map(|h| h.to_string()).collect();
+        cx.update(|cx| {
+            cx.default_global::<RemoteImages>()
+                .clone()
+                .set_allowed_hosts(&hosts)
+        });
+    }
+
+    /// The remote looks chunk 0 painted on its last frame, by row.
+    fn looks(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Vec<(usize, RemoteLook)> {
+        let chunk = chunk(view, 0, cx);
+        cx.update(|_, cx| {
+            chunk
+                .read(cx)
+                .painted
+                .as_ref()
+                .map(|p| {
+                    p.remote_looks
+                        .iter()
+                        .map(|l| (l.row, l.look.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+    }
+
+    fn measured(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> Option<usize> {
+        let chunk = chunk(view, 0, cx);
+        cx.update(|_, cx| chunk.read(cx).measured_rows)
+    }
+
+    fn ready(view: &Entity<FacetView>, cx: &mut VisualTestContext) -> bool {
+        let chunk = chunk(view, 0, cx);
+        cx.update(|_, cx| {
+            chunk
+                .read(cx)
+                .painted
+                .as_ref()
+                .is_some_and(|p| p.images.iter().any(|i| i.row == 1 && i.ready))
+        })
+    }
+
+    /// Press the `action` button of the placeholder of `url` in chunk 0.
+    fn press_button(
+        view: &Entity<FacetView>,
+        url: &str,
+        action: RemoteAction,
+        cx: &mut VisualTestContext,
+    ) {
+        rest(cx);
+        let chunk = chunk(view, 0, cx);
+        let at = cx.update(|_, cx| {
+            chunk
+                .read(cx)
+                .remote_hits
+                .iter()
+                .filter(|hit| hit.url == url)
+                .flat_map(|hit| hit.buttons.iter())
+                .find(|(_, a)| *a == action)
+                .map(|(bounds, _)| bounds.center())
+                .unwrap_or_else(|| panic!("no {action:?} button for {url}"))
+        });
+        press(cx, at, false);
+    }
+
+    fn both() -> RemoteLook {
+        RemoteLook::Placeholder {
+            host: HOST.to_string(),
+            actions: Actions {
+                load: true,
+                always: true,
+            },
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_facet_chunk_with_a_remote_embed_on_an_unallowed_host_starts_no_fetch(
+        cx: &mut TestAppContext,
+    ) {
+        let env: Env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let v = vault_with(&[("n.md", NOTE)], &[]);
+        let (view, cx, _events, _sub) = open_note(cx, &v, "n.md", NOTE);
+        for _ in 0..3 {
+            rest(cx);
+        }
+        assert_eq!(
+            looks(&view, cx),
+            [(1, both())],
+            "the placeholder, both actions"
+        );
+        // Two text rows and the placeholder's two rows.
+        assert_eq!(measured(&view, cx), Some(4));
+        assert_eq!(cx.update(|_, cx| fetch_count(cx)), 0, "no fetch");
+        assert!(env.fake.calls().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn a_facet_chunk_draws_the_placeholder_and_load_swaps_in_the_image(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let v = vault_with(&[("n.md", NOTE)], &[]);
+        let (view, cx, events, _sub) = open_note(cx, &v, "n.md", NOTE);
+        assert_eq!(measured(&view, cx), Some(4));
+        let caret = chunk(&view, 0, cx).read_with(cx, |c, _| c.editor.cursor());
+        press_button(&view, URL, RemoteAction::Load, cx);
+        let rows = image_rows(60, cx);
+        let mut heights = Vec::new();
+        drive(&rt, cx, |cx| {
+            let h = measured(&view, cx);
+            if heights.last() != Some(&h) {
+                heights.push(h);
+            }
+            ready(&view, cx)
+        });
+        assert_eq!(measured(&view, cx), Some(2 + rows), "the image's rows");
+        // The chunk grew once: from the placeholder to the image.
+        assert_eq!(heights.last(), Some(&Some(2 + rows)));
+        assert!(
+            heights
+                .iter()
+                .all(|h| *h == Some(4) || *h == Some(2 + rows)),
+            "{heights:?}"
+        );
+        assert!(looks(&view, cx).is_empty(), "no placeholder any more");
+        assert_eq!(cx.update(|_, cx| fetch_count(cx)), 1);
+        // The press moved no caret and followed nothing.
+        let after = chunk(&view, 0, cx).read_with(cx, |c, _| c.editor.cursor());
+        assert_eq!(after, caret);
+        assert!(no_follow(&events), "{:?}", events.borrow());
+    }
+
+    fn no_follow(events: &Events) -> bool {
+        !events
+            .borrow()
+            .iter()
+            .any(|e| matches!(e, FacetEvent::Follow { .. } | FacetEvent::LinkMenu { .. }))
+    }
+
+    #[gpui_kit::test]
+    fn always_load_from_in_a_facet_chunk_asks_the_host_with_the_chunk(cx: &mut TestAppContext) {
+        let _env = install(cx, &[]);
+        let v = vault_with(&[("n.md", NOTE)], &[]);
+        let (view, cx, events, _sub) = open_note(cx, &v, "n.md", NOTE);
+        press_button(&view, URL, RemoteAction::AlwaysLoad, cx);
+        let editor = chunk(&view, 0, cx);
+        let asked: Vec<_> = events
+            .borrow()
+            .iter()
+            .filter_map(|e| match e {
+                FacetEvent::AlwaysLoadFrom { chunk, host, url } => {
+                    Some((chunk.clone(), host.clone(), url.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, [(editor, HOST.to_string(), URL.to_string())]);
+        assert_eq!(
+            cx.update(|_, cx| fetch_count(cx)),
+            0,
+            "the host loads it after the write"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_facet_chunk_with_a_saved_copy_draws_the_image_with_no_fetch(cx: &mut TestAppContext) {
+        let env = install(cx, &[]);
+        env.cache.save(URL, &png(10, 60)).unwrap();
+        let v = vault_with(&[("n.md", NOTE)], &[]);
+        let (view, cx, _events, _sub) = open_note(cx, &v, "n.md", NOTE);
+        let rows = image_rows(60, cx);
+        assert!(ready(&view, cx), "the saved copy is drawn");
+        assert_eq!(
+            measured(&view, cx),
+            Some(2 + rows),
+            "its rows from its header"
+        );
+        let saved = env.cache.find(URL).unwrap();
+        assert_eq!(
+            super::shown_files(&view, 0, cx),
+            [saved],
+            "the copy is pinned"
+        );
+        assert_eq!(cx.update(|_, cx| fetch_count(cx)), 0);
+    }
+
+    #[gpui_kit::test]
+    fn a_loaded_remote_image_in_a_read_only_view_has_the_tooltip_and_no_menu(
+        cx: &mut TestAppContext,
+    ) {
+        let env = install(cx, &[]);
+        env.cache.save(URL, &png(10, 60)).unwrap();
+        let v = vault_with(&[("n.md", NOTE)], &[]);
+        let (view, cx, events, _sub) = open_note(cx, &v, "n.md", NOTE);
+        assert!(ready(&view, cx));
+        let editor = chunk(&view, 0, cx);
+        crate::editor_element::BUILT_TIPS.with(|b| b.borrow_mut().clear());
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.hover(image_hover_id(1), cx);
+        });
+        cx.executor().advance_clock(Duration::from_secs(2));
+        rest(cx);
+        let built = crate::editor_element::BUILT_TIPS.with(|b| b.borrow().clone());
+        assert_eq!(
+            built.last().map(|t| t.as_ref()),
+            Some("a cat"),
+            "the tooltip"
+        );
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.right_click(image_hover_id(1), cx);
+            window.click(image_hover_id(1), cx);
+        });
+        rest(cx);
+        let menus = cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.find_all("popup-menu").len()
+        });
+        assert_eq!(menus, 0, "no menu");
+        let menu = editor.update(cx, |e, cx| e.remote_menu(URL, cx).is_some());
+        assert!(!menu, "a read-only editor builds no remote menu");
+        assert!(no_follow(&events));
+        assert_eq!(cx.update(|_, cx| fetch_count(cx)), 0);
+    }
+
+    /// A dead address on an allowed host: the preview asks once, it fails,
+    /// and the facet view that shows it later asks nothing.
+    #[gpui_kit::test]
+    fn a_dead_address_on_an_allowed_host_is_fetched_once_in_the_preview_and_the_facet(
+        cx: &mut TestAppContext,
+    ) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        // No script: the fake answers 404.
+        let env = install(cx, &[]);
+        allow(cx, &[HOST]);
+        let v = vault_with(&[("n.md", NOTE)], &[]);
+        let vault = v.vault.clone();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::editor_view::init(cx);
+        });
+        let window = cx.add_window(|_, cx| SearchPreview::new(vault, cx));
+        let preview = window.root(cx).unwrap();
+        preview.update(cx, |p, cx| {
+            p.show(
+                Some(kimun_core::nfs::VaultPath::new("n.md")),
+                std::sync::Arc::from(Vec::new()),
+                cx,
+            )
+        });
+        let failed = |cx: &mut TestAppContext| {
+            cx.read(|cx| {
+                matches!(
+                    cx.global::<RemoteImages>().state(URL),
+                    crate::remote_image::RemoteState::Failed(_)
+                )
+            })
+        };
+        for _ in 0..500 {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                window.render_frame(cx)
+            })
+            .unwrap();
+            cx.executor()
+                .advance_clock(super::super::search::PREVIEW_DEBOUNCE);
+            cx.run_until_parked();
+            if failed(cx) {
+                break;
+            }
+            rt.block_on(tokio::time::sleep(Duration::from_millis(2)));
+        }
+        assert!(failed(cx), "the preview asked and the fetch failed");
+        let drawn = cx
+            .update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                window.render_frame(cx);
+                window.try_find((PREVIEW_ROW_ID, 1usize)).is_some()
+            })
+            .unwrap();
+        assert!(drawn, "the placeholder row is on screen");
+        assert_eq!(env.fake.calls(), [URL.to_string()]);
+
+        let (view, cx, _events, _sub) = open_note(cx, &v, "n.md", NOTE);
+        for _ in 0..5 {
+            rest(cx);
+            rt.block_on(tokio::time::sleep(Duration::from_millis(2)));
+        }
+        let looks = looks(&view, cx);
+        assert!(
+            matches!(&looks[..], [(1, RemoteLook::Failed { retry: true, .. })]),
+            "{looks:?}"
+        );
+        assert_eq!(cx.update(|_, cx| fetch_count(cx)), 1, "asked once in all");
+    }
+}
