@@ -45,7 +45,7 @@ pub(super) fn stop_row(stop: &Stop, gaps: &[PieceGaps]) -> Option<Row> {
 /// around it in a viewport `viewport` tall, moving the least from
 /// `offset`. A row taller than the viewport shows its top. `None` when the
 /// row shows already.
-pub(super) fn reveal_offset(
+pub(crate) fn reveal_offset(
     (top, bottom): (Pixels, Pixels),
     offset: Pixels,
     viewport: Pixels,

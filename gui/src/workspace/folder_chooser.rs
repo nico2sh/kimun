@@ -18,12 +18,18 @@
 //! opens, and drives it: Up and Down move the selection, Enter opens the
 //! row or goes to the typed path, Ctrl+Enter (Cmd+Enter) chooses the
 //! folder, Alt+Up (Cmd+Up on macOS, read from the keymap's platform) and
-//! Backspace in the empty field go up, Ctrl+N opens `New folder…`, Esc
-//! clears the text and then cancels. Left, Right, a plain N and Backspace
+//! Backspace in the empty field go up, Ctrl+N (Cmd+N) opens `New folder…`,
+//! Esc clears the text and then cancels. A click on a row leaves the
+//! keyboard in the field. Left, Right, a plain N and Backspace
 //! with text are the field's. The chooser catches the kit's field actions
 //! (`Enter`, `Escape`, `MoveUp`, `MoveDown`, `Backspace`) on its own root
 //! in the capture phase, after the host's capture handlers and before the
 //! field's own, and stops them there.
+//!
+//! **Height.** The list takes [`LIST_FRACTION`] of the window's height,
+//! between [`LIST_MIN_REMS`] and [`LIST_MAX_REMS`] ([`list_height`]), in
+//! every host. A host of fixed height shrinks it to fit, never under the
+//! floor; a host too short for that scrolls.
 //!
 //! **Behaviour owner.** The chooser entity: the folder shown, its listing,
 //! the rows shown and the selection, the fields and the work under way.
@@ -62,9 +68,9 @@ use gpui_kit::component::input::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, Entity, EventEmitter, Focusable as _,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role, ScrollStrategy,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
-    Window, div, rems, uniform_list,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Role,
+    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
+    UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_core::system::{self, SystemPath};
 use kimun_notes::logic::file_ops;
@@ -97,6 +103,22 @@ pub(crate) fn file_row_id(prefix: &str, path: &SystemPath) -> SharedString {
 
 /// The Location field's accessible name.
 const LOCATION_LABEL: &str = "Location";
+
+/// The list's least height, in rems: a short window keeps it.
+pub(crate) const LIST_MIN_REMS: f32 = 14.0;
+
+/// The list's greatest height, in rems: a tall window stops there.
+pub(crate) const LIST_MAX_REMS: f32 = 36.0;
+
+/// The share of the window's height the list takes between the two.
+pub(crate) const LIST_FRACTION: f32 = 0.45;
+
+/// The list's height in a window `viewport_height` tall whose rem is `rem`:
+/// [`LIST_FRACTION`] of the window, kept between [`LIST_MIN_REMS`] and
+/// [`LIST_MAX_REMS`]. One rule for every host.
+pub(crate) fn list_height(viewport_height: Pixels, rem: Pixels) -> Pixels {
+    (viewport_height * LIST_FRACTION).clamp(rem * LIST_MIN_REMS, rem * LIST_MAX_REMS)
+}
 
 /// The chooser's element ids under the host's `prefix`: `{prefix}-chooser`,
 /// `{prefix}-chooser-<part>`.
@@ -710,10 +732,12 @@ impl FolderChooser {
     }
 
     /// The kit binds Cmd+Up on macOS to the field's caret (start of the
-    /// text): in the chooser it goes up, as Alt+Up does elsewhere.
+    /// text): in the chooser it goes up, as Alt+Up does elsewhere. Cmd+Up is
+    /// the kit's only macOS key for it; elsewhere it is Ctrl+Home, which
+    /// stays the caret's. The action carries no keystroke, and the window's
+    /// modifiers follow only modifier-change events, so neither is read.
     fn on_move_to_start(&mut self, _: &MoveToStart, window: &mut Window, cx: &mut Context<Self>) {
-        let cmd = window.modifiers().platform;
-        if cmd && self.location_focused(window, cx) && keymap::platform(cx) == Platform::MacOs {
+        if self.location_focused(window, cx) && keymap::platform(cx) == Platform::MacOs {
             self.up(window, cx);
             cx.stop_propagation();
         }
@@ -738,7 +762,7 @@ impl FolderChooser {
 
     /// [`Self::HINTS`] on macOS.
     pub(crate) const HINTS_MAC: &'static str = "Up and Down: select · Enter: open or go to the \
-         path · Cmd+Up: up · Cmd+Enter: choose · Ctrl+N: new folder · Esc: clear or back";
+         path · Cmd+Up: up · Cmd+Enter: choose · Cmd+N: new folder · Esc: clear or back";
 
     /// [`Self::HINTS`] in files mode: no choose, no new folder.
     pub(crate) const FILE_HINTS: &'static str = "Up and Down: select · Enter: open a folder, \
@@ -788,10 +812,11 @@ fn note(text: impl Into<SharedString>, t: &Theme) -> impl IntoElement {
 }
 
 impl Render for FolderChooser {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::current(cx);
         let t = &*theme;
         let prefix = self.prefix;
+        let list_height = list_height(window.viewport_size().height, window.rem_size());
         let has_parent = self.dir.parent().is_some();
         let body = match &self.listing {
             Listing::Loading => note("Loading…", t).into_any_element(),
@@ -862,6 +887,10 @@ impl Render for FolderChooser {
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
+                                        // A row takes no focus: the press gave
+                                        // it to the host's root. The field keeps
+                                        // the keyboard, so typing goes on.
+                                        this.focus_location(window, cx);
                                         if file {
                                             cx.emit(FolderChooserEvent::ChosenFile(dir.clone()));
                                         } else if event.click_count() >= 2 {
@@ -1005,14 +1034,20 @@ impl Render for FolderChooser {
                         },
                         system::path_to_string(&self.dir)
                     )))
-                    .flex_1()
-                    .min_h(rems(8.))
-                    .h(rems(14.))
+                    // Its own height, from the window's, and no taller: a
+                    // tall host leaves the rest empty. A host of fixed
+                    // height (the setup card) shrinks it to fit, never
+                    // under the floor: a short host scrolls instead.
+                    .flex_shrink(1.)
+                    .min_h(rems(LIST_MIN_REMS))
+                    .h(list_height)
                     .p_1()
                     .rounded_md()
                     .border_1()
                     .border_color(theme::divider(t))
-                    .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                        // As on a row: the field keeps the keyboard.
+                        this.focus_location(window, cx);
                         if event.click_count() >= 2 {
                             this.choose(cx);
                         }

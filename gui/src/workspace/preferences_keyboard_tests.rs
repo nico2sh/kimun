@@ -1072,8 +1072,8 @@ mod file {
     use crate::keymap::file::export;
     use crate::workspace::folder_chooser::{self, FolderChooser, Listing};
     use crate::workspace::preferences::keyboard::file::{
-        CHOOSER_PREFIX, EXPORT_CHOOSE_ID, EXPORT_ID, EXPORT_NOTICE_ID, EXPORT_PATH_ID,
-        IMPORT_CHOOSE_ID, IMPORT_ID, IMPORT_NOTICE_ID, IMPORT_PATH_ID,
+        CHOOSER_AREA_ID, CHOOSER_PREFIX, EXPORT_CHOOSE_ID, EXPORT_ID, EXPORT_NOTICE_ID,
+        EXPORT_PATH_ID, IMPORT_CHOOSE_ID, IMPORT_ID, IMPORT_NOTICE_ID, IMPORT_PATH_ID,
     };
     use crate::workspace::preferences_tests::config;
     use crate::workspace::start_tests::drive;
@@ -1253,6 +1253,88 @@ mod file {
             s.pf_shows(IMPORT_CHOOSE_ID, cx),
             "the Import row is in view"
         );
+        settle(&rt, cx);
+    }
+
+    /// The bounds of `id` once the frames after an open are drawn: the
+    /// pane's scroll to the chooser lands in the frame after the one that
+    /// first lays the chooser out, as in the app.
+    fn settled_bounds(
+        s: &Started,
+        id: impl Into<gpui_kit::ElementId>,
+        cx: &mut TestAppContext,
+    ) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+        let id = id.into();
+        cx.update_window(s.handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.find(id).bounds()
+        })
+        .unwrap()
+    }
+
+    /// In a window where the whole chooser fits, it opens wholly in the
+    /// pane: heading, field, list, commands and hints.
+    #[gpui_kit::test]
+    fn the_keyboard_chooser_is_fully_in_view_when_it_fits(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        cx.simulate_window_resize(s.handle, gpui_kit::size(px(1000.), px(1000.)));
+        cx.run_until_parked();
+        let (_tmp, dir) = folder();
+        set_path(&s, true, &dir.join("mine.toml"), cx);
+        click(&s, EXPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        let area = settled_bounds(&s, CHOOSER_AREA_ID, cx);
+        let pane = settled_bounds(&s, CONTENT_ID, cx);
+        assert!(
+            area.size.height < pane.size.height,
+            "the chooser {area:?} fits the pane {pane:?}"
+        );
+        assert!(
+            area.top() >= pane.top() && area.bottom() <= pane.bottom(),
+            "the chooser {area:?} is inside the pane {pane:?}"
+        );
+        settle(&rt, cx);
+    }
+
+    /// In a short window the chooser is taller than the pane: the pane
+    /// shows its top, so the heading, the Location field and the list
+    /// show. The list keeps its floor, and the wheel still reaches the
+    /// commands.
+    #[gpui_kit::test]
+    fn a_chooser_taller_than_the_pane_shows_its_top(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        cx.simulate_window_resize(s.handle, gpui_kit::size(px(1000.), px(420.)));
+        cx.run_until_parked();
+        let (_tmp, dir) = folder();
+        set_path(&s, true, &dir.join("mine.toml"), cx);
+        click(&s, EXPORT_CHOOSE_ID, cx);
+        chooser(&s, &rt, cx);
+        let area = settled_bounds(&s, CHOOSER_AREA_ID, cx);
+        let pane = settled_bounds(&s, CONTENT_ID, cx);
+        assert!(
+            area.size.height > pane.size.height,
+            "the chooser {area:?} is taller than the pane {pane:?}"
+        );
+        assert!(
+            (area.top() - pane.top()).abs() < px(1.),
+            "the chooser's top {area:?} is at the pane's top {pane:?}"
+        );
+        let location = settled_bounds(&s, format!("{CHOOSER_PREFIX}-chooser-location"), cx);
+        assert!(location.bottom() <= pane.bottom(), "the field shows");
+        let rows = settled_bounds(&s, format!("{CHOOSER_PREFIX}-chooser-rows"), cx);
+        let rem = cx
+            .update_window(s.handle, |_, window, _| window.rem_size())
+            .unwrap();
+        assert_eq!(rows.size.height, rem * folder_chooser::LIST_MIN_REMS);
+        assert!(rows.top() < pane.bottom(), "the list shows");
+        let choose = format!("{CHOOSER_PREFIX}-chooser-choose");
+        reveal(&s, choose.clone(), cx);
+        assert!(s.pf_shows(choose, cx), "the wheel reaches the commands");
         settle(&rt, cx);
     }
 
