@@ -1697,15 +1697,32 @@ mod tests {
         assert_eq!(state(cx, A), blocked("c.example.org"));
     }
 
-    /// A fake that sleeps before each answer.
-    struct Slow {
+    /// A fake whose first hop answers at once and whose second hop ends
+    /// just past the deadline of the fetch. It waits for the deadline it is
+    /// given, not for a fixed time, so a slow machine cannot move the end of
+    /// a hop to the wrong side of the limit.
+    struct LateSecondHop {
         inner: Arc<Fake>,
-        delay: Duration,
+        deadlines: Mutex<Vec<Instant>>,
     }
 
-    impl Fetcher for Slow {
+    impl Fetcher for LateSecondHop {
         fn get(&self, url: &str) -> Hop {
-            std::thread::sleep(self.delay);
+            panic!("the fetch must pass its deadline: get_until({url})")
+        }
+
+        fn get_until(&self, url: &str, deadline: Instant) -> Hop {
+            let hop = {
+                let mut deadlines = self.deadlines.lock().unwrap();
+                deadlines.push(deadline);
+                deadlines.len()
+            };
+            if hop == 2 {
+                while Instant::now() <= deadline {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    std::thread::sleep(left + Duration::from_millis(1));
+                }
+            }
             self.inner.get(url)
         }
     }
@@ -1720,22 +1737,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = ImageCache::at(SystemPath::try_absolute(dir.path()).unwrap());
         let fetches = Arc::new(AtomicUsize::new(0));
+        let fetcher = Arc::new(LateSecondHop {
+            inner: fake.clone(),
+            deadlines: Mutex::new(Vec::new()),
+        });
         let job = Job {
-            fetcher: Arc::new(Slow {
-                inner: fake.clone(),
-                delay: Duration::from_millis(150),
-            }),
+            fetcher: fetcher.clone(),
             fetches: fetches.clone(),
             cache: Some(cache.clone()),
             allowed: AllowedHosts::default(),
             permits: Vec::new(),
             url: A.to_string(),
-            total: Duration::from_millis(250),
+            // Long enough that the first hop, which answers at once, ends
+            // well inside it on a slow machine. The second hop waits for it.
+            total: Duration::from_millis(500),
         };
         assert!(matches!(job.run(), Outcome::Failed(FetchFailure::TimedOut)));
         // The second hop ends past the limit, so the third never starts.
-        assert_eq!(fake.calls().len(), 2);
+        assert_eq!(
+            fake.calls(),
+            vec![A.to_string(), "https://img.example.com/1".to_string()]
+        );
         assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        // One limit for the whole fetch: every hop gets the same deadline.
+        let deadlines = fetcher.deadlines.lock().unwrap().clone();
+        assert_eq!(deadlines.len(), 2);
+        assert_eq!(deadlines[0], deadlines[1]);
         assert!(cache.find(A).is_none());
     }
 
