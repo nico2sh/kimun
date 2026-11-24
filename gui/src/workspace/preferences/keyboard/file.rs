@@ -14,8 +14,10 @@
 //! - Both run off the UI thread; every control waits for them
 //!   ([`PreferencesView::busy`]).
 //! - The chooser shows in place of the two fields, with its commands and
-//!   key hints, as in Workspaces. The view hands it the keys while its root
-//!   has the keyboard.
+//!   key hints, as in Workspaces. The area is the foot of the page, so the
+//!   pane scrolls to the bottom when the chooser opens, and again when an
+//!   Export or Import result shows (it grows the page below where the pane
+//!   rests). The view hands it the keys while its root has the keyboard.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -34,7 +36,7 @@ use kimun_notes::settings::themes::Theme;
 
 use super::super::super::folder_chooser::{self, FolderChooser, FolderChooserEvent};
 use super::super::workspaces::{Notice, button_row, notice_line};
-use super::super::{PreferencesView, label, note};
+use super::super::{PreferencesView, Section, label, note};
 use crate::keymap::file::{Imported, read_file, write_file};
 use crate::keymap::{self, KeymapError};
 use crate::tasks::blocking;
@@ -58,6 +60,10 @@ pub(crate) const IMPORT_CHOOSE_ID: &str = "preferences-keyboard-import-choose";
 pub(crate) const IMPORT_ID: &str = "preferences-keyboard-import";
 /// The Import result lines.
 pub(crate) const IMPORT_NOTICE_ID: &str = "preferences-keyboard-import-notice";
+
+/// The note under the Keymap file heading.
+pub(crate) const FILE_NOTE: &str =
+    "Export saves your changed shortcuts to a file. Import loads a file in their place.";
 
 /// The file name Export starts with, in the home folder.
 const FILE_NAME: &str = "kimun-keys.toml";
@@ -217,13 +223,14 @@ impl PreferencesView {
         self.keyboard.file.task.is_some()
     }
 
-    /// Whether one of the area's fields has the keyboard (a path field, the
-    /// chooser's new folder).
+    /// Whether one of the section's fields has the keyboard (the filter, a
+    /// path field, the chooser's new folder).
     pub(crate) fn keyboard_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
         let file = &self.keyboard.file;
         let focused =
             |input: &Entity<InputState>| input.read(cx).focus_handle(cx).is_focused(window);
-        focused(&file.export_input)
+        self.keyboard_filter_focused(window, cx)
+            || focused(&file.export_input)
             || focused(&file.import_input)
             || file
                 .chooser
@@ -233,8 +240,8 @@ impl PreferencesView {
 
     // ---- acting ------------------------------------------------------------
 
-    /// Enter in one of the area's fields: Create in the new folder field,
-    /// else Export or Import.
+    /// Enter in one of the section's fields: Create in the new folder
+    /// field, Export or Import in theirs, nothing in the filter.
     pub(crate) fn keyboard_field_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(chooser) = self.keyboard_chooser()
             && chooser.read(cx).new_folder_focused(window, cx)
@@ -251,13 +258,22 @@ impl PreferencesView {
         }
     }
 
-    /// Esc in one of the area's fields: the new folder field closes, a path
-    /// field cancels the view, as Esc does everywhere in it.
+    /// Esc in one of the section's fields: the filter's text goes, the new
+    /// folder field closes, the chooser closes (from the empty filter), else
+    /// (a path field, the empty filter) it cancels the view, as Esc does
+    /// everywhere in it.
     pub(crate) fn keyboard_field_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(chooser) = self.keyboard_chooser()
-            && chooser.read(cx).new_folder_focused(window, cx)
-        {
-            chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
+        if self.keyboard_filter_focused(window, cx) && self.keyboard_filter_escape(window, cx) {
+            return;
+        }
+        if let Some(chooser) = self.keyboard_chooser() {
+            if chooser.read(cx).new_folder_focused(window, cx) {
+                chooser.update(cx, |c, cx| c.close_new_folder(window, cx));
+            } else {
+                // The empty filter, with the chooser up: Esc closes the
+                // chooser, as it does elsewhere in the section.
+                self.keyboard_close_chooser(window, cx);
+            }
             return;
         }
         self.cancel(false, window, cx);
@@ -286,6 +302,7 @@ impl PreferencesView {
                     })
                 }
             }
+            self.keyboard_file_result_shown();
             cx.notify();
             return;
         };
@@ -300,8 +317,23 @@ impl PreferencesView {
         self.keyboard.file._chooser_events =
             Some(cx.subscribe_in(&chooser, window, Self::on_keyboard_chooser_event));
         self.keyboard.file.chooser = Some((target, chooser));
+        // The chooser replaces the area at the foot of the page and is much
+        // taller: scroll to the bottom so that its commands and hints show.
+        // Closing it shrinks the page, and the offset clamps there.
+        self.content_scroll.scroll_to_bottom();
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    /// An Export or Import result was just set. It grows the foot of the
+    /// page, where the pane may rest (after a chooser): scroll to the
+    /// bottom once so that the whole result shows.
+    fn keyboard_file_result_shown(&mut self) {
+        // A slow task can land after the user went to another section: the
+        // pane is that section's then.
+        if self.section == Section::Keyboard {
+            self.content_scroll.scroll_to_bottom();
+        }
     }
 
     /// The chooser goes; the keyboard goes back to the field it was for.
@@ -361,6 +393,7 @@ impl PreferencesView {
             Ok(path) => path,
             Err(why) => {
                 self.keyboard.file.export_notice = Some(Notice::error(why));
+                self.keyboard_file_result_shown();
                 cx.notify();
                 return;
             }
@@ -377,6 +410,7 @@ impl PreferencesView {
                     Ok(()) => Notice::info(format!("Saved to {shown}.")),
                     Err(e) => Notice::error(e),
                 });
+                view.keyboard_file_result_shown();
                 cx.notify();
             })
             .ok();
@@ -397,6 +431,7 @@ impl PreferencesView {
                     error: true,
                     lines: vec![why.into()],
                 });
+                self.keyboard_file_result_shown();
                 cx.notify();
                 return;
             }
@@ -421,6 +456,7 @@ impl PreferencesView {
     }
 
     fn keyboard_imported(&mut self, read: Result<Imported, String>) {
+        self.keyboard_file_result_shown();
         let imported = match read {
             Ok(imported) => imported,
             Err(e) => {
@@ -438,6 +474,7 @@ impl PreferencesView {
         let mut lines: Vec<SharedString> = vec![loaded(draft.changes()).into()];
         lines.extend(imported.dropped.iter().map(|e| skipped(e).into()));
         self.keyboard.lines.clear();
+        self.keyboard.forget_kept();
         self.keyboard.notice = None;
         self.keyboard_write();
         self.keyboard.file.import_notice = Some(ImportNotice {
@@ -583,11 +620,7 @@ impl PreferencesView {
             .flex_col()
             .gap_3()
             .child(heading("Keymap file"))
-            .child(note(
-                "Export saves your changed shortcuts to a file. Import loads one in \
-                 their place; nothing is kept until you save.",
-                t,
-            ))
+            .child(note(FILE_NOTE, t))
             .child(self.render_file_row(Target::Export, cx, t))
             .children(
                 self.keyboard

@@ -22,11 +22,16 @@
 //! shows the files with one extension (`logic::onboarding::list_files`:
 //! hidden folders listed, hidden files left out). A folder works as before; a click or Enter on
 //! a file picks it ([`FolderChooserEvent::ChosenFile`]). There is no
-//! `Choose this folder` then.
+//! `Choose this folder` then, and no `New folder…` (nor its N key).
+//!
+//! Each row shows a folder or file icon before its name, and its label
+//! names the kind, so the kind is not told by colour alone.
 
 use crate::tasks::blocking;
+use gpui_kit::assets::IconName;
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
+use gpui_kit::component::Icon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -414,7 +419,8 @@ impl FolderChooser {
             Key::Up if plain => self.move_selection(false, cx),
             Key::Down if plain => self.move_selection(true, cx),
             Key::Esc => self.cancel(cx),
-            Key::Char('n') if plain => self.open_new_folder(window, cx),
+            // No new folder in files mode: a file is picked there.
+            Key::Char('n') if plain && self.files.is_none() => self.open_new_folder(window, cx),
             _ => return false,
         }
         true
@@ -426,7 +432,7 @@ impl FolderChooser {
 
     /// [`Self::HINTS`] in files mode.
     pub(crate) const FILE_HINTS: &'static str =
-        "↑/↓: select · Enter: open a folder or pick a file · ←: up · N: new folder · Esc: back";
+        "↑/↓: select · Enter: open a folder or pick a file · ←: up · Esc: back";
 
     /// The key hints for this chooser's mode.
     pub(crate) fn hints(&self) -> &'static str {
@@ -504,6 +510,13 @@ impl Render for FolderChooser {
                             let selected = this.selected == Some(ix);
                             let name = folder_name(&dir);
                             let file = this.is_file(ix);
+                            // The kind is told by an icon and in the
+                            // label, not by the colour alone.
+                            let (kind, icon, color) = if file {
+                                ("file", IconName::FileText, theme::foreground(&t))
+                            } else {
+                                ("folder", IconName::Folder, theme::directory(&t))
+                            };
                             div()
                                 .id(if file {
                                     file_row_id(prefix, &dir)
@@ -512,23 +525,21 @@ impl Render for FolderChooser {
                                 })
                                 .test_support()
                                 .role(Role::ListBoxOption)
-                                .aria_label(SharedString::from(name.clone()))
+                                .aria_label(SharedString::from(format!("{name}, {kind}")))
                                 .aria_selected(selected)
                                 .flex()
                                 .items_center()
+                                .gap_2()
                                 .w_full()
                                 .h(rems(1.75))
                                 .px_2()
                                 .rounded_md()
                                 .text_sm()
-                                .text_color(if file {
-                                    theme::foreground(&t)
-                                } else {
-                                    theme::directory(&t)
-                                })
+                                .text_color(color)
                                 .when(selected, |row| row.bg(theme::selected_background(&t)))
                                 .when(!selected, |row| row.hover(move |style| style.bg(hover)))
-                                .child(div().truncate().child(name))
+                                .child(Icon::new(icon).size_4().flex_none().text_color(color))
+                                .child(div().min_w_0().truncate().child(name))
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
@@ -663,9 +674,9 @@ impl Render for FolderChooser {
 }
 
 /// The chooser's commands (`New folder…`, `Cancel`, `Choose this folder`),
-/// as a row of buttons for the host's footer, with `spacer` between the
-/// first and the other two.
-/// In files mode there is no `Choose this folder`.
+/// as a row of buttons for the host's footer, with a spacer before
+/// `Cancel`. Files mode has only the spacer and `Cancel`: no `New folder…`
+/// and no `Choose this folder`.
 pub(crate) fn actions(chooser: &Entity<FolderChooser>, cx: &App) -> Vec<AnyElement> {
     let prefix = chooser.read(cx).prefix;
     let creating = chooser.read(cx).creating();
@@ -673,20 +684,27 @@ pub(crate) fn actions(chooser: &Entity<FolderChooser>, cx: &App) -> Vec<AnyEleme
     let new = chooser.clone();
     let cancel = chooser.clone();
     let choose = chooser.clone();
-    let mut buttons = vec![
-        Button::new(id(prefix, "new"))
-            .label("New folder…")
-            .disabled(creating)
-            .on_click(move |_: &ClickEvent, window, cx| {
-                new.update(cx, |c, cx| c.open_new_folder(window, cx))
-            })
-            .into_any_element(),
-        div().flex_1().into_any_element(),
+    let mut buttons = Vec::new();
+    // Files mode picks a file: a new, empty folder is no use there.
+    if !files {
+        buttons.push(
+            Button::new(id(prefix, "new"))
+                .label("New folder…")
+                .disabled(creating)
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    new.update(cx, |c, cx| c.open_new_folder(window, cx))
+                })
+                .into_any_element(),
+        );
+    }
+    // The spacer stays, so Cancel keeps its side.
+    buttons.push(div().flex_1().into_any_element());
+    buttons.push(
         Button::new(id(prefix, "cancel"))
             .label("Cancel")
             .on_click(move |_: &ClickEvent, _, cx| cancel.update(cx, |c, cx| c.cancel(cx)))
             .into_any_element(),
-    ];
+    );
     if !files {
         buttons.push(
             Button::new(id(prefix, "choose"))

@@ -9,10 +9,11 @@
 //!   always (`Clear` off while the row has no chord), `Reset` once the row
 //!   differs from its default.
 //! - **Change** listens on the row; the listening lives here, not in the
-//!   draft. The next key is checked ([`check_capture`]): a refused key says
-//!   why and the row keeps listening, Esc ends it (the refusal goes, an
-//!   earlier warning stays). A taken key is assigned, and it moves from
-//!   every holder. Both rows then say so.
+//!   draft. The listening row has the selected background and its `Change`
+//!   reads `Cancel`. The next key is checked ([`check_capture`]): a refused
+//!   key says why and the row keeps listening, Esc or `Cancel` ends it (the
+//!   refusal goes, an earlier warning stays). A taken key is assigned, and
+//!   it moves from every holder. Both rows then say so.
 //! - **Clear** leaves the row with no chord, saved as `Action = []`.
 //! - **Focus.** After a capture, Esc, Clear or Reset the keyboard goes back
 //!   to the row's `Change`: one handle, given to the `Change` of the row
@@ -23,7 +24,8 @@
 //! - **Reset** gives the row its defaults back (and takes them from a
 //!   holder, with the same warning). **Reset all** forgets every change.
 //!
-//! - **Export and import** of the keymap file: [`file`](mod@file).
+//! - **Export and import** of the keymap file, under the list:
+//!   [`file`](mod@file).
 //!
 //! The lines under a row stay until that row changes again, Reset all, an
 //! import, or the view closes. The `Reset all` notice and the Export
@@ -35,18 +37,23 @@ use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Role, SharedString, StatefulInteractiveElement, Styled, Window, div,
+    AnyElement, AppContext as _, ClickEvent, Context, Entity, FocusHandle, Focusable as _,
+    FontWeight, InteractiveElement, IntoElement, ParentElement, Role, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, rems,
 };
 use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::input::{Key, KeyInput};
 use kimun_notes::settings::themes::Theme;
 
 use super::workspaces::{Notice, button_row, notice_line};
-use super::{PreferencesView, note};
-use crate::keymap::draft::{Group, KeyDraft, bindable_groups, check_capture, takes_editing_key};
-use crate::keymap::{self, format_chord};
+use super::{PreferencesView, label, note};
+use crate::keymap::draft::{
+    Group, KeyDraft, Row, bindable_groups, check_capture, takes_editing_key, write_chord,
+};
+use crate::keymap::{self, Platform, format_chord};
 use crate::theme;
 
 pub(crate) mod file;
@@ -57,6 +64,10 @@ pub(crate) const KEYBOARD_ID: &str = "preferences-keyboard";
 pub(crate) const RESET_ALL_ID: &str = "preferences-keyboard-reset-all";
 /// The section's result line, under `Reset all`.
 pub(crate) const NOTICE_ID: &str = "preferences-keyboard-notice";
+/// The filter field above the list.
+pub(crate) const FILTER_ID: &str = "preferences-keyboard-filter";
+/// The line that says no row matches the filter.
+pub(crate) const FILTER_EMPTY_ID: &str = "preferences-keyboard-filter-empty";
 
 /// What a row with no chord reads.
 pub(crate) const NONE: &str = "none";
@@ -66,6 +77,22 @@ pub(crate) const VIM_NOTE: &str = "In the editor with vim mode, vim reads this k
 /// ([`takes_editing_key`]).
 pub(crate) const EDITOR_NOTE: &str =
     "In the editor, this key then runs this shortcut and no longer edits text.";
+/// The least width of a row's label column; it takes the rest of the row.
+const LABEL_MIN_REMS: f32 = 10.;
+/// The width of a row's chord column, so that the buttons after it start
+/// at one x on every row. It holds two chords on one line; a longer list
+/// wraps inside the column and is never cut.
+const CHORD_REMS: f32 = 11.5;
+/// The least width of a row's buttons (`Change`, `Clear`, `Reset`): room
+/// for all three, so that a `Reset` appearing moves nothing.
+const BUTTONS_REMS: f32 = 12.5;
+
+/// The filter field's label, read and shown.
+const FILTER_LABEL: &str = "Filter shortcuts";
+
+/// The section's intro, above `Reset all`.
+pub(crate) const INTRO: &str = "Change a shortcut, then press the new keys. Esc cancels. If another \
+     action already has those keys, it loses them. Save to keep your changes.";
 /// What `Reset all` says it did.
 pub(crate) const RESET_ALL_DONE: &str = "Every shortcut is back to its default.";
 
@@ -98,6 +125,83 @@ pub(crate) fn reset_id(action: &ActionShortcuts) -> SharedString {
 /// refused key, the notes.
 pub(crate) fn warning_id(action: &ActionShortcuts) -> SharedString {
     format!("preferences-keyboard-warning-{action}").into()
+}
+
+/// The words of the filter text, lowercased; none for an empty field.
+fn filter_words(text: &str) -> Vec<String> {
+    text.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Whether every word is somewhere in `text` (lowercased).
+fn row_matches(words: &[String], text: &str) -> bool {
+    words.iter().all(|w| text.contains(w.as_str()))
+}
+
+/// `chord` spelled out the macOS way, as the docs name the keys: `cmd`,
+/// `ctrl`, `option`, `shift`, then the key (`cmd+option+m`). A chord with
+/// Option is also spelled with `alt`. The key is named as a keymap file
+/// names it.
+fn mac_spelled(chord: KeyInput) -> Vec<String> {
+    let written = write_chord(chord, Platform::MacOs);
+    let key = written.rsplit('+').next().unwrap_or_default();
+    let mods = chord.mods;
+    let spell = |alt: &str| {
+        let mut parts: Vec<&str> = Vec::new();
+        if mods.sup {
+            parts.push("cmd");
+        }
+        if mods.ctrl {
+            parts.push("ctrl");
+        }
+        if mods.alt {
+            parts.push(alt);
+        }
+        if mods.shift || chord.key == Key::BackTab {
+            parts.push("shift");
+        }
+        parts.push(key);
+        parts.join("+")
+    };
+    let mut spelled = vec![spell("option")];
+    if mods.alt {
+        spelled.push(spell("alt"));
+    }
+    spelled
+}
+
+/// What the filter of a row looks in, lowercased: its label, its scope
+/// tag, the chords it shows (or "none"), the chords as a keymap file
+/// writes them (`primary+e`), and on macOS the chords spelled out
+/// ([`mac_spelled`]), since the row shows glyphs there.
+fn row_text(draft: &KeyDraft, row: &Row, platform: Platform) -> String {
+    let chords = draft.chords(&row.action);
+    let mut text = row.label.to_string();
+    if let Some(tag) = row.scope_tag {
+        text.push(' ');
+        text.push_str(tag);
+    }
+    if chords.is_empty() {
+        text.push(' ');
+        text.push_str(NONE);
+    }
+    for chord in chords {
+        text.push(' ');
+        text.push_str(&format_chord(chord));
+        text.push(' ');
+        text.push_str(&write_chord(chord, platform));
+        if platform == Platform::MacOs {
+            for spelled in mac_spelled(chord) {
+                text.push(' ');
+                text.push_str(&spelled);
+            }
+        }
+    }
+    text.to_lowercase()
+}
+
+/// The line under the filter when no row matches `text`.
+fn no_match(text: &str) -> String {
+    format!("No shortcut matches \"{text}\".")
 }
 
 /// The warning on both rows when `chord` moves away from `holder`.
@@ -141,13 +245,33 @@ pub(crate) struct KeyboardSection {
     /// The row that takes the next key.
     listening: Option<ActionShortcuts>,
     lines: BTreeMap<ActionShortcuts, Vec<Line>>,
+    /// The rows an edit changed or warned, with the filter text at that
+    /// moment: each shows while the filter still has that text.
+    kept: BTreeMap<ActionShortcuts, String>,
     notice: Option<Notice>,
     /// Export and import.
     file: file::KeyFile,
+    /// The filter field's text keeps the matching rows ([`row_matches`]).
+    /// View state only: it never touches the draft.
+    filter: Entity<InputState>,
+    _filter_events: Subscription,
 }
 
 impl KeyboardSection {
-    pub(crate) fn new(focus: FocusHandle, return_focus: FocusHandle, file: file::KeyFile) -> Self {
+    pub(crate) fn new(
+        focus: FocusHandle,
+        return_focus: FocusHandle,
+        file: file::KeyFile,
+        window: &mut Window,
+        cx: &mut Context<PreferencesView>,
+    ) -> Self {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Name or keys"));
+        // The view draws the rows: each change of the text redraws it.
+        let filter_events = cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        });
         Self {
             focus,
             return_focus,
@@ -156,8 +280,11 @@ impl KeyboardSection {
             draft: None,
             listening: None,
             lines: BTreeMap::new(),
+            kept: BTreeMap::new(),
             notice: None,
             file,
+            filter,
+            _filter_events: filter_events,
         }
     }
 
@@ -191,10 +318,26 @@ impl KeyboardSection {
         self.listening = None;
     }
 
-    /// The section is left: no row listens, the chooser goes.
-    pub(crate) fn leave(&mut self) {
+    /// The section is left: no row listens, the chooser goes, the filter
+    /// empties.
+    pub(crate) fn leave(&mut self, window: &mut Window, cx: &mut Context<PreferencesView>) {
         self.listening = None;
         self.file.close_chooser();
+        self.kept.clear();
+        self.filter.update(cx, |i, cx| i.set_value("", window, cx));
+    }
+
+    /// Whether the row of `action` shows whatever the filter (`typed`)
+    /// says: it listens, or an edit changed or warned it while the filter
+    /// had this same text. A new filter text drops the kept rows.
+    fn keeps(&self, action: &ActionShortcuts, typed: &str) -> bool {
+        self.listening.as_ref() == Some(action)
+            || self.kept.get(action).is_some_and(|at| at == typed)
+    }
+
+    /// Forget the kept rows: the edits they came from are undone.
+    pub(crate) fn forget_kept(&mut self) {
+        self.kept.clear();
     }
 
     /// Whether a row takes the next key.
@@ -212,7 +355,38 @@ impl PreferencesView {
         self.keyboard.listening.as_ref()
     }
 
+    /// The filter field.
+    #[cfg(test)]
+    pub(crate) fn keyboard_filter_input(&self) -> Entity<InputState> {
+        self.keyboard.filter.clone()
+    }
+
+    /// Whether the filter field has the keyboard.
+    pub(crate) fn keyboard_filter_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        self.keyboard
+            .filter
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+    }
+
     // ---- acting ------------------------------------------------------------
+
+    /// Esc in the filter field: its text goes. False when it has none, so
+    /// that Esc does what it does elsewhere in the section.
+    pub(crate) fn keyboard_filter_escape(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let filter = self.keyboard.filter.clone();
+        if filter.read(cx).value().is_empty() {
+            return false;
+        }
+        filter.update(cx, |i, cx| i.set_value("", window, cx));
+        cx.notify();
+        true
+    }
 
     /// The draft of the model just read, for the keymap's platform.
     pub(crate) fn keyboard_loaded(&mut self, cx: &mut Context<Self>) {
@@ -260,9 +434,7 @@ impl PreferencesView {
         }
         self.keyboard.drop_refusal(&action);
         if key.key == Key::Esc {
-            self.keyboard.listening = None;
-            self.keyboard_focus_row(action, window, cx);
-            cx.notify();
+            self.keyboard_cancel(action, window, cx);
             return true;
         }
         if let Err(refused) = check_capture(key) {
@@ -283,6 +455,7 @@ impl PreferencesView {
         let shared = draft.shared(&action, key);
         let vim = draft.vim_shadows(&action, key);
         self.keyboard_write();
+        self.keyboard_kept(holders.iter().chain([&action]), cx);
         self.keyboard_moved(&action, holders.iter().map(|h| (h.clone(), key)));
         for s in shared {
             let other = self.keyboard.label_of(&s.other);
@@ -301,6 +474,21 @@ impl PreferencesView {
         }
         cx.notify();
         true
+    }
+
+    /// Esc, or `Cancel` on the listening row of `action`: the listening
+    /// ends, the chord and the earlier lines stay (a refusal goes), and the
+    /// keyboard goes back to the row's button.
+    fn keyboard_cancel(
+        &mut self,
+        action: ActionShortcuts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.keyboard.drop_refusal(&action);
+        self.keyboard.listening = None;
+        self.keyboard_focus_row(action, window, cx);
+        cx.notify();
     }
 
     /// `Reset` on the row of `action`: its defaults back, taken from any
@@ -335,6 +523,7 @@ impl PreferencesView {
             .collect();
         self.keyboard.lines.remove(&action);
         self.keyboard_write();
+        self.keyboard_kept(moves.iter().map(|(h, _)| h).chain([&action]), cx);
         self.keyboard_moved(&action, moves);
         cx.notify();
     }
@@ -359,6 +548,7 @@ impl PreferencesView {
         draft.clear(&action);
         self.keyboard.lines.remove(&action);
         self.keyboard_write();
+        self.keyboard_kept([&action], cx);
         cx.notify();
     }
 
@@ -384,10 +574,24 @@ impl PreferencesView {
         };
         draft.reset_all();
         self.keyboard.lines.clear();
+        self.keyboard.forget_kept();
         self.keyboard.notice = Some(Notice::info(RESET_ALL_DONE));
         self.keyboard.file.clear_notices();
         self.keyboard_write();
         cx.notify();
+    }
+
+    /// `rows` were just changed or warned: they stay under the filter while
+    /// it keeps its text of now.
+    fn keyboard_kept<'a>(
+        &mut self,
+        rows: impl IntoIterator<Item = &'a ActionShortcuts>,
+        cx: &Context<Self>,
+    ) {
+        let at = self.keyboard.filter.read(cx).value().to_string();
+        for row in rows {
+            self.keyboard.kept.insert(row.clone(), at.clone());
+        }
     }
 
     /// The draft into the model, which works out whether it is dirty.
@@ -487,14 +691,24 @@ impl PreferencesView {
                     this.keyboard_reset(reset.clone(), window, cx)
                 }))
         });
+        // The listening row's button cancels, as Esc does.
+        let (verb, button_read) = if listening {
+            ("Cancel", format!("Cancel changing the shortcut of {label}"))
+        } else {
+            ("Change", format!("Change the shortcut of {label}"))
+        };
         let mut change_button = Button::new(change_id(action))
             .small()
-            .outline()
-            .label("Change")
-            .accessibility_label(format!("Change the shortcut of {label}"))
+            .ghost()
+            .label(verb)
+            .accessibility_label(button_read)
             .disabled(busy)
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.keyboard_change(change.clone(), window, cx)
+                if listening {
+                    this.keyboard_cancel(change.clone(), window, cx)
+                } else {
+                    this.keyboard_change(change.clone(), window, cx)
+                }
             }));
         if self.keyboard.last_row.as_ref() == Some(action) {
             change_button = change_button.track_focus(&self.keyboard.return_focus);
@@ -517,6 +731,14 @@ impl PreferencesView {
             .flex_col()
             .gap_1()
             .py_1()
+            // Room for the listening background, taken back out of the
+            // content padding: the row text lines up with the headings.
+            .px_2()
+            .mx_neg_2()
+            .rounded_md()
+            // Listening is the row's strongest state: it holds the
+            // selected background until a key, Esc or Cancel ends it.
+            .when(listening, |row| row.bg(theme::selected_background(t)))
             .child(
                 div()
                     .flex()
@@ -529,7 +751,7 @@ impl PreferencesView {
                             .flex()
                             .flex_col()
                             .flex_1()
-                            .min_w(gpui_kit::rems(10.))
+                            .min_w(rems(LABEL_MIN_REMS))
                             .child(
                                 div()
                                     .text_sm()
@@ -540,9 +762,11 @@ impl PreferencesView {
                     )
                     .child(
                         div()
+                            .flex_none()
+                            .w(rems(CHORD_REMS))
                             .text_sm()
                             .text_color(if listening {
-                                theme::muted(t)
+                                theme::foreground(t)
                             } else {
                                 theme::bright(t)
                             })
@@ -554,6 +778,8 @@ impl PreferencesView {
                     )
                     .child(
                         button_row()
+                            .flex_none()
+                            .min_w(rems(BUTTONS_REMS))
                             .child(change_button)
                             .child(clear_button)
                             .children(reset_button),
@@ -569,15 +795,48 @@ impl PreferencesView {
         let Some(draft) = self.keyboard.draft.as_ref() else {
             return note("Reading the shortcuts…", t).into_any_element();
         };
-        let groups: Vec<AnyElement> = self
+        let typed = self.keyboard.filter.read(cx).value().to_string();
+        let words = filter_words(&typed);
+        let platform = keymap::platform(cx);
+        // A row shows when it matches, or when it is being worked on; a
+        // group with no row shown goes with its heading.
+        let mut matched = false;
+        let shown: Vec<(usize, Vec<&Row>)> = self
             .keyboard
             .groups
             .iter()
             .enumerate()
             .map(|(ix, group)| {
-                let rows: Vec<AnyElement> = group
+                let rows = group
                     .rows
                     .iter()
+                    .filter(|r| {
+                        let hit = row_matches(&words, &row_text(draft, r, platform));
+                        matched |= hit;
+                        hit || self.keyboard.keeps(&r.action, &typed)
+                    })
+                    .collect::<Vec<_>>();
+                (ix, rows)
+            })
+            .filter(|(_, rows)| !rows.is_empty())
+            .collect();
+        let empty = (!words.is_empty() && !matched).then(|| {
+            let text = no_match(typed.trim());
+            div()
+                .id(FILTER_EMPTY_ID)
+                .test_support()
+                .role(Role::Status)
+                .aria_label(SharedString::from(text.clone()))
+                .text_sm()
+                .text_color(theme::muted(t))
+                .child(text)
+        });
+        let groups: Vec<AnyElement> = shown
+            .into_iter()
+            .map(|(ix, rows)| {
+                let group = &self.keyboard.groups[ix];
+                let rows: Vec<AnyElement> = rows
+                    .into_iter()
                     .map(|r| self.render_keyboard_row(draft, &r.action, r.label, r.scope_tag, cx))
                     .collect();
                 div()
@@ -607,11 +866,7 @@ impl PreferencesView {
             .flex()
             .flex_col()
             .gap_4()
-            .child(note(
-                "Change a shortcut, then press the new keys. Esc cancels. If another \
-                 action has the shortcut, it moves here. Nothing is kept until you save.",
-                t,
-            ))
+            .child(note(INTRO, t))
             .child(
                 button_row().child(
                     Button::new(RESET_ALL_ID)
@@ -630,7 +885,22 @@ impl PreferencesView {
                     .as_ref()
                     .map(|n| notice_line(NOTICE_ID, n, t)),
             )
-            .child(self.render_keyboard_file(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(label(FILTER_LABEL, t))
+                    .child(
+                        Input::new(&self.keyboard.filter)
+                            .id(FILTER_ID)
+                            .aria_label(FILTER_LABEL)
+                            .bg(theme::background(t))
+                            .border_color(theme::divider(t))
+                            .text_color(theme::foreground(t)),
+                    ),
+            )
+            .children(empty)
             .child(
                 div()
                     .id(KEYBOARD_ID)
@@ -643,6 +913,46 @@ impl PreferencesView {
                     .gap_5()
                     .children(groups),
             )
+            // After the list, the main task: export and import, or the
+            // chooser in their place.
+            .child(self.render_keyboard_file(cx))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The row of `action` in [`bindable_groups`].
+    fn row_of(action: &ActionShortcuts) -> Row {
+        bindable_groups()
+            .into_iter()
+            .flat_map(|g| g.rows)
+            .find(|r| r.action == *action)
+            .unwrap()
+    }
+
+    /// On macOS a chord is also matched spelled out: `cmd`, `ctrl`,
+    /// `option` (or `alt`), `shift`, the key.
+    #[test]
+    fn the_mac_row_text_spells_the_chords() {
+        let draft = KeyDraft::new(Platform::MacOs, &BTreeMap::new());
+        let open = row_text(
+            &draft,
+            &row_of(&ActionShortcuts::OpenFileBrowser),
+            Platform::MacOs,
+        );
+        assert!(row_matches(&filter_words("cmd+e"), &open), "{open}");
+        let zoom = row_text(
+            &draft,
+            &row_of(&ActionShortcuts::ToggleZoom),
+            Platform::MacOs,
+        );
+        assert!(row_matches(&filter_words("cmd+option+m"), &zoom), "{zoom}");
+        assert!(row_matches(&filter_words("Option"), &zoom), "{zoom}");
+        assert!(row_matches(&filter_words("cmd+alt+m"), &zoom), "{zoom}");
+        let note = row_text(&draft, &row_of(&ActionShortcuts::OpenNote), Platform::MacOs);
+        assert!(!row_matches(&filter_words("cmd+e"), &note), "{note}");
     }
 }

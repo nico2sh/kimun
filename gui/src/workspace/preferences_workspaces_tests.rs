@@ -839,6 +839,8 @@ fn a_hidden_workspaces_chooser_never_takes_the_keyboard_choosers_keys(cx: &mut T
     s.pw_with_view(cx, |_, window, cx| {
         export.update(cx, |i, cx| i.set_value(text, window, cx))
     });
+    // The Keymap file area is under the shortcut list: scroll to it.
+    super::preferences_keyboard_tests::reveal(&s, EXPORT_CHOOSE_ID, cx);
     s.pw_click(EXPORT_CHOOSE_ID, cx);
     let chooser = s.pw_read(cx, |v| v.keyboard_chooser()).expect("up");
     drive(&rt, cx, |cx| {
@@ -1198,6 +1200,7 @@ fn a_hidden_workspaces_question_leaves_the_keyboard_keys_alone(cx: &mut TestAppC
         "Change captured the chord"
     );
 
+    super::preferences_keyboard_tests::reveal(&s, EXPORT_CHOOSE_ID, cx);
     s.pw_click(EXPORT_CHOOSE_ID, cx);
     s.pw_press("enter", cx);
     s.pw_written(&rt, cx);
