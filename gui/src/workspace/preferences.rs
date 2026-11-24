@@ -47,8 +47,9 @@
 //! needs the vault indexed first takes the vault-path reindex flow.
 //!
 //! **Cancel**, Esc and the window's own close: at once when the draft is
-//! clean; otherwise an inline "Discard your changes?" (Keep editing /
-//! Discard changes). Esc never saves. Leaving without saving puts the theme
+//! clean (the button then reads "Close", and the hint says "Esc: close");
+//! otherwise an inline "Discard your changes?" (Keep editing / Discard
+//! changes). Esc never saves. Leaving without saving puts the theme
 //! the window had back (the Appearance section previews live).
 
 use crate::tasks::blocking;
@@ -545,7 +546,7 @@ impl PreferencesView {
             theme_scroll: UniformListScrollHandle::new(),
             ws: workspaces::Workspaces::new(cx.focus_handle().tab_stop(true)),
             index: workspaces::Indexing::new(),
-            remote: remote_images::RemoteSection::default(),
+            remote: remote_images::RemoteSection::new(cx.focus_handle().tab_stop(true)),
             _load: Some(load),
             _subscriptions: subscriptions,
         }
@@ -1234,6 +1235,15 @@ impl PreferencesView {
                 Key::Delete | Key::Char('d') => self.ws_delete(window, cx),
                 Key::Char('n') => self.ws_new(window, cx),
                 Key::Char('b') => self.ws_change_path(window, cx),
+                _ => return false,
+            }
+            return true;
+        }
+        if on(&self.remote.focus) {
+            match key.key {
+                Key::Up => self.remote_move(false, cx),
+                Key::Down => self.remote_move(true, cx),
+                Key::Delete | Key::Backspace => self.remote_remove_selected(cx),
                 _ => return false,
             }
             return true;
@@ -2262,7 +2272,7 @@ impl PreferencesView {
                     Section::Sorting => self.render_sorting(model, cx),
                     Section::Editor => self.render_editor(model, window, cx),
                     Section::Server => self.render_server(cx),
-                    Section::RemoteImages => self.render_remote_images(cx),
+                    Section::RemoteImages => self.render_remote_images(window, cx),
                 },
             ),
         };
@@ -2343,7 +2353,10 @@ impl PreferencesView {
                 .min_w_0()
                 .text_xs()
                 .text_color(theme::muted(t))
-                .child("↑/↓: sections and lists · ←/→: steps · Tab: next control · Ctrl+S: save · Esc: cancel")
+                .child(format!(
+                    "↑/↓: sections and lists · ←/→: steps · Tab: next control · Ctrl+S: save · Esc: {}",
+                    if self.is_dirty() { "cancel" } else { "close" }
+                ))
                 .into_any_element(),
         };
         if let Some(buttons) = self.ask_buttons(cx) {
@@ -2368,7 +2381,7 @@ impl PreferencesView {
         row.child(lead)
             .child(
                 Button::new(CANCEL_ID)
-                    .label("Cancel")
+                    .label(if self.is_dirty() { "Cancel" } else { "Close" })
                     .disabled(busy)
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                         this.cancel(false, window, cx)
