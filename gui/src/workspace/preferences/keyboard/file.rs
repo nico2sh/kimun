@@ -15,11 +15,15 @@
 //!   ([`PreferencesView::busy`]).
 //! - The chooser shows in place of the two fields, with its commands and
 //!   key hints, as in Workspaces. The area is the foot of the page, so the
-//!   pane scrolls to the bottom when the chooser opens, and again when an
-//!   Export or Import result shows (it grows the page below where the pane
-//!   rests). The view hands it the keys while its root has the keyboard.
+//!   pane scrolls to the bottom when the chooser opens; an area taller than
+//!   the pane shows its top instead, so the Location field and the list
+//!   show. The pane scrolls to the bottom again when an Export or Import
+//!   result shows (it grows the page below where the pane rests). The view
+//!   hands the chooser the keys while its root has the keyboard.
 
+use std::cell::Cell;
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 
 use gpui_kit::base::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
@@ -27,13 +31,14 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::{
-    AnyElement, AppContext as _, ClickEvent, Context, Entity, Focusable as _, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Role, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Task, Window, div,
+    AnyElement, AppContext as _, Bounds, ClickEvent, Context, Entity, Focusable as _, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Pixels, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Task, Window, div, point, px,
 };
 use kimun_core::system::{self, SystemPath};
 use kimun_notes::settings::themes::Theme;
 
+use super::super::super::facet::reveal_offset;
 use super::super::super::folder_chooser::{self, FolderChooser, FolderChooserEvent};
 use super::super::workspaces::{Notice, button_row, notice_line};
 use super::super::{PreferencesView, Section, label, note};
@@ -44,6 +49,9 @@ use crate::theme;
 
 /// The id prefix of the section's chooser (`preferences-keyboard-chooser…`).
 pub(crate) const CHOOSER_PREFIX: &str = "preferences-keyboard";
+/// The area the chooser fills while it is up: its heading, the chooser,
+/// its commands and its key hints.
+pub(crate) const CHOOSER_AREA_ID: &str = "preferences-keyboard-chooser-area";
 /// The Export path field.
 pub(crate) const EXPORT_PATH_ID: &str = "preferences-keyboard-export-path";
 /// `Choose folder…` beside the Export field.
@@ -89,6 +97,9 @@ pub(crate) struct KeyFile {
     import_input: Entity<InputState>,
     chooser: Option<(Target, Entity<FolderChooser>)>,
     _chooser_events: Option<Subscription>,
+    /// Set when the chooser opens: the first frame that lays it out
+    /// scrolls the pane to it ([`reveal_chooser`]), then clears it.
+    reveal: Rc<Cell<bool>>,
     export_notice: Option<Notice>,
     import_notice: Option<ImportNotice>,
     /// The write (Export) or read (Import) under way.
@@ -113,6 +124,7 @@ impl KeyFile {
             import_input,
             chooser: None,
             _chooser_events: None,
+            reveal: Rc::default(),
             export_notice: None,
             import_notice: None,
             task: None,
@@ -129,6 +141,7 @@ impl KeyFile {
     pub(crate) fn close_chooser(&mut self) {
         self.chooser = None;
         self._chooser_events = None;
+        self.reveal.set(false);
     }
 
     fn input(&self, target: Target) -> &Entity<InputState> {
@@ -197,6 +210,26 @@ fn export_to(
         ));
     }
     write_file(path, overrides).map_err(|e| format!("Couldn't save the file: {e}"))
+}
+
+/// Scroll the pane (`pane`) to the chooser's area, laid out as `children`
+/// (its heading first, its hints last), by the least amount that shows it
+/// whole. An area taller than the pane shows its top, so the Location
+/// field and the list show. The children were placed at the old offset:
+/// the next frame draws the new one.
+fn reveal_chooser(pane: &ScrollHandle, children: &[Bounds<Pixels>], window: &mut Window) {
+    let (Some(first), Some(last)) = (children.first(), children.last()) else {
+        return;
+    };
+    let view = pane.bounds();
+    let offset = pane.offset();
+    // Down the page from its top, as the offset counts.
+    let page = |y: Pixels| y - view.top() - offset.y;
+    let area = (page(first.top()), page(last.bottom()));
+    if let Some(y) = reveal_offset(area, -offset.y, view.size.height, px(0.)) {
+        pane.set_offset(point(offset.x, -y));
+        window.refresh();
+    }
 }
 
 impl PreferencesView {
@@ -309,8 +342,11 @@ impl PreferencesView {
         self.keyboard.file.chooser = Some((target, chooser));
         // The chooser replaces the area at the foot of the page and is much
         // taller: scroll to the bottom so that its commands and hints show.
-        // Closing it shrinks the page, and the offset clamps there.
+        // If it is taller than the pane, the frame that lays it out then
+        // scrolls back to its top (`reveal_chooser`). Closing it shrinks the
+        // page, and the offset clamps there.
         self.content_scroll.scroll_to_bottom();
+        self.keyboard.file.reveal.set(true);
         // The chooser's Location field has the keyboard now.
         cx.notify();
     }
@@ -331,7 +367,7 @@ impl PreferencesView {
         let Some((target, _)) = self.keyboard.file.chooser.take() else {
             return;
         };
-        self.keyboard.file._chooser_events = None;
+        self.keyboard.file.close_chooser();
         let handle = self.keyboard.file.input(target).read(cx).focus_handle(cx);
         window.focus(&handle, cx);
         cx.notify();
@@ -592,7 +628,16 @@ impl PreferencesView {
         };
         if let Some((target, chooser)) = self.keyboard.file.chooser.clone() {
             let hints = chooser.read(cx).hints(cx);
+            let reveal = self.keyboard.file.reveal.clone();
+            let pane = self.content_scroll.clone();
             return div()
+                .on_children_prepainted(move |children, window, _| {
+                    if reveal.replace(false) {
+                        reveal_chooser(&pane, &children, window);
+                    }
+                })
+                .id(CHOOSER_AREA_ID)
+                .test_support()
                 .flex()
                 .flex_col()
                 .gap_3()

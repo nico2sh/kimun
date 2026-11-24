@@ -16,16 +16,20 @@ use std::cell::RefCell;
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::rc::Rc;
 
+use gpui_kit::component::input::MoveToStart;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Styled as _, TestAppContext, Window,
-    WindowOptions, div,
+    IntoElement, KeyBinding, KeyDownEvent, ParentElement as _, Pixels, Render, Styled as _,
+    TestAppContext, Window, WindowOptions, div, px, size,
 };
 use kimun_core::system::{self, SystemPath};
 use tokio::runtime::Runtime;
 
-use super::folder_chooser::{FolderChooser, FolderChooserEvent, Listing, file_row_id, row_id};
+use super::folder_chooser::{
+    FolderChooser, FolderChooserEvent, LIST_FRACTION, LIST_MAX_REMS, LIST_MIN_REMS, Listing,
+    file_row_id, list_height, row_id,
+};
 use super::start_tests::{drive, runtime};
 use crate::input;
 use crate::keymap::{self, Keymap, Platform};
@@ -33,6 +37,7 @@ use crate::keymap::{self, Keymap, Platform};
 const PREFIX: &str = "test";
 const LOCATION_ID: &str = "test-chooser-location";
 const LOCATION_ERROR_ID: &str = "test-chooser-location-error";
+const ROWS_ID: &str = "test-chooser-rows";
 
 /// A bare host, as the real ones: its root hands the keys to the chooser
 /// when it has the keyboard, never while a chooser field has them.
@@ -739,8 +744,11 @@ fn alt_up_goes_up_one_folder(cx: &mut TestAppContext) {
 }
 
 /// On macOS (the keymap's platform) it is Cmd+Up; Alt+Up does nothing.
+/// Here Cmd+Up goes through the chooser's key table (`on_key_down`): this
+/// Linux build has no kit binding for it, as when the host's root hands the
+/// keys over. The kit's own binding on a Mac is the next test.
 #[gpui_kit::test]
-fn cmd_up_goes_up_on_macos(cx: &mut TestAppContext) {
+fn cmd_up_goes_up_on_macos_through_the_key_table(cx: &mut TestAppContext) {
     let rt = runtime();
     let _guard = rt.enter();
     let (_dir, root) = tree(&["notes/a"], &[]);
@@ -752,6 +760,131 @@ fn cmd_up_goes_up_on_macos(cx: &mut TestAppContext) {
     s.press("cmd-up", cx);
     s.listed(&rt, cx);
     assert_eq!(s.dir(cx), sys(root.join("notes")));
+}
+
+/// On a Mac the kit binds Cmd+Up in its field to `MoveToStart` (only under
+/// `cfg(target_os = "macos")`, so a Linux run never sees it). The binding is
+/// made here as the kit makes it, in its `Input` key context: Cmd+Up then
+/// reaches the chooser as that action, not as a key, and still goes up.
+#[gpui_kit::test]
+fn cmd_up_goes_up_on_macos_through_the_kit_binding(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a"], &[]);
+    let s = open(cx, &root.join("notes").join("a"), None);
+    cx.update(|cx| {
+        keymap::init(cx, Keymap::defaults(Platform::MacOs));
+        // The kit's key context for its field (`input::CONTEXT`, private).
+        cx.bind_keys([KeyBinding::new("cmd-up", MoveToStart, Some("Input"))]);
+    });
+    s.listed(&rt, cx);
+    s.type_location("x", cx);
+    s.press("cmd-up", cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+    assert!(s.location_focused(cx));
+}
+
+/// A click on a row keeps the keyboard in the Location field: the rows
+/// take no focus, and text typed next lands in the field. A double-click
+/// still chooses.
+#[gpui_kit::test]
+fn a_click_on_a_row_keeps_the_keyboard_in_the_field(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes/a"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    s.click(row_id(PREFIX, &sys(root.join("notes"))), cx);
+    s.listed(&rt, cx);
+    assert_eq!(s.dir(cx), sys(root.join("notes")));
+    assert!(s.location_focused(cx), "the field keeps the keyboard");
+    cx.update_window(s.handle, |_, window, cx| window.input("a", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(s.location_text(cx), "a");
+    // A double-click: the first click enters `a`, the second takes it.
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click(row_id(PREFIX, &sys(root.join("notes").join("a"))), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        s.events(),
+        [format!(
+            "chosen:{}",
+            system::path_to_string(sys(root.join("notes").join("a")))
+        )]
+    );
+}
+
+/// The list's height in the window, in a fresh frame.
+fn list_bounds(s: &Opened, cx: &mut TestAppContext) -> gpui_kit::Bounds<Pixels> {
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(ROWS_ID).bounds()
+    })
+    .unwrap()
+}
+
+fn rem_size(s: &Opened, cx: &mut TestAppContext) -> Pixels {
+    cx.update_window(s.handle, |_, window, _| window.rem_size())
+        .unwrap()
+}
+
+#[test]
+fn list_height_clamps_to_the_floor_and_the_ceiling() {
+    for rem in [px(16.), px(20.)] {
+        assert_eq!(list_height(px(200.), rem), rem * LIST_MIN_REMS);
+        assert_eq!(list_height(px(0.), rem), rem * LIST_MIN_REMS);
+        assert_eq!(list_height(px(4000.), rem), rem * LIST_MAX_REMS);
+    }
+}
+
+#[test]
+fn list_height_is_a_fraction_of_the_window_between() {
+    // 45 % of 1000 px is 450 px: above 14 rem (224 px), under 36 (576 px).
+    assert_eq!(list_height(px(1000.), px(16.)), px(1000.) * LIST_FRACTION);
+    assert_eq!(list_height(px(1000.), px(16.)), px(450.));
+}
+
+/// The list follows the window's height: a taller window gives a taller
+/// list, up to the ceiling.
+#[gpui_kit::test]
+fn a_tall_window_gives_a_taller_list(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    let rem = rem_size(&s, cx);
+    cx.simulate_window_resize(s.handle, size(px(800.), px(700.)));
+    cx.run_until_parked();
+    let short = list_bounds(&s, cx).size.height;
+    assert_eq!(short, list_height(px(700.), rem));
+    cx.simulate_window_resize(s.handle, size(px(800.), px(1000.)));
+    cx.run_until_parked();
+    let tall = list_bounds(&s, cx).size.height;
+    assert!(tall > short, "{tall:?} > {short:?}");
+    assert_eq!(tall, list_height(px(1000.), rem));
+    cx.simulate_window_resize(s.handle, size(px(800.), px(4000.)));
+    cx.run_until_parked();
+    assert_eq!(list_bounds(&s, cx).size.height, rem * LIST_MAX_REMS);
+}
+
+/// A short window keeps the floor.
+#[gpui_kit::test]
+fn a_short_window_keeps_the_floor(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let (_dir, root) = tree(&["notes"], &[]);
+    let s = open(cx, &root, None);
+    s.listed(&rt, cx);
+    let rem = rem_size(&s, cx);
+    cx.simulate_window_resize(s.handle, size(px(800.), px(300.)));
+    cx.run_until_parked();
+    assert_eq!(list_bounds(&s, cx).size.height, rem * LIST_MIN_REMS);
 }
 
 /// A plain N in the field types an `n`: it opens no New folder field.
@@ -840,13 +973,13 @@ fn the_hints_match_the_keys(cx: &mut TestAppContext) {
             .split(" · ")
             .map(|part| part.split_once(": ").expect("key: what it does").0)
             .collect();
-        let (up, choose) = match platform {
-            Platform::MacOs => ("Cmd+Up", "Cmd+Enter"),
-            Platform::LinuxWindows => ("Alt+Up", "Ctrl+Enter"),
+        let (up, choose, new) = match platform {
+            Platform::MacOs => ("Cmd+Up", "Cmd+Enter", "Cmd+N"),
+            Platform::LinuxWindows => ("Alt+Up", "Ctrl+Enter", "Ctrl+N"),
         };
         let mut want = vec!["Up and Down", "Enter", up];
         if files.is_none() {
-            want.extend([choose, "Ctrl+N"]);
+            want.extend([choose, new]);
         }
         want.push("Esc");
         assert_eq!(keys, want, "{platform:?} {files:?}: {hints}");
@@ -878,8 +1011,8 @@ fn the_hints_match_the_keys(cx: &mut TestAppContext) {
             assert!(s.events()[0].starts_with("file:"));
             s.events.borrow_mut().clear();
         } else {
-            // Ctrl+N: new folder, then Esc closes the field.
-            s.press("ctrl-n", cx);
+            // Ctrl+N (Cmd+N): new folder, then Esc closes the field.
+            s.press(&new.to_lowercase().replace('+', "-"), cx);
             assert!(s.read(cx, |c| c.new_folder_open()));
             s.press("escape", cx);
             // Ctrl+Enter (Cmd+Enter): choose.
