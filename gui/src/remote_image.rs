@@ -275,26 +275,85 @@ impl Fetcher for RealFetcher {
     }
 }
 
-/// Writes an error answer to the log: its status, its headers and the start
-/// of its body. A server that refuses a request says why in one of them (a
-/// rate limit, a policy on clients), and the one-line note cannot.
+/// The headers of an error answer that the log may hold. A server that
+/// refuses a request says why in them (a wait, the kind of body, the server
+/// that answered). Other headers can hold a cookie or a token.
+const LOGGED_HEADERS: [&str; 3] = ["retry-after", "content-type", "server"];
+
+/// The most bytes of an error answer's body that the log holds.
+const LOGGED_BODY_BYTES: usize = 400;
+
+/// Writes an error answer to the log: its status, some of its headers and
+/// the start of its body. A server that refuses a request says why in one
+/// of them (a rate limit, a policy on clients), and the one-line note
+/// cannot.
 fn log_error_answer(url: &str, response: ureq::Response) {
     let status = response.status();
-    let headers: Vec<String> = response
+    let headers: Vec<(String, String)> = response
         .headers_names()
-        .iter()
-        .map(|name| format!("{name}: {}", response.header(name).unwrap_or("")))
+        .into_iter()
+        .map(|name| {
+            let value = response.header(&name).unwrap_or("").to_string();
+            (name, value)
+        })
         .collect();
     let mut body = Vec::new();
-    let _ = response.into_reader().take(400).read_to_end(&mut body);
-    let body = String::from_utf8_lossy(&body)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    tracing::warn!(
-        "remote image answer {status} for {url}; headers: [{}]; body: {body}",
+    let _ = response
+        .into_reader()
+        .take(LOGGED_BODY_BYTES as u64)
+        .read_to_end(&mut body);
+    tracing::warn!("{}", error_answer_line(url, status, &headers, &body));
+}
+
+/// The log line of an error answer. It holds the address without its query
+/// ([`loggable`]), only the [`LOGGED_HEADERS`] (by name in any case), and
+/// at most [`LOGGED_BODY_BYTES`] of the body on one line, with no control
+/// character: a body can hold escape codes that change a terminal.
+fn error_answer_line(url: &str, status: u16, headers: &[(String, String)], body: &[u8]) -> String {
+    let headers: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| LOGGED_HEADERS.iter().any(|h| name.eq_ignore_ascii_case(h)))
+        .map(|(name, value)| format!("{name}: {}", clean_line(value, usize::MAX)))
+        .collect();
+    let body = &body[..body.len().min(LOGGED_BODY_BYTES)];
+    let body = clean_line(&String::from_utf8_lossy(body), LOGGED_BODY_BYTES);
+    format!(
+        "remote image answer {status} for {}; headers: [{}]; body: {body}",
+        loggable(url),
         headers.join("; ")
-    );
+    )
+}
+
+/// `text` on one line: each control character as a space, each run of
+/// spaces as one, at most `max` bytes, cut at a character boundary.
+fn clean_line(text: &str, max: usize) -> String {
+    let spaced: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let mut line = spaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.len() > max {
+        let mut end = max;
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+    }
+    line
+}
+
+/// An address as the log may hold it: the scheme, the host and the path. The
+/// query and the fragment stay out, because a signed link carries its access
+/// token there, and people attach logs to bug reports. The user name and
+/// password of an address stay out too.
+fn loggable(url: &str) -> String {
+    match url::Url::parse(url.trim()) {
+        Ok(parsed) => match parsed.host_str() {
+            Some(host) => format!("{}://{host}{}", parsed.scheme(), parsed.path()),
+            None => "<address without a host>".to_string(),
+        },
+        Err(_) => "<not an address>".to_string(),
+    }
 }
 
 /// A reader that fails with `TimedOut` once the deadline has passed. Each
@@ -326,7 +385,13 @@ fn timed_out(e: &std::io::Error) -> bool {
 
 /// The failure for a request that got no answer.
 fn transport_failure(t: &ureq::Transport) -> FetchFailure {
-    tracing::warn!("remote image request failed: {} ({})", t, root_cause(t));
+    // Not `t` itself: its text holds the whole address, query included.
+    tracing::warn!(
+        "remote image request failed: {:?}: {} ({})",
+        t.kind(),
+        t.message().unwrap_or(""),
+        root_cause(t)
+    );
     let mut source = std::error::Error::source(t);
     while let Some(e) = source {
         if e.downcast_ref::<std::io::Error>().is_some_and(timed_out) {
@@ -343,14 +408,20 @@ fn transport_failure(t: &ureq::Transport) -> FetchFailure {
             FetchFailure::Other(format!("secure connection failed: {}", root_cause(t)))
         }
         ureq::ErrorKind::Dns | ureq::ErrorKind::ConnectionFailed => FetchFailure::Offline,
-        _ => FetchFailure::Other(t.to_string()),
+        // Not `t` itself: its text starts with the whole address.
+        _ => FetchFailure::Other(root_cause(t)),
     }
 }
 
 /// The innermost cause of `t` on one line: what a reader or a bug report
-/// needs when the top message only says that a step failed.
+/// needs when the top message only says that a step failed. With no cause,
+/// the kind and the message of `t`. Never the text of `t` itself, which
+/// starts with the whole address, query included.
 fn root_cause(t: &ureq::Transport) -> String {
-    let mut text = t.to_string();
+    let mut text = match t.message() {
+        Some(message) => format!("{}: {message}", t.kind()),
+        None => t.kind().to_string(),
+    };
     let mut source = std::error::Error::source(t);
     while let Some(e) = source {
         text = e.to_string();
@@ -954,7 +1025,7 @@ impl RemoteImages {
         if let Some(cache) = &inner.cache
             && let Err(e) = cache.remove(url)
         {
-            tracing::warn!("cannot remove the saved copy of {url}: {e}");
+            tracing::warn!("cannot remove the saved copy of {}: {e}", loggable(url));
         }
     }
 
@@ -2444,6 +2515,81 @@ mod tests {
             fetcher.get(&format!("https://127.0.0.1:{port}/a.png")),
             Hop::Failed(FetchFailure::Offline)
         );
+    }
+
+    #[test]
+    fn a_logged_address_has_no_query_fragment_or_password() {
+        assert_eq!(
+            loggable("https://user:secret@img.example.com/a/b.png?token=abc&x=1#frag"),
+            "https://img.example.com/a/b.png"
+        );
+        assert_eq!(loggable("not an address"), "<not an address>");
+        assert_eq!(loggable("mailto:a@b.c"), "<address without a host>");
+    }
+
+    #[test]
+    fn an_error_answer_logs_only_safe_headers_and_a_clean_body() {
+        let headers = [
+            ("Set-Cookie", "session=secret"),
+            ("Retry-After", "5"),
+            ("CONTENT-TYPE", "text/html"),
+            ("server", "nginx"),
+            ("X-Request-Token", "secret"),
+        ]
+        .map(|(n, v)| (n.to_string(), v.to_string()));
+        let mut body = b"<h1>Forbidden</h1>\x1b[31mred\x1b[0m\r\nnext\tline\x07".to_vec();
+        body.extend(std::iter::repeat_n(b'x', 1000));
+        let line = error_answer_line(
+            "https://img.example.com/a.png?token=secret#frag",
+            403,
+            &headers,
+            &body,
+        );
+        assert!(!line.contains("secret"), "{line}");
+        assert!(!line.contains("token"), "{line}");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert!(
+            line.starts_with(
+                "remote image answer 403 for https://img.example.com/a.png; headers: \
+                 [Retry-After: 5; CONTENT-TYPE: text/html; server: nginx]; body: \
+                 <h1>Forbidden</h1> [31mred [0m next line x"
+            ),
+            "{line}"
+        );
+        // The body part keeps at most 400 bytes of the body.
+        let body_part = line.split("; body: ").nth(1).unwrap();
+        assert!(body_part.len() <= 400, "{}", body_part.len());
+    }
+
+    #[test]
+    fn an_error_answer_from_a_server_is_still_its_status() {
+        let server = serve(|_, _| {
+            (
+                b"HTTP/1.1 403 Forbidden\r\nSet-Cookie: secret\r\nContent-Length: 11\r\n\r\nno \x1b[31mway"
+                    .to_vec(),
+                false,
+            )
+        });
+        let fetcher = RealFetcher::new();
+        assert_eq!(
+            fetcher.get(&format!("{}/a.png?token=secret", server.base)),
+            Hop::Failed(FetchFailure::Status(403))
+        );
+    }
+
+    #[test]
+    fn a_failure_note_never_holds_the_address() {
+        // `ureq` refuses the scheme before any connection: its error text
+        // starts with the whole address.
+        let fetcher = RealFetcher::new();
+        match fetcher.get("ftp://127.0.0.1:9/a.png?token=secret") {
+            Hop::Failed(FetchFailure::Other(text)) => {
+                assert!(!text.contains("secret"), "{text}");
+                assert!(!text.contains("127.0.0.1"), "{text}");
+                assert!(!text.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
