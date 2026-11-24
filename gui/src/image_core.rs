@@ -152,6 +152,19 @@ pub(crate) enum RemoteLook {
     Failed { note: String, retry: bool },
 }
 
+impl RemoteLook {
+    /// The host the "Always load from" button of the look names: the
+    /// embed's host, or the host of a blocked redirect.
+    pub(crate) fn always_host(&self) -> Option<String> {
+        match self {
+            RemoteLook::Placeholder { host, .. } | RemoteLook::RedirectBlocked { host, .. } => {
+                Some(host.clone())
+            }
+            RemoteLook::Insecure | RemoteLook::Loading { .. } | RemoteLook::Failed { .. } => None,
+        }
+    }
+}
+
 /// The actions a placeholder offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Actions {

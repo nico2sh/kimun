@@ -299,16 +299,6 @@ fn place_remote_looks(
         .collect()
 }
 
-/// The host the "Always load from" button of `look` names.
-fn always_host(look: &RemoteLook) -> Option<String> {
-    match look {
-        RemoteLook::Placeholder { host, .. } | RemoteLook::RedirectBlocked { host, .. } => {
-            Some(host.clone())
-        }
-        RemoteLook::Insecure | RemoteLook::Loading { .. } | RemoteLook::Failed { .. } => None,
-    }
-}
-
 /// Where each image in `draws` paints, for the text rows `text_rows`
 /// (window coordinates) of lines `line_height` tall, at `scale` device
 /// pixels per logical pixel. A failed image's note is left out: it is text.
@@ -1169,7 +1159,7 @@ impl Element for EditorElement {
                 );
                 hits.push(RemoteHit {
                     url: paint.url.clone(),
-                    host: always_host(&paint.look),
+                    host: paint.look.always_host(),
                     area: paint.rect.intersect(&paint.clip),
                     buttons,
                 });

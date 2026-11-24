@@ -7,7 +7,8 @@
 //! start a selection. A right press on a placeholder opens no menu. Any
 //! other press on a placeholder is a press on the embed line.
 //!
-//! "Load" and "Retry" ask the shared store ([`RemoteImages`]) here. "Always
+//! "Load" and "Retry" ask the shared store ([`RemoteImages`]) through the
+//! placeholder piece's `run_action`, as the read-only views do. "Always
 //! load from" asks the editor's owner, which writes the host to the
 //! settings first ([`EditorEvent::AlwaysLoadFrom`]). "Open in browser", a
 //! double-click and the `FollowLink` chord hand the address to the owner's
@@ -29,7 +30,7 @@ use kimun_notes::logic::message::AppMessage;
 use super::{EditorEvent, EditorView};
 use crate::editor_element::image_tooltip;
 use crate::remote_image::RemoteImages;
-use crate::remote_placeholder::{RemoteAction, action_at};
+use crate::remote_placeholder::{RemoteAction, action_at, run_action};
 
 /// The id of the "Clear image cache" item of the remote menu.
 pub(crate) const CLEAR_CACHE_ITEM_ID: &str = "remote-image-clear-cache";
@@ -99,22 +100,9 @@ impl EditorView {
         action: RemoteAction,
         cx: &mut Context<Self>,
     ) {
-        let mut store = cx.default_global::<RemoteImages>().clone();
-        match action {
-            RemoteAction::Load => {
-                // On a blocked redirect, "Load" follows it once. Elsewhere
-                // this does nothing.
-                store.allow_redirect_once(&url);
-                self.load_remote(&url, cx);
-            }
-            RemoteAction::AlwaysLoad => match host {
-                Some(host) => cx.emit(EditorEvent::AlwaysLoadFrom { host, url }),
-                None => self.load_remote(&url, cx),
-            },
-            RemoteAction::Retry => {
-                store.retry(&url);
-                self.load_remote(&url, cx);
-            }
+        let view = cx.weak_entity();
+        if let Some(host) = run_action(&url, host, action, cx, move |cx| fetch_ended(&view, cx)) {
+            cx.emit(EditorEvent::AlwaysLoadFrom { host, url });
         }
         cx.notify();
     }

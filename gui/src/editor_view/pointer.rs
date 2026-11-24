@@ -102,6 +102,19 @@ impl EditorView {
         }
         let left = pointer.kind == PointerKind::Down(Button::Left);
         if self.read_only {
+            // A left press on a remote placeholder's button runs it, as in
+            // an editor that edits. It does not move the caret or start a
+            // selection. Any other press keeps its read-only meaning.
+            if left
+                && let Some(PlaceholderPress::Button(url, host, action)) =
+                    self.placeholder_press(event.position, true)
+            {
+                self.clicks.end();
+                self.clicks_ro.pressed = None;
+                self.dragging = false;
+                self.run_remote_action(url, host, action, cx);
+                return;
+            }
             self.read_only_press(pointer, left, window, cx);
             return;
         }
