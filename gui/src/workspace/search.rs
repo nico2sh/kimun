@@ -112,10 +112,10 @@ use crate::attachment_index::AttachmentIndex;
 use crate::editor_element::image_tooltip;
 use crate::grid::CellMetrics;
 use crate::image_core::{
-    Embed, ImageLook, ImagePane, RemoteLook, embeds_of, image_file, look_of, paint_look,
-    remote_rows,
+    Embed, ImageLook, ImagePane, RemoteLook, device_bounds, embeds_of, image_file, look_of,
+    paint_look, remote_rows,
 };
-use crate::inline_image::{Failure, ImageState, ImageStore, Pins, fit, rows_for};
+use crate::inline_image::{Failure, ImageState, ImageStore, Pins};
 use crate::remote_image::RemoteImages;
 use crate::remote_placeholder::{
     PlaceholderStyle, RemoteAction, action_at, paint_remote_look, run_action,
@@ -387,8 +387,8 @@ fn wrap_lines(
             }
             Some(natural) => {
                 let pane = images.pane;
-                drawn_image.fitted = fit(natural, pane.column_px, pane.pane_px);
-                drawn_image.rows = rows_for(drawn_image.fitted.1, pane.row_px);
+                drawn_image.fitted = pane.fit(natural);
+                drawn_image.rows = pane.rows(natural);
                 rows.extend((0..drawn_image.rows).map(|index| PreviewRow {
                     line: i,
                     start: end + index + 1,
@@ -1073,11 +1073,7 @@ fn slice_rect(
     scale: f32,
 ) -> Bounds<Pixels> {
     let top = bounds.origin.y - bounds.size.height * index as f32;
-    // Device pixels to logical ones: pixel exact at any scale.
-    Bounds::new(
-        point(bounds.origin.x, top),
-        size(px(fitted.0 / scale), px(fitted.1 / scale)),
-    )
+    device_bounds(point(bounds.origin.x, top), fitted, scale)
 }
 
 /// What the preview should show: a note and what to mark in it.

@@ -60,7 +60,7 @@ use crate::editor_view::{
 use crate::find_bar;
 use crate::fonts::{EditorFonts, FaceStyle};
 use crate::grid::CellMetrics;
-use crate::image_core::{RemoteLook, paint_look, remote_rows};
+use crate::image_core::{RemoteLook, device_bounds, paint_look, remote_rows};
 use crate::remote_placeholder::{PlaceholderStyle, paint_remote_look};
 use crate::row_cache::RowCache;
 use crate::row_paint::{RowPaint, cells_of, cluster_at};
@@ -323,8 +323,7 @@ fn place_images(
                 size(text_rows.size.width, line_height * draw.lines as f32),
             );
             let clip = region.intersect(&text_rows);
-            // Device pixels to logical ones: pixel exact.
-            let rect = Bounds::new(region.origin, size(px(w / scale), px(h / scale)));
+            let rect = device_bounds(region.origin, (w, h), scale);
             let shown = rect.intersect(&clip);
             (shown.size.width > px(0.) && shown.size.height > px(0.)).then(|| ImagePaint {
                 row: draw.row,
