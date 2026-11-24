@@ -20,8 +20,8 @@ use kimun_notes::logic::attachment::human_size;
 
 use super::LayoutStore;
 use super::preferences::remote_images::{
-    NO_HOSTS, REMOTE_CLEAR_ID, REMOTE_MESSAGE_ID, REMOTE_NO_HOSTS_ID, REMOTE_SIZE_ID,
-    remote_host_row_id, remote_remove_id, size_text,
+    NO_HOSTS, REMOTE_CLEAR_ID, REMOTE_MESSAGE_ID, REMOTE_NO_HOSTS_ID, REMOTE_REMOVE_ID,
+    REMOTE_SIZE_ID, remote_host_row_id, size_text,
 };
 use super::preferences::{CANCEL_ID, Section};
 use super::preferences_tests::{config, on_disk, open, settle};
@@ -198,8 +198,14 @@ fn the_section_lists_the_allowed_hosts_and_the_cache_size(cx: &mut TestAppContex
     show_section(&s, &rt, cx);
     for host in [HOST, OTHER_HOST] {
         assert!(shows(&s, remote_host_row_id(host), cx), "{host} is listed");
-        assert!(shows(&s, remote_remove_id(host), cx), "{host} has Remove");
     }
+    assert!(shows(&s, REMOTE_REMOVE_ID, cx), "Remove is under the list");
+    // Alphabetical, whatever the stored order, with the first row selected.
+    assert_eq!(
+        s.pf_read(cx, |v| v.remote_selected()).as_deref(),
+        Some(OTHER_HOST),
+        "cdn.example.org sorts before img.example.com"
+    );
     assert!(!shows(&s, REMOTE_NO_HOSTS_ID, cx));
     assert!(shows(&s, REMOTE_CLEAR_ID, cx));
     let bytes = env.cache.size();
@@ -238,7 +244,8 @@ fn remove_forgets_the_host_and_keeps_the_saved_copies(cx: &mut TestAppContext) {
     saved(&env, URL);
     let (v, s) = open_note(cx, &rt, NOTE, &[HOST, OTHER_HOST]);
     show_section(&s, &rt, cx);
-    s.pf_click(remote_remove_id(HOST), cx);
+    s.pf_click(remote_host_row_id(HOST), cx);
+    s.pf_click(REMOTE_REMOVE_ID, cx);
     until_idle(&s, &rt, cx);
     assert_eq!(hosts_in_memory(&v), [OTHER_HOST.to_string()]);
     assert_eq!(on_disk(&v).remote_image_hosts, [OTHER_HOST.to_string()]);
@@ -249,7 +256,8 @@ fn remove_forgets_the_host_and_keeps_the_saved_copies(cx: &mut TestAppContext) {
     assert!(store(cx).is_allowed(OTHER_HOST));
     assert!(!shows(&s, REMOTE_MESSAGE_ID, cx), "no problem to show");
     // The last host goes: the empty line shows.
-    s.pf_click(remote_remove_id(OTHER_HOST), cx);
+    assert!(!s.pf_read(cx, |v| v.remote_working()));
+    s.pf_click(REMOTE_REMOVE_ID, cx);
     until_idle(&s, &rt, cx);
     assert!(hosts_in_memory(&v).is_empty());
     assert!(shows(&s, REMOTE_NO_HOSTS_ID, cx));
@@ -257,6 +265,76 @@ fn remove_forgets_the_host_and_keeps_the_saved_copies(cx: &mut TestAppContext) {
     close_prefs(&s, cx);
     assert!(ready(&s, 1, cx), "the saved copy still draws");
     assert_eq!(fetches(cx), 0);
+    settle(&rt, cx);
+}
+
+const THIRD_HOST: &str = "zzz.example.net";
+
+/// A click selects a row, Up and Down move the selection (clamped), and
+/// Delete removes the selected host. The selection keeps its place, and
+/// moves to the last row when the last row goes.
+#[gpui_kit::test]
+fn the_list_selects_with_clicks_and_keys_and_delete_removes_the_selected_host(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let _env = install(cx, &[]);
+    // Stored out of order: the list shows cdn, img, zzz.
+    let (v, s) = open_note(cx, &rt, "plain", &[THIRD_HOST, HOST, OTHER_HOST]);
+    show_section(&s, &rt, cx);
+    let selected = |s: &Started, cx: &mut TestAppContext| s.pf_read(cx, |v| v.remote_selected());
+    assert_eq!(selected(&s, cx).as_deref(), Some(OTHER_HOST));
+    s.pf_click(remote_host_row_id(HOST), cx);
+    assert_eq!(selected(&s, cx).as_deref(), Some(HOST), "a click selects");
+    s.pf_press("down", cx);
+    assert_eq!(selected(&s, cx).as_deref(), Some(THIRD_HOST));
+    s.pf_press("down", cx);
+    assert_eq!(selected(&s, cx).as_deref(), Some(THIRD_HOST), "clamped");
+    s.pf_press("up", cx);
+    s.pf_press("up", cx);
+    s.pf_press("up", cx);
+    assert_eq!(selected(&s, cx).as_deref(), Some(OTHER_HOST), "clamped");
+    // Delete removes the selected host and the selection keeps its place.
+    s.pf_press("down", cx);
+    s.pf_press("delete", cx);
+    until_idle(&s, &rt, cx);
+    assert_eq!(
+        on_disk(&v).remote_image_hosts.len(),
+        2,
+        "one host went, with no question"
+    );
+    assert!(!hosts_in_memory(&v).contains(&HOST.to_string()));
+    assert_eq!(selected(&s, cx).as_deref(), Some(THIRD_HOST), "same place");
+    // The last row goes: the selection moves to the new last row.
+    s.pf_press("backspace", cx);
+    until_idle(&s, &rt, cx);
+    assert_eq!(hosts_in_memory(&v), [OTHER_HOST.to_string()]);
+    assert_eq!(selected(&s, cx).as_deref(), Some(OTHER_HOST));
+    s.pf_press("delete", cx);
+    until_idle(&s, &rt, cx);
+    assert!(hosts_in_memory(&v).is_empty());
+    s.pf_press("delete", cx);
+    until_idle(&s, &rt, cx);
+    assert!(shows(&s, REMOTE_NO_HOSTS_ID, cx));
+    settle(&rt, cx);
+}
+
+/// Remove is disabled with no host, and Preferences read "Close" while the
+/// draft is clean.
+#[gpui_kit::test]
+fn remove_waits_for_a_host_and_the_footer_says_close_when_clean(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let _env = install(cx, &[]);
+    let (_v, s) = open_note(cx, &rt, "plain", &[]);
+    show_section(&s, &rt, cx);
+    assert_eq!(label_of(&s, CANCEL_ID, cx).as_deref(), Some("Close"));
+    cx.update_window(s.handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(REMOTE_REMOVE_ID).disabled(), Some(true));
+    })
+    .unwrap();
     settle(&rt, cx);
 }
 
@@ -270,7 +348,7 @@ fn a_failed_remove_keeps_the_list_and_the_store(cx: &mut TestAppContext) {
     let (v, s) = open_note(cx, &rt, "plain", &[HOST]);
     show_section(&s, &rt, cx);
     std::fs::write(config(&v), "this is [not toml").unwrap();
-    s.pf_click(remote_remove_id(HOST), cx);
+    s.pf_click(REMOTE_REMOVE_ID, cx);
     until_idle(&s, &rt, cx);
     assert_eq!(hosts_in_memory(&v), [HOST.to_string()]);
     assert!(shows(&s, remote_host_row_id(HOST), cx), "the row stays");
@@ -329,7 +407,7 @@ fn a_removed_host_loads_no_more_on_its_own_in_an_open_view(cx: &mut TestAppConte
     drive(&rt, cx, |cx| ready(&s, 1, cx));
     assert_eq!(fetches(cx), 1);
     show_section(&s, &rt, cx);
-    s.pf_click(remote_remove_id(HOST), cx);
+    s.pf_click(REMOTE_REMOVE_ID, cx);
     until_idle(&s, &rt, cx);
     // The saved copies go too, so the open editor shows the placeholder.
     s.pf_click(REMOTE_CLEAR_ID, cx);
