@@ -31,6 +31,10 @@ use kimun_core::note::{AllowedHosts, host_matches, host_of, normalize_image_url}
 pub(crate) const MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// The most fetches that run at one time. Others wait in a queue.
 const MAX_RUNNING: usize = 4;
+/// The most fetches that run at one time for one host, inside
+/// [`MAX_RUNNING`]. A burst on one allowed host can make the server answer
+/// "too many requests".
+const MAX_PER_HOST: usize = 2;
 /// The most redirects a fetch follows. The next one fails.
 const MAX_REDIRECTS: usize = 3;
 /// The wait for the connection and for each piece of data.
@@ -437,6 +441,8 @@ type OnDone = Box<dyn FnOnce(&mut App)>;
 struct Queued {
     key: String,
     url: String,
+    /// The host of `url`, in lower case: the per-host limit counts it.
+    host: String,
     /// A Reload: it fetches although a saved copy exists, and a failure
     /// keeps that copy.
     force: bool,
@@ -465,6 +471,8 @@ struct Inner {
     queue: VecDeque<Queued>,
     /// The fetches that run now.
     running: usize,
+    /// The fetches that run now, by host in lower case.
+    per_host: HashMap<String, usize>,
     /// A test store with no fake installed: a fetch panics on the UI
     /// thread, so no test reaches the network or the real cache.
     #[cfg(test)]
@@ -529,6 +537,7 @@ impl RemoteImages {
                 in_flight: HashMap::new(),
                 queue: VecDeque::new(),
                 running: 0,
+                per_host: HashMap::new(),
                 #[cfg(test)]
                 stand_in: false,
                 #[cfg(test)]
@@ -603,7 +612,8 @@ impl RemoteImages {
 
     /// Starts the fetch of `url` at the reader's request. It runs off the UI
     /// thread, and `on_done` runs on the UI thread when it ends. At most four
-    /// fetches run at once, and the others wait in a queue. For an address
+    /// fetches run at once, and at most two for one host. The others wait in
+    /// a queue. For an address
     /// that is loading, it adds `on_done` and starts nothing. It forgets a
     /// failure of the session. It does nothing for a saved copy and for an
     /// address that is not `https`.
@@ -649,9 +659,12 @@ impl RemoteImages {
                 callers.push(on_done);
                 return;
             }
-            if scheme_of(url) != Scheme::Https || host_of(url).is_none() {
+            if scheme_of(url) != Scheme::Https {
                 return;
             }
+            let Some(host) = host_of(url) else {
+                return;
+            };
             if !force && inner.cache.as_ref().and_then(|c| c.find(url)).is_some() {
                 return;
             }
@@ -660,24 +673,40 @@ impl RemoteImages {
             inner.queue.push_back(Queued {
                 key,
                 url: url.trim().to_string(),
+                host: host.to_ascii_lowercase(),
                 force,
             });
         }
         self.start_queued(cx);
     }
 
-    /// Starts the queued fetches while a slot is free.
+    /// Starts the queued fetches while a slot is free. A fetch whose host
+    /// has [`MAX_PER_HOST`] fetches running stays in the queue, and the
+    /// first fetch behind it for another host starts.
     fn start_queued(&self, cx: &mut App) {
         loop {
-            let (key, url, force, job) = {
+            let (key, url, host, force, job) = {
                 let mut inner = self.inner.borrow_mut();
                 if inner.running >= MAX_RUNNING {
                     return;
                 }
-                let Some(Queued { key, url, force }) = inner.queue.pop_front() else {
+                let free = |q: &Queued| {
+                    inner.per_host.get(&q.host).copied().unwrap_or(0) < MAX_PER_HOST
+                };
+                let Some(next) = inner.queue.iter().position(free) else {
+                    return;
+                };
+                let Some(Queued {
+                    key,
+                    url,
+                    host,
+                    force,
+                }) = inner.queue.remove(next)
+                else {
                     return;
                 };
                 inner.running += 1;
+                *inner.per_host.entry(host.clone()).or_default() += 1;
                 let job = Job {
                     fetcher: inner.fetcher.clone(),
                     fetches: inner.fetches.clone(),
@@ -687,7 +716,7 @@ impl RemoteImages {
                     url: url.clone(),
                     total: TOTAL_LIMIT,
                 };
-                (key, url, force, job)
+                (key, url, host, force, job)
             };
             let work = crate::tasks::blocking(move || job.run());
             let this = self.clone();
@@ -695,7 +724,7 @@ impl RemoteImages {
                 let outcome = work
                     .await
                     .unwrap_or_else(|e| Outcome::Failed(FetchFailure::Other(e)));
-                cx.update(|cx| this.finish(key, &url, force, outcome, cx));
+                cx.update(|cx| this.finish(key, &url, &host, force, outcome, cx));
             })
             .detach();
         }
@@ -704,10 +733,24 @@ impl RemoteImages {
     /// Records how a fetch ended, starts the next queued fetch, and calls the
     /// callers of the address. A forced fetch that failed while a saved copy
     /// is still there records nothing: the old copy stays drawn.
-    fn finish(&self, key: String, url: &str, force: bool, outcome: Outcome, cx: &mut App) {
+    fn finish(
+        &self,
+        key: String,
+        url: &str,
+        host: &str,
+        force: bool,
+        outcome: Outcome,
+        cx: &mut App,
+    ) {
         let callers = {
             let mut inner = self.inner.borrow_mut();
             inner.running -= 1;
+            if let Some(n) = inner.per_host.get_mut(host) {
+                *n -= 1;
+                if *n == 0 {
+                    inner.per_host.remove(host);
+                }
+            }
             let kept = force && inner.cache.as_ref().and_then(|c| c.find(url)).is_some();
             match outcome {
                 _ if kept => {}
@@ -1400,8 +1443,9 @@ mod tests {
 
     #[gpui_kit::test]
     fn at_most_four_fetches_run_at_once_and_the_rest_wait(cx: &mut TestAppContext) {
+        // Three hosts, so the per-host limit does not hold any back.
         let urls: Vec<String> = (0..6)
-            .map(|i| format!("https://img.example.com/{i}.png"))
+            .map(|i| format!("https://img{}.example.com/{i}.png", i % 3))
             .collect();
         let script: Vec<(&str, Hop)> = urls
             .iter()
@@ -1433,6 +1477,78 @@ mod tests {
         for u in &urls {
             assert!(matches!(state(cx, u), RemoteState::Saved(_)));
         }
+    }
+
+    /// Loads each of `urls` with a gated fake and waits until `entered`
+    /// calls have entered the fetcher, plus a few more rounds in which
+    /// nothing else may start. It returns the fake, the env, and the count
+    /// of `on_done` calls so far.
+    fn load_gated(
+        cx: &mut TestAppContext,
+        urls: &[&str],
+        entered: usize,
+    ) -> (Arc<Fake>, Env, Rc<std::cell::Cell<usize>>) {
+        let script: Vec<(&str, Hop)> = urls.iter().map(|u| (*u, Hop::Body(PNG.to_vec()))).collect();
+        let fake = Fake::gated(&script);
+        let env = env(cx, &fake);
+        let done = Rc::new(std::cell::Cell::new(0));
+        {
+            let _guard = env.rt().enter();
+            for u in urls {
+                let d = done.clone();
+                cx.update(|cx| store_of(cx).load(u, cx, move |_| d.set(d.get() + 1)));
+            }
+        }
+        let gate = fake.gate.as_ref().unwrap();
+        settle(&env, cx, |_| gate.entered.load(Ordering::SeqCst) == entered);
+        for _ in 0..10 {
+            settle(&env, cx, |_| true);
+        }
+        assert_eq!(gate.entered.load(Ordering::SeqCst), entered);
+        (fake, env, done)
+    }
+
+    #[gpui_kit::test]
+    fn at_most_two_fetches_run_at_once_for_one_host(cx: &mut TestAppContext) {
+        let urls: Vec<String> = (0..5)
+            .map(|i| format!("https://img.example.com/{i}.png"))
+            .collect();
+        let urls: Vec<&str> = urls.iter().map(String::as_str).collect();
+        let (fake, env, done) = load_gated(cx, &urls, 2);
+        // The two run on two threads, so they may enter in either order.
+        let mut calls = fake.calls();
+        calls.sort();
+        assert_eq!(calls, urls[..2].to_vec());
+        for u in &urls {
+            assert_eq!(state(cx, u), RemoteState::Loading);
+        }
+        fake.gate.as_ref().unwrap().release();
+        settle(&env, cx, |_| done.get() == 5);
+        assert_eq!(count(cx), 5);
+        for u in &urls {
+            assert!(matches!(state(cx, u), RemoteState::Saved(_)));
+        }
+    }
+
+    /// A queued fetch for a busy host does not hold back a fetch for
+    /// another host that is behind it in the queue. The host is compared in
+    /// lower case.
+    #[gpui_kit::test]
+    fn a_busy_host_does_not_block_another_host(cx: &mut TestAppContext) {
+        let urls = [
+            "https://img.example.com/0.png",
+            "https://IMG.example.com/1.png",
+            "https://img.example.com/2.png",
+            "https://other.example.org/3.png",
+        ];
+        let (fake, env, done) = load_gated(cx, &urls, 3);
+        let calls = fake.calls();
+        assert!(calls.contains(&urls[3].to_string()), "{calls:?}");
+        assert!(!calls.contains(&urls[2].to_string()), "{calls:?}");
+        assert_eq!(state(cx, urls[2]), RemoteState::Loading);
+        fake.gate.as_ref().unwrap().release();
+        settle(&env, cx, |_| done.get() == 4);
+        assert_eq!(count(cx), 4);
     }
 
     /// Reloads `url` and waits for its `on_done`.
