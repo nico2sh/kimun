@@ -1076,14 +1076,19 @@ fn an_image_replaced_on_disk_is_decoded_again(cx: &mut TestAppContext) {
     assert_eq!(store.decodes_started(), 1);
     let scale = scale(&started, cx);
 
-    // Rewritten from outside the app: another size, so another file key.
-    rt.block_on(v.vault.save_attachment(&path(PIC), &png(60, 30)))
+    // Rewritten from outside the app: another byte length, so another file
+    // key even when the clock gives both writes the same modified time (a
+    // file time on Windows can step only every 16 ms). A 60 x 30 PNG has
+    // the same length as the 40 x 30 one.
+    let replaced = png(61, 30);
+    assert_ne!(replaced.len(), png(40, 30).len());
+    rt.block_on(v.vault.save_attachment(&path(PIC), &replaced))
         .unwrap();
     started.redraw(cx);
     drive(&rt, cx, |cx| {
         started
             .painted(cx)
-            .is_some_and(|p| p.ready && near(p.rect.size.width, 60.0 / scale))
+            .is_some_and(|p| p.ready && near(p.rect.size.width, 61.0 / scale))
     });
     assert_eq!(store.decodes_started(), 2, "decoded again, once");
     for _ in 0..5 {
@@ -1092,7 +1097,7 @@ fn an_image_replaced_on_disk_is_decoded_again(cx: &mut TestAppContext) {
     assert_eq!(store.decodes_started(), 2, "settled");
     let painted = started.painted(cx).unwrap();
     assert!(painted.ready, "the picture, not the box");
-    assert!(near(painted.rect.size.width, 60.0 / scale), "{painted:?}");
+    assert!(near(painted.rect.size.width, 61.0 / scale), "{painted:?}");
 }
 
 #[gpui_kit::test]
