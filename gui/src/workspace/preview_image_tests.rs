@@ -1445,6 +1445,11 @@ mod remote {
         for _ in 0..3 {
             frame(&s, cx);
         }
+        // A fetch that started shows Loading, so this holds with no timing.
+        frame(&s, cx);
+        let looks: Vec<_> = cx.read(|cx| view.read(cx).painted_remote());
+        let looks: Vec<_> = looks.into_iter().map(|p| p.look).collect();
+        assert_eq!(looks, [both(), both()], "still the placeholder");
         assert_eq!(fetches(cx), 0, "an unallowed host loads nothing");
         assert!(env.fake.calls().is_empty());
     }

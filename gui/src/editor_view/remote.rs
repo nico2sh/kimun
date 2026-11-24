@@ -116,7 +116,8 @@ impl EditorView {
         cx.notify();
     }
 
-    /// Remove the saved copy of `url` and load it again at once.
+    /// Fetch `url` again. The saved copy stays drawn until the new bytes
+    /// replace it, and a failed fetch keeps it.
     fn reload_remote(&mut self, url: &str, cx: &mut Context<Self>) {
         let mut store = cx.default_global::<RemoteImages>().clone();
         let view = cx.weak_entity();
@@ -130,17 +131,22 @@ impl EditorView {
         self.remote_changed(cx);
     }
 
-    /// A remote image changed: size the lines again and redraw.
+    /// A remote image changed: size the lines again and redraw. The images
+    /// on screen are asked for again at the next frame: a Reload replaces a
+    /// saved copy at the same path, so the set of files on screen does not
+    /// change, and the new pixels need a decode.
     pub(crate) fn remote_changed(&mut self, cx: &mut Context<Self>) {
         if let Some(images) = self.images.as_mut() {
             images.resize_lines();
+            images.ask_again();
         }
         cx.notify();
     }
 
-    /// The web address of the remote embed on the caret's line, when that
-    /// line is a remote embed with an `http` or `https` address. A follow
-    /// from there opens it in the browser. `None` in a read-only editor.
+    /// The address of the remote embed on the caret's line, when that line
+    /// is a remote embed. It checks no scheme: the workspace's
+    /// `open_remote_image` opens only an `http` or `https` address in the
+    /// browser. `None` in a read-only editor.
     pub(crate) fn remote_image_at_cursor(&self) -> Option<String> {
         if self.read_only {
             return None;

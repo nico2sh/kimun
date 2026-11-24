@@ -265,22 +265,27 @@ pub(crate) fn image_file(embed: &Embed, remote: &RemoteImages) -> Option<PathBuf
 
 /// The natural size of the embed's image, read from its header. `None` for
 /// one that cannot be drawn: missing, unsupported, undecodable, too large,
-/// or not resolved, and for a remote embed with no saved copy.
+/// or not resolved, and for a remote embed with no saved copy. The editor
+/// looks up the file once and asks [`natural_of_file`], so only the tests
+/// ask with the embed.
+#[cfg(test)]
 pub(crate) fn natural_of(
     embed: &Embed,
     store: &mut ImageStore,
     remote: &RemoteImages,
 ) -> Option<(u32, u32)> {
-    let state = match source_of(embed, remote) {
-        Source::File(file) => file.map(|file| store.size_of(file)),
-        Source::Saved(file) => Some(store.size_of(&file)),
-        Source::Remote(_) => None,
-    };
-    match state {
-        Some(ImageState::Sized { width, height } | ImageState::Ready(_, width, height)) => {
+    natural_of_file(&image_file(embed, remote)?, store)
+}
+
+/// The natural size of the image in `file`, read from its header. `None`
+/// for one that cannot be drawn. A caller that already holds the embed's
+/// file ([`image_file`]) asks with it, so the source is looked up once.
+pub(crate) fn natural_of_file(file: &Path, store: &mut ImageStore) -> Option<(u32, u32)> {
+    match store.size_of(file) {
+        ImageState::Sized { width, height } | ImageState::Ready(_, width, height) => {
             Some((width, height))
         }
-        Some(ImageState::Failed(_)) | None => None,
+        ImageState::Failed(_) => None,
     }
 }
 
