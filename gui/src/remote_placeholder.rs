@@ -10,8 +10,8 @@
 //! paints its slice, and only the buttons inside its clip count as hits.
 
 use gpui_kit::{
-    App, Bounds, ContentMask, Font, Pixels, Point, Rgba, SharedString, TextAlign, TextRun, Window,
-    fill, point, px, size,
+    App, Bounds, ContentMask, CursorStyle, Font, Hitbox, HitboxBehavior, Pixels, Point, Rgba,
+    ShapedLine, SharedString, TextAlign, TextRun, Window, WindowTextSystem, fill, point, px, size,
 };
 use kimun_notes::settings::themes::Theme;
 
@@ -113,6 +113,108 @@ fn has_area(bounds: &Bounds<Pixels>) -> bool {
     bounds.size.width > px(0.) && bounds.size.height > px(0.)
 }
 
+/// `text` on one line, shaped in the font of `style`.
+fn shape(
+    text_system: &WindowTextSystem,
+    style: &PlaceholderStyle,
+    text: String,
+    color: Rgba,
+) -> ShapedLine {
+    let text = one_line(&text);
+    let run = TextRun {
+        len: text.len(),
+        font: style.font.clone(),
+        color: color.into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    text_system.shape_line(SharedString::from(text), style.font_size, &[run], None)
+}
+
+/// A button of a look as laid out: its label, its whole box, the part of
+/// the box inside the clip (where a press and the hand pointer act), and
+/// its action.
+struct Button {
+    label: ShapedLine,
+    bounds: Bounds<Pixels>,
+    hit: Option<Bounds<Pixels>>,
+    action: RemoteAction,
+}
+
+/// The buttons of `look` laid out over `rect`, the [`remote_rows`] rows of
+/// the embed, clipped to `clip`: left to right in the second row. The one
+/// layout that paint, the press test and the hand pointer all use.
+fn lay_out_buttons(
+    text_system: &WindowTextSystem,
+    rect: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
+    look: &RemoteLook,
+    style: &PlaceholderStyle,
+) -> Vec<Button> {
+    let visible = rect.intersect(&clip);
+    if !has_area(&visible) {
+        return Vec::new();
+    }
+    let row = rect.size.height / remote_rows() as f32;
+    let pad = style.font_size * PAD_EMS;
+    let inset = px(BUTTON_INSET).min(row / 4.);
+    let top = rect.origin.y + row;
+    let mut x = rect.origin.x;
+    let mut buttons = Vec::new();
+    for (label, action) in buttons_of(look) {
+        let label = shape(text_system, style, label, style.button);
+        let bounds = Bounds::new(
+            point(x, top + inset),
+            size(label.width + pad * 2., row - inset * 2.),
+        );
+        let hit = Some(bounds.intersect(&visible)).filter(has_area);
+        x = bounds.right() + pad;
+        buttons.push(Button {
+            label,
+            bounds,
+            hit,
+            action,
+        });
+    }
+    buttons
+}
+
+/// The bounds of each button of `look` inside `clip`, as
+/// [`paint_remote_look`] returns them. The prepaint phase can call it,
+/// before the look is painted.
+pub(crate) fn button_areas(
+    text_system: &WindowTextSystem,
+    rect: Bounds<Pixels>,
+    clip: Bounds<Pixels>,
+    look: &RemoteLook,
+    style: &PlaceholderStyle,
+) -> Vec<(Bounds<Pixels>, RemoteAction)> {
+    lay_out_buttons(text_system, rect, clip, look, style)
+        .into_iter()
+        .filter_map(|b| b.hit.map(|hit| (hit, b.action)))
+        .collect()
+}
+
+/// A hitbox over each of `areas`, the button areas of [`button_areas`].
+/// Call it in the prepaint phase, then [`show_hand_over`] in the paint
+/// phase, so a button shows the pointing hand, as a link does.
+pub(crate) fn insert_button_hitboxes(window: &mut Window, areas: &[Bounds<Pixels>]) -> Vec<Hitbox> {
+    areas
+        .iter()
+        .map(|area| window.insert_hitbox(*area, HitboxBehavior::Normal))
+        .collect()
+}
+
+/// The pointing hand over each button hitbox of
+/// [`insert_button_hitboxes`]. Call it in the paint phase, after the
+/// surface sets its own pointer: a later request wins where two overlap.
+pub(crate) fn show_hand_over(window: &mut Window, hitboxes: &[Hitbox]) {
+    for hitbox in hitboxes {
+        window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+    }
+}
+
 /// Paints `look` over `rect`, the [`remote_rows`] rows of the embed,
 /// clipped to `clip`. The first row holds the host or the note in muted
 /// text. The second row holds the buttons the look offers. It returns the
@@ -132,43 +234,24 @@ pub(crate) fn paint_remote_look(
     }
     let row = rect.size.height / remote_rows() as f32;
     let pad = style.font_size * PAD_EMS;
-    let inset = px(BUTTON_INSET).min(row / 4.);
-    let shape = |window: &mut Window, text: String, color: Rgba| {
-        let text = one_line(&text);
-        let run = TextRun {
-            len: text.len(),
-            font: style.font.clone(),
-            color: color.into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        window
-            .text_system()
-            .shape_line(SharedString::from(text), style.font_size, &[run], None)
-    };
-    let mut hits = Vec::new();
+    let text_system = window.text_system().clone();
+    let buttons = lay_out_buttons(&text_system, rect, clip, look, style);
     window.with_content_mask(Some(ContentMask { bounds: visible }), |window| {
-        let note = shape(window, text_of(look), style.note);
+        let note = shape(&text_system, style, text_of(look), style.note);
         let _ = note.paint(rect.origin, row, TextAlign::Left, None, window, cx);
         let top = rect.origin.y + row;
-        let mut x = rect.origin.x;
-        for (label, action) in buttons_of(look) {
-            let line = shape(window, label, style.button);
-            let button = Bounds::new(
-                point(x, top + inset),
-                size(line.width + pad * 2., row - inset * 2.),
-            );
-            window.paint_quad(fill(button, style.fill).corner_radii(px(BUTTON_RADIUS)));
-            let _ = line.paint(point(x + pad, top), row, TextAlign::Left, None, window, cx);
-            let hit = button.intersect(&visible);
-            if has_area(&hit) {
-                hits.push((hit, action));
-            }
-            x = button.right() + pad;
+        for button in &buttons {
+            window.paint_quad(fill(button.bounds, style.fill).corner_radii(px(BUTTON_RADIUS)));
+            let at = point(button.bounds.origin.x + pad, top);
+            let _ = button
+                .label
+                .paint(at, row, TextAlign::Left, None, window, cx);
         }
     });
-    hits
+    buttons
+        .into_iter()
+        .filter_map(|b| b.hit.map(|hit| (hit, b.action)))
+        .collect()
 }
 
 /// The button under `point`, from the hits [`paint_remote_look`] returned.
@@ -357,6 +440,102 @@ mod tests {
         assert!(hits_of(cx, &look, rect(), first).is_empty());
         let full = hits_of(cx, &look, rect(), rect());
         assert_eq!(hits_of(cx, &look, rect(), second), full);
+    }
+
+    /// The button areas, the hitboxes of the hand pointer (both from the
+    /// prepaint phase) and the press hits (from the paint phase) of `look`
+    /// over `rect`, clipped to `clip`, in one real frame.
+    #[allow(clippy::type_complexity)]
+    fn areas_hands_and_hits(
+        cx: &mut TestAppContext,
+        look: &RemoteLook,
+        rect: Bounds<Pixels>,
+        clip: Bounds<Pixels>,
+    ) -> (
+        Vec<(Bounds<Pixels>, RemoteAction)>,
+        Vec<Bounds<Pixels>>,
+        Vec<(Bounds<Pixels>, RemoteAction)>,
+    ) {
+        let out = Rc::new(RefCell::new((Vec::new(), Vec::new(), Vec::new())));
+        let (o, look) = (out.clone(), look.clone());
+        cx.add_empty_window().draw(
+            point(px(0.), px(0.)),
+            size(px(800.), px(200.)),
+            move |_, _| {
+                let (prepaint_look, o2) = (look.clone(), o.clone());
+                canvas(
+                    move |_, window, _| {
+                        let areas = button_areas(
+                            window.text_system(),
+                            rect,
+                            clip,
+                            &prepaint_look,
+                            &style(),
+                        );
+                        let bounds: Vec<_> = areas.iter().map(|(b, _)| *b).collect();
+                        let hitboxes = insert_button_hitboxes(window, &bounds);
+                        o2.borrow_mut().0 = areas;
+                        o2.borrow_mut().1 = hitboxes.iter().map(|h| h.bounds).collect();
+                        hitboxes
+                    },
+                    move |_, hitboxes, window, cx| {
+                        show_hand_over(window, &hitboxes);
+                        o.borrow_mut().2 =
+                            paint_remote_look(window, cx, rect, clip, &look, &style());
+                    },
+                )
+                .size_full()
+            },
+        );
+        out.take()
+    }
+
+    /// The hand pointer shows where a press acts: over each button, in the
+    /// editor, the facet view and the preview alike. (The test window
+    /// cannot read the pointer it shows: the areas are what is checked.)
+    #[gpui_kit::test]
+    fn the_hand_pointer_areas_are_the_press_areas(cx: &mut TestAppContext) {
+        let looks = [
+            RemoteLook::Placeholder {
+                host: "img.example.com".into(),
+                actions: both(),
+            },
+            RemoteLook::RedirectBlocked {
+                host: "t.example.net".into(),
+                actions: both(),
+            },
+            RemoteLook::Failed {
+                note: "Load failed: HTTP 404".into(),
+                retry: true,
+            },
+            RemoteLook::Loading {
+                host: "img.example.com".into(),
+            },
+        ];
+        let row = rect().size.height / 2.;
+        let second = Bounds::new(
+            point(rect().origin.x, rect().origin.y + row),
+            size(rect().size.width, row),
+        );
+        // Half a button row: the hand stays inside the clip.
+        let half = Bounds::new(
+            point(rect().origin.x, rect().origin.y + row),
+            size(px(30.), row / 2.),
+        );
+        for look in &looks {
+            for clip in [rect(), second, half] {
+                let (areas, hands, hits) = areas_hands_and_hits(cx, look, rect(), clip);
+                assert_eq!(areas, hits, "{look:?} {clip:?}");
+                let press: Vec<_> = hits.iter().map(|(b, _)| *b).collect();
+                assert_eq!(hands, press, "{look:?} {clip:?}");
+            }
+        }
+        let (_, hands, _) = areas_hands_and_hits(cx, &looks[0], rect(), rect());
+        assert_eq!(hands.len(), 2, "Load and Always load from");
+        let (_, hands, _) = areas_hands_and_hits(cx, &looks[2], rect(), rect());
+        assert_eq!(hands.len(), 1, "Retry");
+        let (_, hands, _) = areas_hands_and_hits(cx, &looks[3], rect(), rect());
+        assert!(hands.is_empty(), "no button, no hand");
     }
 
     #[test]

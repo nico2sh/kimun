@@ -592,6 +592,56 @@ fn the_cursor_row_shows_the_raw_remote_line_with_the_placeholder_below(cx: &mut 
     assert_eq!(lines_of(&s, 1, cx), 3, "the raw line and two lines below");
 }
 
+/// Draw a frame; for each button of the placeholder of `url`, its action
+/// and whether the pointer over its centre is the pointing hand.
+fn hands_over_buttons(
+    s: &Started,
+    url: &str,
+    cx: &mut TestAppContext,
+) -> Vec<(RemoteAction, bool)> {
+    render(s, cx);
+    let view = editor(s, cx);
+    cx.read(|cx| {
+        let view = view.read(cx);
+        let painted = view.painted.as_ref().expect("a painted frame");
+        view.remote_hits
+            .iter()
+            .filter(|hit| hit.url == url)
+            .flat_map(|hit| hit.buttons.iter())
+            .map(|(bounds, action)| (*action, painted.hand_at(bounds.center())))
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn the_buttons_of_a_placeholder_show_the_pointing_hand(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let _env = install(cx, &[]);
+    let (_v, s) = open(cx, &rt, NOTE, &[]);
+    assert_eq!(
+        hands_over_buttons(&s, URL, cx),
+        [(RemoteAction::Load, true), (RemoteAction::AlwaysLoad, true)]
+    );
+    // The text row of the placeholder keeps the text pointer.
+    let view = editor(&s, cx);
+    let note_row = cx.read(|cx| {
+        let painted = view.read(cx).painted.clone().unwrap();
+        let look = painted.remote_looks.iter().find(|l| l.row == 1).unwrap();
+        look.rect.origin + gpui_kit::point(gpui_kit::px(2.), gpui_kit::px(2.))
+    });
+    assert!(!cx.read(|cx| view.read(cx).painted.as_ref().unwrap().hand_at(note_row)));
+    // A failed load: the Retry button shows the hand too.
+    press_button(&s, URL, RemoteAction::Load, cx);
+    drive(&rt, cx, |cx| {
+        matches!(look(&s, 1, cx), Some(RemoteLook::Failed { .. }))
+    });
+    assert_eq!(
+        hands_over_buttons(&s, URL, cx),
+        [(RemoteAction::Retry, true)]
+    );
+}
+
 #[gpui_kit::test]
 fn a_failed_load_shows_the_note_and_retry_asks_again(cx: &mut TestAppContext) {
     let rt = runtime();

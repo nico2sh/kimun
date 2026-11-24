@@ -1414,6 +1414,25 @@ mod remote {
         );
     }
 
+    /// The pointing hand shows over each button of a placeholder row, and
+    /// nowhere else in it: the hand areas are the press areas. (The test
+    /// window cannot read the pointer it shows.)
+    #[gpui_kit::test]
+    fn the_buttons_of_a_preview_placeholder_show_the_pointing_hand(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let _env: Env = install(cx, &[(URL, Hop::Body(png(10, 60)))]);
+        let (_v, s, view) = browse(cx, &rt, REMOTE, &[], "needle");
+        let painted = painted(&s, &view, cx);
+        assert_eq!(painted.len(), 2, "{painted:?}");
+        for p in &painted {
+            let press: Vec<_> = p.buttons.iter().map(|(b, _)| *b).collect();
+            assert_eq!(p.hands, press, "row {}", p.row);
+        }
+        assert!(painted[0].hands.is_empty(), "the text row has no button");
+        assert_eq!(painted[1].hands.len(), 2, "Load and Always load from");
+    }
+
     #[gpui_kit::test]
     fn the_preview_paints_the_placeholder_over_its_two_rows_with_no_fetch(cx: &mut TestAppContext) {
         let rt = runtime();
