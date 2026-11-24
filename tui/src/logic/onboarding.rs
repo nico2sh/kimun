@@ -619,7 +619,8 @@ pub enum LocationInput {
     Empty,
     /// Text to filter the listed names by.
     Filter(String),
-    /// A path to go to: it starts with `~`, is absolute, or holds a separator.
+    /// A path to go to: it starts with `~`, is absolute, holds a separator,
+    /// or is `.` or `..`.
     Path(String),
 }
 
@@ -633,11 +634,21 @@ pub fn classify_location(text: &str) -> LocationInput {
     } else if text.starts_with('~')
         || Path::new(text).is_absolute()
         || text.contains(std::path::is_separator)
+        || is_dots(text)
     {
         LocationInput::Path(text.to_string())
     } else {
         LocationInput::Filter(text.to_string())
     }
+}
+
+/// Whether `text` is made only of `.` and `..` components (`.`, `..`): a
+/// way to go somewhere, never a name to filter by.
+fn is_dots(text: &str) -> bool {
+    use std::path::Component;
+    Path::new(text)
+        .components()
+        .all(|c| matches!(c, Component::CurDir | Component::ParentDir))
 }
 
 /// Why a typed location cannot be used.
@@ -1134,6 +1145,18 @@ mod tests {
             assert_eq!(classify_location(r"C:\x"), Path(r"C:\x".into()));
             assert_eq!(classify_location(r"sub\dir"), Path(r"sub\dir".into()));
         }
+    }
+
+    #[test]
+    fn classify_location_reads_dot_and_dotdot_as_paths() {
+        use LocationInput::*;
+        // `..` and Enter go up; a filter by ".." would show nothing.
+        assert_eq!(classify_location(".."), Path("..".into()));
+        assert_eq!(classify_location(" . "), Path(".".into()));
+        // A name that only starts with dots is still a name.
+        assert_eq!(classify_location("..."), Filter("...".into()));
+        assert_eq!(classify_location(".config"), Filter(".config".into()));
+        assert_eq!(classify_location("..a"), Filter("..a".into()));
     }
 
     #[test]
