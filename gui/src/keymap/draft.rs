@@ -72,10 +72,36 @@ impl KeyDraft {
     /// Every row as `overrides` (an imported keymap file) has it: what the
     /// draft had goes, except the unknown actions it carries. Unknown
     /// names in `overrides` are left out: the import reports them.
-    pub(crate) fn replace(&mut self, overrides: &BTreeMap<String, Vec<String>>) {
+    ///
+    /// A file line takes its chord as an interactive edit does: from the
+    /// action that holds it by default or in an earlier line, in action
+    /// order. Each take, as the action that took it, the chord and the
+    /// holder it came from.
+    pub(crate) fn replace(
+        &mut self,
+        overrides: &BTreeMap<String, Vec<String>>,
+    ) -> Vec<(ActionShortcuts, KeyInput, ActionShortcuts)> {
         let unknown = std::mem::take(&mut self.unknown);
         self.fill(overrides);
         self.unknown = unknown;
+        let mut taken = Vec::new();
+        let lines: Vec<(ActionShortcuts, Vec<String>)> = self
+            .entries
+            .iter()
+            .map(|(action, chords)| (action.clone(), chords.clone()))
+            .collect();
+        for (action, chords) in lines {
+            for written in chords {
+                let Ok(chord) = parse_chord(&written, self.platform) else {
+                    continue;
+                };
+                for holder in self.take(&action, chord) {
+                    taken.push((action.clone(), chord, holder));
+                }
+            }
+        }
+        self.settle();
+        taken
     }
 
     fn fill(&mut self, overrides: &BTreeMap<String, Vec<String>>) {
@@ -226,6 +252,26 @@ impl KeyDraft {
     pub(crate) fn overrides(&self) -> BTreeMap<String, Vec<String>> {
         let mut out = self.unknown.clone();
         out.extend(names(&self.entries));
+        out
+    }
+
+    /// Every bindable action with the chords it holds now, written as the
+    /// keymap file reads them, defaults included. An unbound action is an
+    /// empty list. What the file kept for names this build does not know
+    /// stays. This is what Export writes, so an old file pins every
+    /// action when it is imported later.
+    pub(crate) fn export_all(&self) -> BTreeMap<String, Vec<String>> {
+        let mut out = self.unknown.clone();
+        for group in bindable_groups() {
+            for row in group.rows {
+                let chords = self
+                    .chords(&row.action)
+                    .into_iter()
+                    .map(|chord| write_chord(chord, self.platform))
+                    .collect();
+                out.insert(row.action.to_string(), chords);
+            }
+        }
         out
     }
 

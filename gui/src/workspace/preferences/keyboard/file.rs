@@ -1,7 +1,7 @@
 //! Preferences > Keyboard: **export and import** of the keymap file
 //! ([`crate::keymap::file`], ADR-0064).
 //!
-//! - **Export** writes the draft's overrides to the path in its field
+//! - **Export** writes every shortcut of the draft, defaults too, to the path in its field
 //!   (`kimun-keys.toml` in the home folder at first) and says where, or why
 //!   not. `Choose folder…` opens the [`FolderChooser`]; the folder chosen
 //!   goes before the field's file name.
@@ -407,12 +407,13 @@ impl PreferencesView {
         self.keyboard_close_chooser(window, cx);
     }
 
-    /// `Export`: the draft's overrides to the file in the field.
+    /// `Export`: every shortcut of the draft, defaults too, to the file in
+    /// the field.
     pub(crate) fn keyboard_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy() {
             return;
         }
-        let Some(overrides) = self.keyboard.draft.as_ref().map(|d| d.overrides()) else {
+        let Some(overrides) = self.keyboard.draft.as_ref().map(|d| d.export_all()) else {
             return;
         };
         let path = match typed_path(&self.keyboard.file.export_input, cx) {
@@ -496,12 +497,15 @@ impl PreferencesView {
         let Some(draft) = self.keyboard.draft.as_mut() else {
             return;
         };
-        draft.replace(&imported.overrides);
+        let taken = draft.replace(&imported.overrides);
         let mut lines: Vec<SharedString> = vec![loaded(draft.changes()).into()];
         lines.extend(imported.dropped.iter().map(|e| skipped(e).into()));
         self.keyboard.lines.clear();
         self.keyboard.forget_kept();
         self.keyboard.notice = None;
+        for (action, chord, holder) in taken {
+            self.keyboard_moved(&action, [(holder, chord)]);
+        }
         self.keyboard_write();
         self.keyboard.file.import_notice = Some(ImportNotice {
             error: false,

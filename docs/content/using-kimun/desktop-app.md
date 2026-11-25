@@ -316,7 +316,7 @@ To export:
 1. Check the path in the Export field. It starts as `kimun-keys.toml` in your home folder.
 2. Click `Export`.
 
-The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder with the [folder chooser](#the-folder-chooser). If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds only the shortcuts you changed.
+The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder with the [folder chooser](#the-folder-chooser). If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds every shortcut, the default ones too. If a later version changes a default, importing the old file brings back your shortcut. If a line in the file uses a chord that another action holds now, the import takes it from that action and tells you which one lost it.
 
 To import:
 
@@ -325,7 +325,7 @@ To import:
 
 The path must be a full path or start with `~`. The `Choose file…` button opens the same chooser. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
 
-Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. Import never takes a shortcut from another action. If a line asks for a shortcut that another action already has, Kimün skips that shortcut and tells you why. A default shortcut of another action counts too. If two lines ask for the same shortcut, only one of them gets it. A line replaces all the default shortcuts of its action. So if Kimün skips the only shortcut of a line, that action has no shortcut at all. To prevent this, clear the action that has the shortcut in the same file, for example with `OpenFileBrowser = []`.
+Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. A line takes its shortcut from the action that has it now, as the Change button does. A default shortcut of another action counts too. Kimün lists each shortcut it took and the action that lost it, and Save makes the loss permanent. If two lines ask for the same shortcut, the later line in the file, in action order, gets it. A line replaces all the default shortcuts of its action.
 
 A keymap file looks like this:
 

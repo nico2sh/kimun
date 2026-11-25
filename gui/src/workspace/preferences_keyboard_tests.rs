@@ -1069,7 +1069,6 @@ fn the_cfg_row_shows_the_new_leader_chord_after_save(cx: &mut TestAppContext) {
 
 mod file {
     use super::*;
-    use crate::keymap::file::export;
     use crate::workspace::folder_chooser::{self, FolderChooser, Listing};
     use crate::workspace::preferences::keyboard::file::{
         CHOOSER_AREA_ID, CHOOSER_PREFIX, EXPORT_CHOOSE_ID, EXPORT_ID, EXPORT_NOTICE_ID,
@@ -1765,10 +1764,15 @@ mod file {
         let path = dir.join("new").join("keys.toml");
         set_path(&s, true, &path, cx);
         run(&s, &rt, EXPORT_ID, cx);
-        let mut want = BTreeMap::new();
-        want.insert("OpenFileBrowser".to_string(), Vec::new());
-        want.insert("OpenNote".to_string(), vec!["primary+e".to_string()]);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), export(&want));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let got = crate::keymap::file::import(&text, crate::keymap::Platform::LinuxWindows)
+            .unwrap()
+            .overrides;
+        // Every bindable action is written, defaults too.
+        assert_eq!(got["OpenNote"], vec!["primary+e".to_string()]);
+        assert_eq!(got["OpenFileBrowser"], Vec::<String>::new());
+        assert!(got.len() > 10, "defaults are exported too: {got:?}");
+        assert!(got.values().any(|chords| !chords.is_empty()));
         assert_eq!(
             label(&s, EXPORT_NOTICE_ID, cx),
             Some(format!("Saved to {}.", system::path_to_string(&path)))
@@ -1841,6 +1845,29 @@ mod file {
         // The next edit takes the result line away.
         change(&s, &A::ToggleFacetView, "ctrl-g", cx);
         assert_eq!(label(&s, IMPORT_NOTICE_ID, cx), None, "stale after an edit");
+        settle(&rt, cx);
+    }
+
+    /// A file line takes its chord from the action that holds it by
+    /// default, as an edit does. Nothing is listed as dropped.
+    #[gpui_kit::test]
+    fn import_takes_a_chord_from_its_holder(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        let path = dir.join("keys.toml");
+        std::fs::write(&path, "[keys]\nToggleRail = [\"primary+o\"]\n").unwrap();
+        set_path(&s, false, &path, cx);
+        run(&s, &rt, IMPORT_ID, cx);
+        assert_eq!(row(&s, &A::ToggleRail, cx), "Toggle rail: Ctrl+O");
+        assert!(
+            !row(&s, &A::OpenNote, cx).contains("Ctrl+O /"),
+            "Open note lost Ctrl+O: {}",
+            row(&s, &A::OpenNote, cx)
+        );
+        let notice = label(&s, IMPORT_NOTICE_ID, cx).unwrap();
+        assert!(!notice.contains("Skipped"), "{notice}");
         settle(&rt, cx);
     }
 

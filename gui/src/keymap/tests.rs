@@ -2451,23 +2451,47 @@ mod keymap_file {
     }
 
     #[test]
-    fn import_keeps_the_first_claim_on_a_clash_inside_the_file() {
-        // Both take the same free chord; the loader applies them in action
-        // order, so the first claims it and the second is dropped.
+    fn import_reports_no_clash_for_the_draft_resolves_it() {
+        // The draft gives the chord to a line, so the loader's clash is no loss.
         let text = "[keys]\nToggleRail = [\"primary+alt+j\"]\nToggleZoom = [\"primary+alt+j\"]\n";
         let got = import(text, LinuxWindows).unwrap();
-        assert_eq!(got.dropped.len(), 1, "{:?}", got.dropped);
-        let (first, second) = match &got.dropped[0] {
-            KeymapError::Collision {
-                action, taken_by, ..
-            } => (taken_by.clone(), action.clone()),
-            other => panic!("{other:?}"),
-        };
-        assert_ne!(first, second);
-        // The file's text is kept as written; the loaded keymap shows the claim.
-        let (keymap, _) = Keymap::load(LinuxWindows, &got.overrides);
-        assert_eq!(keymap.chords_for(&first), vec![chord("ctrl+alt+j")]);
-        assert!(keymap.chords_for(&second).is_empty());
+        assert!(got.dropped.is_empty(), "{:?}", got.dropped);
+        // The text is kept as written.
+        assert_eq!(got.overrides.len(), 2);
+    }
+
+    #[test]
+    fn replace_takes_a_chord_from_the_default_holder() {
+        // `ctrl+o` is Open note by default: a file line gives it to another
+        // action, and Open note is written with what it keeps.
+        let mut draft = KeyDraft::new(LinuxWindows, &BTreeMap::new());
+        let taken = draft.replace(&map(&[("ToggleRail", &["primary+o"])]));
+        assert!(
+            taken.contains(&(A::ToggleRail, chord("ctrl+o"), A::OpenNote)),
+            "{taken:?}"
+        );
+        assert_eq!(draft.chords(&A::ToggleRail), vec![chord("ctrl+o")]);
+        assert!(!draft.chords(&A::OpenNote).contains(&chord("ctrl+o")));
+        // It holds after a reload of what the draft saves.
+        let saved = draft.overrides();
+        let (keymap, dropped) = Keymap::load(LinuxWindows, &saved);
+        assert!(dropped.is_empty(), "{dropped:?}");
+        assert_eq!(keymap.chords_for(&A::ToggleRail), vec![chord("ctrl+o")]);
+    }
+
+    #[test]
+    fn replace_gives_a_clash_inside_the_file_to_one_line_only() {
+        let mut draft = KeyDraft::new(LinuxWindows, &BTreeMap::new());
+        let text = map(&[
+            ("ToggleRail", &["primary+alt+j"]),
+            ("ToggleZoom", &["primary+alt+j"]),
+        ]);
+        draft.replace(&text);
+        let holders = [A::ToggleRail, A::ToggleZoom]
+            .iter()
+            .filter(|a| draft.chords(a).contains(&chord("ctrl+alt+j")))
+            .count();
+        assert_eq!(holders, 1);
     }
 
     #[test]
