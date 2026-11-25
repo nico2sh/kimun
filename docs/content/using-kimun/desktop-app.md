@@ -277,11 +277,11 @@ A shortcut needs `Ctrl`, `Alt` or `Cmd`. A function key such as `F6` works alone
 
 If another action already has the shortcut, the row warns "{shortcut} was {action}. Saving clears it there." The new row keeps it, and the other row loses it. Two actions can share a shortcut when they work in different places, for example in the editor and in the search box. The row says which one wins where.
 
-A row can also warn you about a key that the editor uses, such as the key for undo. With the new shortcut, the editor no longer reacts to that key. In vim mode, vim reads some keys before Kimün does, so a shortcut on such a key may not work.
+A row can also warn you about a key that the editor uses, such as the key for undo. With the new shortcut, the editor no longer reacts to that key. In vim mode, vim reads some keys before Kimün does, so a shortcut on such a key can fail.
 
 On macOS, `Cmd+Q`, `Cmd+W`, `Cmd+H` and `Cmd+M` always act at once, so you cannot use them. A shortcut with `Option` and a letter can fail in the editor, because that key types a special character.
 
-Nothing is kept until you click `Save`. Click `Cancel` to throw the changes away. Saved changes work at once. `Reset all` puts every shortcut back to its default.
+Kimün keeps nothing until you click `Save`. Click `Cancel` to throw the changes away. Saved changes work at once. `Reset all` puts every shortcut back to its default.
 
 If you lose the shortcut that opens Preferences, click CFG in the rail, then `Preferences…`. Click `Reset all` in the Keyboard section, then `Save`.
 
@@ -289,15 +289,15 @@ If you lose the shortcut that opens Preferences, click CFG in the rail, then `Pr
 
 You can save your shortcuts to a file and load them on another computer. The Keymap file area sits below the list.
 
-To export, check the path in the Export field, then click `Export`. The path starts as `kimun-keys-<system>.toml` in your home folder, where `<system>` is `macos`, `linux` or `windows`. Type another full path or one that starts with `~`, or click `Choose folder…`. Kimün creates a missing folder. It replaces a file with the same name without asking.
+To export, make sure that the path in the Export field is the one you want, then click `Export`. The path starts as `kimun-keys-<system>.toml` in your home folder, where `<system>` is `macos`, `linux` or `windows`. Type another full path or one that starts with `~`, or click `Choose folder…`. Kimün creates a missing folder. It replaces a file with the same name without asking.
 
 The file holds every shortcut, the default ones too. If a later version changes a default, importing the old file brings your shortcut back.
 
 To import, type the path of the file in the Import field, or click `Choose file…`, then click `Import`. The list shows the shortcuts of the file in place of your unsaved changes. Click `Save` to keep them, or `Cancel` to throw them away.
 
-If a line asks for a shortcut that another action has, the import takes it from that action, as `Change` does. Kimün lists each shortcut it moved. It also lists each line it could not read, with the reason.
+If a line asks for a shortcut that another action has, the import takes it from that action, as `Change` does. Kimün lists each shortcut it moved. It also lists each line it cannot read, with the reason.
 
-Systems share a file with one limit. Linux and Windows have the same defaults. macOS has different ones. If you import a file from the other group, Kimün skips each line that only repeats the defaults of the system that wrote it. It says how many lines it skipped. The shortcuts you changed come across. The file says which system wrote it, so you can rename it. An older file without that information imports in full.
+A file can move between systems with one limit. Linux and Windows have the same defaults. macOS has different ones. If you import a file from the other group, Kimün skips each line that only repeats the defaults of the system that wrote it. It says how many lines it skipped. The shortcuts you changed come across. The file says which system wrote it, so you can rename it. An older file without that information imports in full.
 
 A keymap file looks like this:
 
