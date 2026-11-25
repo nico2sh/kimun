@@ -18,8 +18,8 @@
 //! The group moves whole, keeping its id, so its state (`groups`), its note
 //! and its unsaved text go with it: nothing is written, nothing is added or
 //! dropped from `groups`. A group alone in its tab leaves no empty group
-//! behind: its tab closes. The tab strip shows during the drag even with
-//! one tab, so the plus button is there to aim at.
+//! behind: its tab closes. With one tab the strip stays hidden during the
+//! drag, so the plus button is not there to aim at.
 //!
 //! [`EditorRegion::move_group_beside`]: kimun_notes::logic::editor_region::EditorRegion::move_group_beside
 //! [`EditorRegion::swap_groups`]: kimun_notes::logic::editor_region::EditorRegion::swap_groups
@@ -40,10 +40,12 @@ impl Workspace {
     /// ([`Self::group_drop_allowed`]).
     pub(super) fn group_drop_targets(&self) -> Vec<DropTarget> {
         let region = self.layout.region();
-        let zones = region
-            .groups(region.shown())
-            .into_iter()
-            .flat_map(|group| Zone::ALL.map(|zone| DropTarget::Group(group, zone)));
+        let zones = region.groups(region.shown()).into_iter().flat_map(|group| {
+            Zone::ALL
+                .map(|zone| DropTarget::Group(group, zone))
+                .into_iter()
+                .chain(std::iter::once(DropTarget::GroupHeader(group)))
+        });
         let tabs = region.tabs().into_iter().map(DropTarget::Tab);
         zones
             .chain(tabs)
@@ -62,11 +64,13 @@ impl Workspace {
             return None;
         }
         match target {
-            DropTarget::Group(_, Zone::Centre) => Some(DropOutcome::SwapGroups),
+            DropTarget::Group(_, Zone::Centre) | DropTarget::GroupHeader(_) => {
+                Some(DropOutcome::SwapGroups)
+            }
             DropTarget::Group(_, Zone::Edge(dir)) => Some(DropOutcome::SplitGroup(dir)),
             DropTarget::Tab(_) => Some(DropOutcome::IntoTab),
             DropTarget::NewTab => Some(DropOutcome::IntoNewTab),
-            DropTarget::Slot(..) | DropTarget::Window(_) => None,
+            DropTarget::Slot(..) | DropTarget::SlotHeader(_) | DropTarget::Window(_) => None,
         }
     }
 
@@ -85,12 +89,12 @@ impl Workspace {
             return false;
         };
         match target {
-            DropTarget::Group(other, _) => {
+            DropTarget::Group(other, _) | DropTarget::GroupHeader(other) => {
                 other != group && region.group_tab(other) == Some(region.shown())
             }
             DropTarget::Tab(tab) => tab != from && region.tabs().contains(&tab),
             DropTarget::NewTab => region.tabs().len() > 1 || region.groups(from).len() > 1,
-            DropTarget::Slot(..) | DropTarget::Window(_) => false,
+            DropTarget::Slot(..) | DropTarget::SlotHeader(_) | DropTarget::Window(_) => false,
         }
     }
 
@@ -111,19 +115,21 @@ impl Workspace {
         }
         let region = self.layout.region_mut();
         let moved = match target {
-            DropTarget::Group(other, Zone::Centre) => region.swap_groups(group, other),
+            DropTarget::Group(other, Zone::Centre) | DropTarget::GroupHeader(other) => {
+                region.swap_groups(group, other)
+            }
             DropTarget::Group(other, Zone::Edge(dir)) => {
                 region.move_group_beside(group, other, dir)
             }
             DropTarget::Tab(tab) => region.move_group_to_tab(group, tab),
             DropTarget::NewTab => region.move_group_to_new_tab(group).is_some(),
-            DropTarget::Slot(..) | DropTarget::Window(_) => false,
+            DropTarget::Slot(..) | DropTarget::SlotHeader(_) | DropTarget::Window(_) => false,
         };
         if !moved {
             return false;
         }
         let focus = match target {
-            DropTarget::Group(..) => group,
+            DropTarget::Group(..) | DropTarget::GroupHeader(_) => group,
             _ => self.layout.active_group(),
         };
         self.focus_group(focus, cx);
@@ -147,6 +153,7 @@ impl Workspace {
         };
         Some(self.zone_grid(
             |zone| DropTarget::Group(group, zone),
+            DropTarget::GroupHeader(group),
             |zone| group_zone_id(at, zone),
             cx,
         ))
