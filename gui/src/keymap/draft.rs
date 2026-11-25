@@ -82,7 +82,9 @@ impl KeyDraft {
         overrides: &BTreeMap<String, Vec<String>>,
     ) -> Vec<(ActionShortcuts, KeyInput, ActionShortcuts)> {
         let unknown = std::mem::take(&mut self.unknown);
-        self.fill(overrides);
+        // Not settled yet: a line the loader reduces to the defaults (the
+        // chord it adds belongs to another action) still has a chord to take.
+        self.fill_unsettled(overrides);
         self.unknown = unknown;
         let mut taken = Vec::new();
         let lines: Vec<(ActionShortcuts, Vec<String>)> = self
@@ -92,6 +94,15 @@ impl KeyDraft {
             .collect();
         for (action, chords) in lines {
             for written in chords {
+                // An earlier line may have taken it from this one, in the
+                // file's own clash: the earlier line keeps it.
+                if !self
+                    .entries
+                    .get(&action)
+                    .is_some_and(|now| now.contains(&written))
+                {
+                    continue;
+                }
                 let Ok(chord) = parse_chord(&written, self.platform) else {
                     continue;
                 };
@@ -105,6 +116,13 @@ impl KeyDraft {
     }
 
     fn fill(&mut self, overrides: &BTreeMap<String, Vec<String>>) {
+        self.fill_unsettled(overrides);
+        self.settle();
+    }
+
+    /// [`Self::fill`] without [`Self::settle`]: every line stays, even one
+    /// the loader would reduce to the defaults.
+    fn fill_unsettled(&mut self, overrides: &BTreeMap<String, Vec<String>>) {
         self.entries.clear();
         self.unknown.clear();
         for (name, chords) in overrides {
@@ -119,7 +137,6 @@ impl KeyDraft {
                 }
             }
         }
-        self.settle();
     }
 
     /// Whether any row differs from its default (unknown actions aside).

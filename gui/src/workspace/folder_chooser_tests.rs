@@ -470,14 +470,12 @@ fn enter_on_a_tilde_path_goes_home(cx: &mut TestAppContext) {
     s.go(&rt, cx);
     assert_eq!(s.dir(cx), home);
     assert_eq!(s.location_text(cx), "");
-    // `~user` is not expanded: read from the folder shown, it is missing.
+    // `~user` is no home path: it is a name, so it narrows the list and
+    // reports no missing folder.
     s.type_location("~nobody-here", cx);
     s.go(&rt, cx);
     assert_eq!(s.dir(cx), home);
-    assert_eq!(
-        s.location_error(cx).as_deref(),
-        Some("That folder does not exist")
-    );
+    assert_eq!(s.location_error(cx), None);
 }
 
 /// In files mode, a path to a file with the extension picks it.

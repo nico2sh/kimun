@@ -853,14 +853,7 @@ fn list(dir: &SystemPath, files: Option<&'static str>) -> Result<Vec<(SystemPath
         None => onb::list_subdirs(dir)
             .map(|dirs| dirs.into_iter().map(|d| (d, false)).collect())
             .map_err(|e| e.to_string()),
-        Some(extension) => onb::list_files(dir, extension).map(|rows| {
-            rows.into_iter()
-                .map(|p| {
-                    let file = !p.is_dir();
-                    (p, file)
-                })
-                .collect()
-        }),
+        Some(extension) => onb::list_files(dir, extension),
     }
 }
 

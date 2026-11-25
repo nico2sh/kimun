@@ -2736,7 +2736,7 @@ impl Workspace {
         self.leader.set_tree(snapshot.leader_tree());
         // The saved `[gui.keys]` replace the keymap in effect; the views that
         // derived chord hints from it follow through `keymap::observe`.
-        crate::keymap::init(cx, crate::load_keymap(&snapshot));
+        crate::keymap::init(cx, crate::rebuild_keymap(&snapshot));
         crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
         crate::editor_font::apply(&snapshot.gui, cx);
         // The saved position moves the rail in this window now; the next

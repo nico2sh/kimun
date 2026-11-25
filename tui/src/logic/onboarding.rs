@@ -572,14 +572,15 @@ pub fn list_subdirs(
 /// first, then the files, each sorted by name ignoring case (ties by the
 /// exact name). Hidden folders (a leading `.`) are listed, as
 /// [`list_subdirs`] lists them, so a chooser can walk into `~/.config`.
-/// Hidden files are left out.
+/// Hidden files are left out. Each entry comes with whether it is a file,
+/// from the one stat the listing already made.
 ///
 /// Blocking (a directory read and one stat per entry): run it off the UI
 /// thread.
 pub fn list_files(
     dir: &kimun_core::system::SystemPath,
     extension: &str,
-) -> Result<Vec<kimun_core::system::SystemPath>, String> {
+) -> Result<Vec<(kimun_core::system::SystemPath, bool)>, String> {
     let extension = extension.trim_start_matches('.');
     let name = |p: &kimun_core::system::SystemPath| {
         p.as_path()
@@ -608,8 +609,11 @@ pub fn list_files(
     }
     dirs.sort_by_cached_key(key);
     files.sort_by_cached_key(key);
-    dirs.extend(files);
-    Ok(dirs)
+    Ok(dirs
+        .into_iter()
+        .map(|d| (d, false))
+        .chain(files.into_iter().map(|f| (f, true)))
+        .collect())
 }
 
 /// What the chooser's Location field holds.
@@ -1259,7 +1263,8 @@ mod tests {
         }
         let dir = kimun_core::system::SystemPath::try_absolute(tmp.path()).unwrap();
         for ext in ["toml", ".toml"] {
-            let listed = list_files(&dir, ext).unwrap();
+            let rows = list_files(&dir, ext).unwrap();
+            let listed: Vec<_> = rows.iter().map(|(p, _)| p.clone()).collect();
             assert_eq!(
                 names(&listed),
                 [
@@ -1273,6 +1278,9 @@ mod tests {
                 "{ext}: folders first (hidden ones too), then the files, each sorted ignoring case"
             );
             assert!(listed.iter().all(|d| d.parent().as_ref() == Some(&dir)));
+            // Folders are not files; the two `.toml` entries are.
+            let flags: Vec<bool> = rows.iter().map(|(_, file)| *file).collect();
+            assert_eq!(flags, [false, false, false, false, true, true], "{ext}");
         }
         let gone = dir.join("gone");
         assert!(list_files(&gone, "toml").is_err());
