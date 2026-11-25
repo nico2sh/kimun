@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.5](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.4...kimun-notes-v0.25.5) - 2026-11-25
+
+### Added
+
+- *(gui)* Enter on a typed path in the folder chooser
+- *(core)* location rules for the folder chooser
+- key shortcuts preferences
+- *(settings)* the allowed hosts for remote images
+- *(gui)* inline images in the facet view
+- *(gui)* paint inline images
+- *(gui)* reserve rows for inline images
+- *(layout)* reserve pad lines under a row
+
+### Fixed
+
+- *(gui)* import takes extra chords, one stat per row, quiet keymap rebuild
+- home tilde fix
+- *(gui)* the folder chooser follows a typed path and closes inner fields first
+- bug scrolling the file chooser
+- *(layout)* recompute the caret's visual row after reserves change
+- removed autocomplete from open note dialog
+
+### Other
+
+- docs improved
+- one AllowedHosts rule for the settings, the store and redirects
+- docs, test: inline image glossary fixes and a re-planned chunk test
+- cheaper bare-name image lookup, test-only reserve setter
+- clean on the tui code
+
 ## [0.25.4](https://github.com/nico2sh/kimun/compare/kimun-notes-v0.25.3...kimun-notes-v0.25.4) - 2026-11-23
 
 ### Added
