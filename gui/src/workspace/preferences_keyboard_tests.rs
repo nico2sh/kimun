@@ -54,6 +54,17 @@ fn label(
             .and_then(|e| e.label().map(str::to_string))
     })
     .unwrap()
+    .map(|text| spelled(&text))
+}
+
+/// `text` with the macOS key glyphs written out (`⌃⇧E` as `Ctrl+Shift+E`).
+/// The window runs the Linux and Windows table, but `Kbd::format` follows
+/// the host, so on a Mac the rows read in glyphs. A no-op elsewhere.
+fn spelled(text: &str) -> String {
+    text.replace('⌃', "Ctrl+")
+        .replace('⌥', "Alt+")
+        .replace('⇧', "Shift+")
+        .replace('⌘', "Cmd+")
 }
 
 /// Whether the element `id` is drawn disabled.
