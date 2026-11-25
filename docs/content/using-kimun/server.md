@@ -29,7 +29,7 @@ Ask can also answer questions about time, such as "what did I write last week?".
 
 ## Set up
 
-Install the server with the script. The option `--service` starts the server when you log in and restarts it if it stops:
+Install the server with the script. The option `--service` starts the server at login. If the server stops, the option restarts it:
 
 ```sh
 curl -fsSL https://kimun.2co.dev/install-server.sh | sh -s -- --service
@@ -61,3 +61,5 @@ If you installed it with the script and the `--service` option, and the server r
 For every other server, update it the way you installed it. This includes a server on another computer, a Docker container, a server on Windows, and a server that you installed with Cargo. To update a server that you installed with the script, run the same command again. The script restarts the server for you.
 
 If you installed the script version before this feature existed, the button does not appear yet. Run the install command once. After that, the button works.
+
+Some server updates change how the server stores your notes. After such an update, the server starts with an empty store, and Kimün sends your notes to it again. The server then embeds the notes again, which can take several minutes for a large vault. Until that ends, search and Ask find nothing for that vault. The Jobs page of the server web UI shows the progress. Do not restart the server while a job runs, because a restart stops the job and Kimün has to start it again.
