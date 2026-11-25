@@ -579,3 +579,20 @@ fn new_note_initial_text_is_relative_to_the_browsed_directory() {
     let text = new_note_initial_text(&base, &path);
     assert_eq!(new_note_target(&base, &text), Ok(path));
 }
+
+#[test]
+fn rank_names_puts_the_best_match_first_and_keeps_order_when_empty() {
+    let names: Vec<String> = ["notes", "projects", "kimun", "kimun-old"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(rank_names(&names, ""), vec![0, 1, 2, 3]);
+    let hits = rank_names(&names, "kim");
+    assert_eq!(hits.len(), 2);
+    assert_eq!(
+        hits[0], 2,
+        "the shorter match ranks first, ties keep list order"
+    );
+    assert!(rank_names(&names, "zzz").is_empty());
+    assert_eq!(rank_names(&names, "PROJ")[0], 1);
+}

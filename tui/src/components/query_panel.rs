@@ -598,7 +598,7 @@ impl QueryPanel {
         self.sync_expand_anchor();
     }
 
-    /// The list-focus `y` verb. Reads the same [`SearchRow::yank_target`] the
+    /// The list-focus `y` verb. Reads the same `SearchRow::yank_target` the
     /// yank chord does, so the verb and the chord cannot report differently —
     /// including when there is nothing to copy.
     fn yank_selected_row(&self, tx: &AppTx) {

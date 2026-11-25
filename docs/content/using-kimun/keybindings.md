@@ -5,7 +5,7 @@ weight = 14
 
 # Keybindings
 
-These are the shortcuts of the terminal app. In the app, press `F1` for help and `Ctrl+B ?` for the full list with your own changes. The [desktop app](@/using-kimun/desktop-app.md#shortcuts) has its own shortcuts.
+These are the shortcuts of the terminal app. In the app, press `F1` for help and `Ctrl+B ?` for the full list with your own changes. The [desktop app](@/using-kimun/desktop-app.md#shortcuts) has its own shortcuts, and you can [change them in Preferences](@/using-kimun/desktop-app.md#keyboard-shortcuts).
 
 ## Main shortcuts
 

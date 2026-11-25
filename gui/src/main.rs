@@ -140,6 +140,15 @@ fn load_keymap(settings: &AppSettings) -> Keymap {
     keymap
 }
 
+/// [`load_keymap`] without the report, for a keymap rebuilt after a Save in
+/// Preferences: the startup report already named what the loader rejects
+/// (an unknown action stays in the file on purpose), and the Keyboard
+/// section's import listed what it dropped. Repeating the lines on every
+/// Save would only add noise.
+pub(crate) fn rebuild_keymap(settings: &AppSettings) -> Keymap {
+    Keymap::load(Platform::current(), &settings.gui.key_overrides()).0
+}
+
 /// `[gui] reduce_motion` onto GPUI's own switch, which every
 /// `with_animation` (the Welcome wordmark's bounce, the kit's spinners)
 /// honours by drawing its end state. `System` (the key is missing) follows

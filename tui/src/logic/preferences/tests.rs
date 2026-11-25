@@ -1148,3 +1148,27 @@ fn rail_is_written_only_when_changed() {
     assert_eq!(out.gui.rail(), RailPosition::Left);
     assert!(out.gui.rail_hidden(), "the rest of [gui] is kept");
 }
+
+#[test]
+fn changing_key_overrides_makes_the_draft_dirty() {
+    let s = AppSettings::default();
+    let mut m = PreferencesModel::new(&s);
+    assert!(!m.dirty(&s));
+    m.gui_key_overrides
+        .insert("ToggleRail".to_string(), Vec::new());
+    assert!(m.dirty(&s));
+}
+
+#[test]
+fn apply_keys_leaves_other_gui_keys_alone() {
+    use crate::logic::layout_tree::RailPosition;
+    let mut s = AppSettings::default();
+    s.gui.set_rail(RailPosition::Right);
+    let mut m = PreferencesModel::new(&s);
+    m.gui_key_overrides
+        .insert("OpenNote".to_string(), vec!["primary+o".to_string()]);
+    let mut out = s.clone();
+    m.apply_keys(&mut out);
+    assert_eq!(out.gui.rail(), RailPosition::Right);
+    assert_eq!(out.gui.key_overrides(), m.gui_key_overrides);
+}

@@ -108,6 +108,7 @@ mod members;
 mod more;
 mod render;
 mod reveal;
+pub(crate) use reveal::reveal_offset;
 pub(super) mod rows;
 #[cfg(test)]
 mod test_seams;

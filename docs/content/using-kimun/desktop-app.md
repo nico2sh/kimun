@@ -201,6 +201,8 @@ Press `F1` to see every shortcut. These are the most useful:
 
 ### Change a shortcut
 
+You can change a shortcut in [Preferences](#keyboard-shortcuts). You can also edit the file by hand.
+
 Add a `[gui.keys]` section to `config.toml`. Write the action name, then the new shortcut. An empty list removes a shortcut.
 
 ```toml
@@ -211,6 +213,8 @@ OpenFileBrowser = ["primary+e", "f7"]
 
 `primary` means `Ctrl`, or `Cmd` on macOS. The terminal app does not use this list.
 
+These are the same lines as in a [keymap file](#export-and-import), but under `[gui.keys]` and not `[keys]`. Kimün skips a line it cannot load and writes the reason to its log file. It shows no message. In this file, a shortcut that another action already has stays with that action. Only the Keyboard section and an import move shortcuts.
+
 ## Preferences
 
 Press `F4` or `Ctrl+,`. The list on the left has these sections:
@@ -218,6 +222,7 @@ Press `F4` or `Ctrl+,`. The list on the left has these sections:
 - Workspaces: add, rename, or remove a workspace.
 - Appearance: pick the theme.
 - Display: the editor font and size, reduce motion, the rail position, and the update check.
+- Keyboard: change the shortcuts. See [Keyboard shortcuts](#keyboard-shortcuts).
 - Sorting, Indexing, Editor, and Server: the other settings.
 
 ![The Display section of Preferences](/img/gui-preferences.png)
@@ -227,6 +232,87 @@ Click `Save` or press `Ctrl+S` to keep your changes. If you changed nothing, the
 Reduce motion stops the bouncing logo and the loading spinners. The default, System, follows the animation setting of your operating system. Choose Reduce or Allow to override it.
 
 If the title bar looks wrong on your desktop, add `window_decorations = "system"` to the `[gui]` section of `config.toml`. Restart the app to apply it.
+
+### The folder chooser
+
+The folder chooser is the panel where you pick a folder. The setup assistant, Preferences > Workspaces and Preferences > Keyboard open it. When you import a shortcut file, the same panel lists `.toml` files too, and you pick a file.
+
+Type in the Location field at the top. The cursor starts there.
+
+- Type part of a name to narrow the list. The best match comes first.
+- Type or paste a path and press `Enter` to go there. A path starts with `~`, is a full path, or has a separator in it. `..` goes up one folder. A relative path starts from the folder that the panel shows.
+- On Windows, type `D:\` to switch to another drive.
+
+To pick a folder, click `Choose this folder` or press `Ctrl+Enter` (`Cmd+Enter` on macOS). If you typed a path, the panel picks that path. When you import, a path to a keymap file picks that file.
+
+If a path does not work, a message appears under the field and goes away at your next key: `That folder does not exist`, `That is a file, not a folder`, or `That is not a .toml file`.
+
+The list grows with the height of the window. Scrolling it does not scroll the page behind it.
+
+These keys work in the panel:
+
+- `Up` and `Down` move the selection.
+- `Enter` opens the selected folder, or goes to the path you typed. When you import, it also picks a selected file.
+- `Esc` clears the Location field. When the field is empty, `Esc` closes the panel. While you name a new folder, `Esc` closes that field first.
+- `Alt+Up` (`Cmd+Up` on macOS) or `Backspace` in an empty field goes up one folder.
+- `Ctrl+N` (`Cmd+N` on macOS) makes a new folder in the folder you see. The import panel has no new folder.
+
+### Keyboard shortcuts
+
+Open Preferences and choose Keyboard. The list shows every action in groups, such as Notes, Editor and Tabs. Each row shows the action and its shortcut. A row with no shortcut shows `none` in a muted color. The leader key is one of the rows, named Leader.
+
+Some shortcuts work in one place only. The row says where, for example "editor only".
+
+To find an action, type in the `Filter shortcuts` field. Type part of the name or the keys, for example `Ctrl+E` (`Cmd+E` on macOS). Press `Esc` to empty the field.
+
+Each row has these buttons:
+
+- `Change` sets a new shortcut.
+- `Clear` removes the shortcut.
+- `Reset` gives back the default. It shows only on a row you changed.
+
+To change a shortcut, click `Change` on the row and press the new keys. Each action has one shortcut, so `Change` replaces the old one. Press `Esc` or click `Cancel` to keep the old shortcut.
+
+A shortcut needs `Ctrl`, `Alt` or `Cmd`. A function key such as `F6` works alone. The section refuses a plain letter, number or symbol, because it types text. It also refuses editing keys such as `Enter` and `Tab` without one of the three, and the `+` key. It tells you why.
+
+If another action already has the shortcut, the row warns "{shortcut} was {action}. Saving clears it there." The new row keeps it, and the other row loses it. Two actions can share a shortcut when they work in different places, for example in the editor and in the search box. The row says which one wins where.
+
+A row can also warn you about a key that the editor uses, such as the key for undo. With the new shortcut, the editor no longer reacts to that key. In vim mode, vim reads some keys before Kimün does, so a shortcut on such a key can fail.
+
+On macOS, `Cmd+Q`, `Cmd+W`, `Cmd+H` and `Cmd+M` always act at once, so you cannot use them. A shortcut with `Option` and a letter can fail in the editor, because that key types a special character.
+
+Kimün keeps nothing until you click `Save`. Click `Cancel` to throw the changes away. Saved changes work at once. `Reset all` puts every shortcut back to its default.
+
+If you lose the shortcut that opens Preferences, click CFG in the rail, then `Preferences…`. Click `Reset all` in the Keyboard section, then `Save`.
+
+### Export and import
+
+You can save your shortcuts to a file and load them on another computer. The Keymap file area sits below the list.
+
+To export, make sure that the path in the Export field is the one you want, then click `Export`. The path starts as `kimun-keys-<system>.toml` in your home folder, where `<system>` is `macos`, `linux` or `windows`. Type another full path or one that starts with `~`, or click `Choose folder…`. Kimün creates a missing folder. It replaces a file with the same name without asking.
+
+The file holds every shortcut, the default ones too. If a later version changes a default, importing the old file brings your shortcut back.
+
+To import, type the path of the file in the Import field, or click `Choose file…`, then click `Import`. The list shows the shortcuts of the file in place of your unsaved changes. Click `Save` to keep them, or `Cancel` to throw them away.
+
+If a line asks for a shortcut that another action has, the import takes it from that action, as `Change` does. Kimün lists each shortcut it moved. It also lists each line it cannot read, with the reason.
+
+A file can move between systems with one limit. Linux and Windows have the same defaults. macOS has different ones. If you import a file from the other group, Kimün skips each line that only repeats the defaults of the system that wrote it. It says how many lines it skipped. The shortcuts you changed come across. The file says which system wrote it, so you can rename it. An older file without that information imports in full.
+
+A keymap file looks like this:
+
+```toml
+platform = "macos"
+
+[keys]
+SaveNote = "primary+s"
+OpenFileBrowser = ["primary+e", "f7"]
+NewTab = []
+```
+
+- `primary` means `Cmd` on macOS and `Ctrl` on other systems.
+- An empty list, as in `NewTab = []`, means no shortcut.
+- An action that is not in the file keeps its default shortcut.
 
 ## Updates
 
