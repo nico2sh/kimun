@@ -2374,19 +2374,22 @@ mod keymap_file {
 
     #[test]
     fn export_lists_cleared_actions_as_empty_arrays() {
-        let text = export(&map(&[
-            ("ToggleRail", &[]),
-            ("FindInBuffer", &["primary+alt+f"]),
-        ]));
+        let text = export(
+            &map(&[("ToggleRail", &[]), ("FindInBuffer", &["primary+alt+f"])]),
+            "linux",
+        );
         assert_eq!(
             text,
-            "[keys]\nFindInBuffer = [\"primary+alt+f\"]\nToggleRail = []\n"
+            "platform = \"linux\"\n\n[keys]\nFindInBuffer = [\"primary+alt+f\"]\nToggleRail = []\n"
         );
     }
 
     #[test]
     fn export_with_no_changes_is_an_empty_keys_table() {
-        assert_eq!(export(&BTreeMap::new()), "[keys]\n");
+        assert_eq!(
+            export(&BTreeMap::new(), "macos"),
+            "platform = \"macos\"\n\n[keys]\n"
+        );
     }
 
     #[test]
@@ -2396,9 +2399,50 @@ mod keymap_file {
                 ("FindInBuffer", &["primary+alt+j", "primary+alt+g"]),
                 ("ToggleRail", &[]),
             ]);
-            let got = import(&export(&overrides), platform).unwrap();
+            let got = import(&export(&overrides, "linux"), platform).unwrap();
             assert_eq!(got.overrides, overrides, "{platform:?}");
             assert!(got.dropped.is_empty(), "{platform:?}: {:?}", got.dropped);
+        }
+    }
+
+    #[test]
+    fn import_from_the_other_family_skips_the_source_defaults() {
+        // A macOS file on Linux: the sidebar toggle equals the macOS default
+        // (Cmd+Option+L), so it is no choice of the user. Open note is.
+        let text = "platform = \"macos\"\n[keys]\n\
+                    ToggleSidebar = [\"primary+alt+l\"]\nOpenNote = [\"primary+alt+o\"]\n";
+        let got = import(text, LinuxWindows).unwrap();
+        assert_eq!(got.overrides, map(&[("OpenNote", &["primary+alt+o"])]));
+        assert_eq!(got.other_defaults, Some((1, "macOS")));
+    }
+
+    #[test]
+    fn import_of_a_linux_file_on_a_mac_skips_the_pinned_twins() {
+        let text = "platform = \"linux\"\n[keys]\n\
+                    OpenNote = [\"primary+o\", \"primary+shift+o\"]\n";
+        let got = import(text, MacOs).unwrap();
+        assert!(got.overrides.is_empty(), "{:?}", got.overrides);
+        assert_eq!(got.other_defaults, Some((1, "Linux")));
+    }
+
+    #[test]
+    fn import_from_the_same_family_keeps_every_line() {
+        // Linux and Windows share one table: a Windows file on Linux keeps
+        // its defaults, so a changed default later is overridden by the file.
+        let text =
+            "platform = \"windows\"\n[keys]\nOpenNote = [\"primary+o\", \"primary+shift+o\"]\n";
+        let got = import(text, LinuxWindows).unwrap();
+        assert_eq!(got.overrides.len(), 1);
+        assert_eq!(got.other_defaults, None);
+    }
+
+    #[test]
+    fn import_without_a_known_label_keeps_every_line() {
+        for head in ["", "platform = \"beos\"\n", "platform = 3\n"] {
+            let text = format!("{head}[keys]\nToggleSidebar = [\"primary+alt+l\"]\n");
+            let got = import(&text, LinuxWindows).unwrap();
+            assert_eq!(got.overrides.len(), 1, "{head:?}");
+            assert_eq!(got.other_defaults, None, "{head:?}");
         }
     }
 

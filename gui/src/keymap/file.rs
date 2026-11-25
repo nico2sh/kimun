@@ -17,7 +17,7 @@ use std::path::Path;
 use kimun_notes::logic::actions::ActionShortcuts;
 use toml::{Table, Value};
 
-use super::{Keymap, KeymapError, Platform};
+use super::{Keymap, KeymapError, Platform, parse_chord};
 
 /// The table that holds the overrides.
 const KEYS: &str = "keys";
@@ -54,12 +54,50 @@ pub(crate) struct Imported {
     pub(crate) overrides: BTreeMap<String, Vec<String>>,
     /// What the loader rejected: unknown actions and bad chords.
     pub(crate) dropped: Vec<KeymapError>,
+    /// Lines left out because the file comes from the other family of
+    /// systems and they equal that system's defaults: the count and the
+    /// system's name. `None` when nothing was left out.
+    pub(crate) other_defaults: Option<(usize, &'static str)>,
 }
 
-/// `overrides` as the text of a keymap file: a `[keys]` table sorted by
+/// The table that names the system that wrote the file.
+const PLATFORM: &str = "platform";
+
+/// The system this build runs on, as a keymap file names it.
+pub(crate) fn os_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(windows) {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
+/// The default table of the system `label` names: Linux and Windows share
+/// one. `None` for a label this build does not know.
+fn family(label: &str) -> Option<Platform> {
+    match label {
+        "macos" => Some(Platform::MacOs),
+        "linux" | "windows" => Some(Platform::LinuxWindows),
+        _ => None,
+    }
+}
+
+/// A label as a person reads it.
+fn display(label: &str) -> &'static str {
+    match label {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        _ => "Linux",
+    }
+}
+
+/// `overrides` as the text of a keymap file written on the system `label`
+/// names: a top-level `platform` line, then a `[keys]` table sorted by
 /// action name, a cleared action as `Action = []`. No overrides give an
 /// empty table.
-pub(crate) fn export(overrides: &BTreeMap<String, Vec<String>>) -> String {
+pub(crate) fn export(overrides: &BTreeMap<String, Vec<String>>, label: &str) -> String {
     let keys: Table = overrides
         .iter()
         .map(|(action, chords)| {
@@ -68,9 +106,10 @@ pub(crate) fn export(overrides: &BTreeMap<String, Vec<String>>) -> String {
         })
         .collect();
     let mut file = Table::new();
+    file.insert(PLATFORM.into(), Value::String(label.into()));
     file.insert(KEYS.into(), Value::Table(keys));
     // A table of arrays of strings always serializes.
-    toml::to_string(&file).unwrap_or_else(|_| format!("[{KEYS}]\n"))
+    toml::to_string(&file).unwrap_or_else(|_| format!("{PLATFORM} = \"{label}\"\n[{KEYS}]\n"))
 }
 
 /// The overrides in `text`, and what the loader drops from them on
@@ -83,6 +122,16 @@ pub(crate) fn import(text: &str, platform: Platform) -> Result<Imported, FileErr
         return Err(FileError::NoKeysTable);
     };
     let mut overrides = read_keys(keys);
+    let other_defaults = match file.get(PLATFORM).and_then(Value::as_str) {
+        Some(label) => match family(label) {
+            Some(source) if source != platform => {
+                let skipped = drop_source_defaults(&mut overrides, source);
+                (skipped > 0).then(|| (skipped, display(label)))
+            }
+            _ => None,
+        },
+        None => None,
+    };
     let (_, mut dropped) = Keymap::load(platform, &overrides);
     for error in &dropped {
         match error {
@@ -104,7 +153,32 @@ pub(crate) fn import(text: &str, platform: Platform) -> Result<Imported, FileErr
     // A clash is no loss: the draft gives the chord to the line that
     // names it (`KeyDraft::replace`) and reports whom it took it from.
     dropped.retain(|e| !matches!(e, KeymapError::Collision { .. }));
-    Ok(Imported { overrides, dropped })
+    Ok(Imported {
+        overrides,
+        dropped,
+        other_defaults,
+    })
+}
+
+/// Remove each line of `overrides` that gives its action the chords the
+/// `source` system has by default, read as that system reads them. The
+/// number removed.
+fn drop_source_defaults(overrides: &mut BTreeMap<String, Vec<String>>, source: Platform) -> usize {
+    let (defaults, _) = Keymap::load(source, &BTreeMap::new());
+    let before = overrides.len();
+    overrides.retain(|name, chords| {
+        let Ok(action) = ActionShortcuts::try_from(name.clone()) else {
+            return true;
+        };
+        let parsed: Result<Vec<_>, _> = chords.iter().map(|c| parse_chord(c, source)).collect();
+        let Ok(parsed) = parsed else {
+            return true;
+        };
+        let default = defaults.chords_for(&action);
+        let same = parsed.len() == default.len() && parsed.iter().all(|c| default.contains(c));
+        !same
+    });
+    before - overrides.len()
 }
 
 /// Action name to chords, as `GuiSettings::key_overrides` reads `[gui.keys]`:
@@ -131,7 +205,7 @@ pub(crate) fn write_file(
     path: &Path,
     overrides: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), String> {
-    kimun_core::system::replace_atomically(path, export(overrides).as_bytes())
+    kimun_core::system::replace_atomically(path, export(overrides, os_label()).as_bytes())
         .map_err(|e| e.to_string())
 }
 
