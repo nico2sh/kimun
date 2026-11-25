@@ -135,6 +135,7 @@ impl QueryTransport for Stub {
                     similarity_score: 0.9,
                     ordinal: 1,
                 }],
+                trail: vec![],
             }),
             Err(e) => Err(RagError::Protocol(e)),
         }

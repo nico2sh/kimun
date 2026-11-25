@@ -7,9 +7,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use kimun_core::note::{LinkType, PropertyValue};
 use kimun_core::{IndexObserver, NoteVault, error::VaultError, nfs::VaultPath};
 
-use crate::server_client::dto::{WireDoc, WireSection};
+use crate::server_client::dto::{WireDate, WireDoc, WireSection};
 use crate::server_client::{
     DirtyOp, DirtySet, RagClient, RagError, RagObserver, RagTransport, hash_string, reconcile_diff,
 };
@@ -198,10 +199,40 @@ pub async fn build_doc(
     if sections.is_empty() {
         return Ok(None);
     }
+    let dates = vault
+        .get_properties(path)
+        .await?
+        .into_iter()
+        .filter_map(|(key, value)| {
+            // A date-time keeps the day as written, with no zone conversion.
+            let day = match value? {
+                PropertyValue::Date(d) => d,
+                PropertyValue::DateTime(dt) => dt.naive_local().date(),
+                _ => return None,
+            };
+            Some(WireDate {
+                source: key.to_lowercase(),
+                day: day.format("%Y-%m-%d").to_string(),
+            })
+        })
+        .collect();
+    let tags = vault.get_tags(path).await?;
+    // Only links to other notes: not images, attachments, hashtags or URLs.
+    let links = vault
+        .get_markdown_and_links(path)
+        .await?
+        .links
+        .into_iter()
+        .filter(|l| matches!(l.ltype, LinkType::Note(_)))
+        .map(|l| l.raw_link)
+        .collect();
     Ok(Some(WireDoc {
         path: path.to_string(),
         hash: hash_string(hash),
         sections,
+        dates,
+        tags,
+        links,
     }))
 }
 
@@ -478,6 +509,63 @@ mod tests {
             *transport.deleted.lock().unwrap(),
             vec!["/a.md".to_string()]
         );
+    }
+
+    async fn doc_for(text: &str) -> WireDoc {
+        let dir = TempDir::new().unwrap();
+        let vault = vault(dir.path()).await;
+        let path = VaultPath::new("n.md");
+        vault.create_note(&path, text).await.unwrap();
+        build_doc(&vault, &path, 1).await.unwrap().unwrap()
+    }
+
+    fn days(doc: &WireDoc) -> Vec<(String, String)> {
+        doc.dates
+            .iter()
+            .map(|d| (d.source.clone(), d.day.clone()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn build_doc_pushes_date_properties() {
+        let doc = doc_for("---\ndate: 2026-11-20\ndue: 2026-12-01\n---\n# Title\n\nbody").await;
+        let mut got = days(&doc);
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("date".to_string(), "2026-11-20".to_string()),
+                ("due".to_string(), "2026-12-01".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn build_doc_pushes_datetime_with_offset_as_its_written_day() {
+        let doc = doc_for("---\ncreated: 2026-11-20T23:30:00-05:00\n---\n# Title\n\nbody").await;
+        assert_eq!(
+            days(&doc),
+            vec![("created".to_string(), "2026-11-20".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn build_doc_skips_non_date_properties() {
+        let doc = doc_for(
+            "---\nname: hello\ncount: 3\ndone: true\nitems:\n  - a\n  - b\n---\n# Title\n\nbody",
+        )
+        .await;
+        assert!(doc.dates.is_empty(), "{:?}", doc.dates);
+    }
+
+    #[tokio::test]
+    async fn build_doc_pushes_labels_and_note_link_targets() {
+        let doc = doc_for(
+            "# Title\n\n#work see [[Project X]] and ![pic](img.png) and [site](https://example.com)",
+        )
+        .await;
+        assert_eq!(doc.tags, vec!["work".to_string()]);
+        assert_eq!(doc.links, vec!["Project X".to_string()]);
     }
 
     #[tokio::test]

@@ -1,0 +1,23 @@
+info:
+  name: Ask a question (stream)
+  type: http
+  seq: 5
+
+http:
+  method: POST
+  url: http://127.0.0.1:8080/api/answer/stream
+  body:
+    type: json
+    data: |-
+      {
+        "vault_id": "{{?vault_id}}",
+        "query": "{{?question}}",
+        "context_size": "large"
+      }
+  auth: inherit
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5

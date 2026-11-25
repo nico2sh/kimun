@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use dbembeddings::embedder::Embedder;
-use dbembeddings::{CollectionInfo, EmbeddedChunk, VectorStore};
+use dbembeddings::{CollectionInfo, EmbeddedChunk, QueryFilter, VectorStore};
 use llmclients::LLMClient;
 use log::debug;
 
@@ -14,10 +14,12 @@ use crate::document::{FlattenedChunk, KimunDoc};
 use crate::reranker::{Reranker, sigmoid, validate_scored};
 pub use document::{KimunSection, split_chunks_for_rag};
 
+pub mod agent;
 pub mod dbembeddings;
 pub mod document;
 pub mod llmclients;
 pub mod reranker;
+pub mod tools;
 
 // Public modules for server
 pub mod auth;
@@ -75,13 +77,15 @@ impl Display for CollectionKey {
 }
 
 /// The answer to a question, with the chunks the LLM saw as context. Each
-/// source carries the 1-based **ordinal** the prompt numbered it with (the `[n]`
-/// citation marker) — assigned once, at the single numbering site in
-/// [`KimunRag::answer`], so the citation↔source pairing is an explicit
-/// contract rather than a shared vec-order convention.
+/// source carries the 1-based **ordinal** the model saw it numbered with (the
+/// `[n]` citation marker) — assigned once, by the answer loop's merged list
+/// ([`agent::run`]), so the citation↔source pairing is an explicit contract
+/// rather than a shared vec-order convention.
 pub struct Answer {
     pub text: String,
     pub sources: Vec<(usize, ScoredChunk)>,
+    /// What the assistant did, step by step (the **Trail**).
+    pub trail: Vec<agent::TrailStep>,
 }
 
 /// Preview of where the **context cut** slices an answer's LLM context on a
@@ -390,51 +394,53 @@ impl KimunRag {
         Ok((rows, preview))
     }
 
-    /// Question-answering: retrieves the best CHUNKS as context (the LLM wants
-    /// sections, not one-per-note) and asks the configured LLM. The context
-    /// cut sizes the context on the ranked pool — reranked scores when a
-    /// reranker is active, vector scores otherwise; `top_k` only
-    /// applies under the `fixed` cut. Fails with [`RagError::SemanticOnly`]
-    /// when no LLM is configured; the gate runs before the vector search so no
-    /// work is thrown away.
+    /// Question-answering: a bounded tool loop ([`agent::run`], adr/0065).
+    /// The first search always runs on its own and retrieves the best CHUNKS
+    /// as context (the LLM wants sections, not one-per-note). The context cut
+    /// sizes it on the ranked pool — reranked scores when a reranker is
+    /// active, vector scores otherwise; `top_k` only applies under the
+    /// `fixed` cut. The model then reads those results and may call the
+    /// retrieval tools for a few rounds before it answers; a model that
+    /// cannot call tools gets the single-pass answer on the first results.
+    /// Fails with [`RagError::SemanticOnly`] when no LLM is configured; the
+    /// gate runs before the vector search so no work is thrown away.
     ///
     /// `history` (prior question/answer pairs) does two jobs. It is forwarded
-    /// verbatim to the LLM call, and — since a terse follow-up ("yes",
+    /// to the LLM as the earlier turns, and — since a terse follow-up ("yes",
     /// "go on") embeds against nothing on its own — it also CONDITIONS the
-    /// retrieval/rerank query via `build_retrieval_query`: the most recent
-    /// turn is folded in so the search still sees the topic under discussion.
-    /// Only retrieval and ranking see the conditioned query; the prompt's
-    /// "Question:" stays the raw `question`. With empty history the query is
-    /// the raw question, identical to the pre-conditioning behavior.
+    /// first search's retrieval/rerank query via `build_retrieval_query`: the
+    /// most recent turn is folded in so the search still sees the topic under
+    /// discussion. Only that first search sees the conditioned query; the
+    /// question the model reads stays the raw `question`.
+    ///
+    /// `today` is the asker's local date for the prompt; `None` uses the
+    /// server clock. `on_step` is called with each trail step as it happens.
     pub async fn answer(
         &self,
         collection: &CollectionKey,
         question: &str,
         history: &[(String, String)],
         top_k: usize,
+        today: Option<chrono::NaiveDate>,
+        on_step: &(dyn Fn(&agent::TrailStep) + Send + Sync),
     ) -> Result<Answer, RagError> {
         let llm = self.llm_client.clone().ok_or(RagError::SemanticOnly)?;
-        // Retrieval/rerank see the conversation-conditioned query, NOT the bare
-        // question — so a terse follow-up still retrieves on-topic context.
-        let query = build_retrieval_query(question, history);
-        let raw = self.retrieve(collection, &query).await?;
-        let mut context = self.rank(&query, raw).await;
-        let cut = self.cut_len(&context, top_k);
-        context.truncate(cut);
-        // Number the context ONCE, here — this ordinal IS the `[n]` the prompt
-        // uses AND the ordinal carried on every wire source. Both the prompt
-        // builder and the sources conversion read this assigned ordinal, so
-        // neither re-enumerates and a later reorder anywhere downstream cannot
-        // silently misattribute a citation (wave2b: explicit pairing contract).
-        let numbered: Vec<(usize, ScoredChunk)> = context
-            .into_iter()
-            .enumerate()
-            .map(|(i, chunk)| (i + 1, chunk))
-            .collect();
-        let text = llm.ask(question, history, &numbered).await?;
+        let today = today.unwrap_or_else(|| chrono::Local::now().date_naive());
+        let outcome = agent::run(
+            self,
+            llm.as_ref(),
+            collection,
+            question,
+            history,
+            today,
+            top_k,
+            on_step,
+        )
+        .await?;
         Ok(Answer {
-            text,
-            sources: numbered,
+            text: outcome.text,
+            sources: outcome.sources,
+            trail: outcome.trail,
         })
     }
 
@@ -515,11 +521,23 @@ impl KimunRag {
         collection: &CollectionKey,
         query: &str,
     ) -> Result<Vec<ScoredChunk>, RagError> {
+        self.retrieve_filtered(collection, query, &QueryFilter::default())
+            .await
+    }
+
+    /// [`retrieve`](Self::retrieve) restricted to chunks matching `filter`.
+    /// The filter applies inside the store, before the candidate pool is cut.
+    pub(crate) async fn retrieve_filtered(
+        &self,
+        collection: &CollectionKey,
+        query: &str,
+        filter: &QueryFilter,
+    ) -> Result<Vec<ScoredChunk>, RagError> {
         self.check_fingerprint().await?;
         let vector = self.embedder.prompt_embedding(query).await?;
         let raw = self
             .store
-            .query(collection.as_str(), vector, CANDIDATE_POOL)
+            .query(collection.as_str(), vector, CANDIDATE_POOL, filter)
             .await?;
         Ok(deduplicate_chunks(raw))
     }
@@ -532,6 +550,20 @@ impl KimunRag {
         &self,
         collection: &CollectionKey,
         docs: &[KimunDoc],
+    ) -> Result<IndexStats, RagError> {
+        self.index_with_progress(collection, docs, &|_| {}).await
+    }
+
+    /// [`index`](Self::index) that also reports its embedding progress. Once
+    /// the chunks that need an embedding are known, `on_progress` is called
+    /// with `0` of that total, then again after each batch. It is never
+    /// called when nothing needs embedding. The callback is synchronous and
+    /// must not block.
+    pub async fn index_with_progress(
+        &self,
+        collection: &CollectionKey,
+        docs: &[KimunDoc],
+        on_progress: &(dyn Fn(IndexProgress) + Send + Sync),
     ) -> Result<IndexStats, RagError> {
         self.check_fingerprint().await?;
         let indexed_notes = self.store.indexed_notes(collection.as_str()).await?;
@@ -613,6 +645,11 @@ impl KimunRag {
         // client's reconcile re-pushes them (self-healing), while a partial
         // store at the new hash would read as complete (hash == hash) and the
         // missing chunks would never be repaired.
+        let total = to_embed.len();
+        let mut done = 0;
+        if total > 0 {
+            on_progress(IndexProgress { done, total });
+        }
         for batch in to_embed.chunks(EMBED_BATCH) {
             let embeddings = self.embedder.generate_embeddings(batch).await?;
             if embeddings.len() != batch.len() {
@@ -631,6 +668,8 @@ impl KimunRag {
                         vector,
                     }),
             );
+            done += batch.len();
+            on_progress(IndexProgress { done, total });
         }
 
         // Store per note, and each store() call is atomic in both backends
@@ -686,6 +725,52 @@ impl KimunRag {
         self.check_fingerprint().await?;
         Ok(self.store.collection_names().await?)
     }
+
+    /// Records the **vault label** the app registers for a vault, after
+    /// [`clean_vault_label`] accepts it. Display only: the vault id stays the
+    /// collection key.
+    pub async fn set_vault_label(
+        &self,
+        collection: &CollectionKey,
+        label: &str,
+    ) -> Result<(), RagError> {
+        let label = clean_vault_label(label)?;
+        self.check_fingerprint().await?;
+        self.store
+            .set_vault_label(collection.as_str(), &label)
+            .await?;
+        Ok(())
+    }
+
+    /// `{vault id → vault label}` for every vault that registered a label.
+    pub async fn vault_labels(&self) -> Result<HashMap<String, String>, RagError> {
+        self.check_fingerprint().await?;
+        Ok(self.store.vault_labels().await?)
+    }
+}
+
+/// Longest **vault label** accepted, in characters after trimming.
+const VAULT_LABEL_MAX_CHARS: usize = 100;
+
+/// The **vault label** as the server stores it: trimmed, 1 to 100
+/// characters, with no control characters (newlines
+/// and tabs included). Anything else is a [`RagError::Validation`].
+pub fn clean_vault_label(raw: &str) -> Result<String, RagError> {
+    let label = raw.trim();
+    if label.is_empty() {
+        return Err(RagError::Validation("label must not be empty".to_string()));
+    }
+    if label.chars().count() > VAULT_LABEL_MAX_CHARS {
+        return Err(RagError::Validation(format!(
+            "label must be at most {VAULT_LABEL_MAX_CHARS} characters"
+        )));
+    }
+    if label.chars().any(char::is_control) {
+        return Err(RagError::Validation(
+            "label must not contain control characters or line breaks".to_string(),
+        ));
+    }
+    Ok(label.to_string())
 }
 
 /// Collapse ranked chunks to one row per note — the best (first-seen, so
@@ -851,8 +936,11 @@ fn largest_drop_cut_len(sorted: &[ScoredChunk], (window_min, window_max): (usize
 /// keeping the answer's opening AND its closing: the offer/conclusion a terse
 /// "yes" responds to lives at the END, so a head-only cut steered retrieval
 /// back onto the earlier question. Deliberately provider-agnostic and LLM-free:
-/// no query-rewrite round-trip, so this works identically on every configured
-/// backend and adds no latency.
+/// the conditioned query still feeds the first search of the answer loop
+/// ([`agent::run`]), which runs before the model is asked anything, so a
+/// simple question costs no extra LLM round trip on any backend. Any further
+/// searches are ones the model asks for itself, with its own query text
+/// (adr/0065).
 fn build_retrieval_query(question: &str, history: &[(String, String)]) -> String {
     let Some((prev_q, prev_a)) = history.last() else {
         return question.to_string();
@@ -947,6 +1035,13 @@ pub async fn enforce_embedder_fingerprint(
     }
 }
 
+/// How far an index pass has got: `done` of `total` chunks embedded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
 /// Statistics from indexing operation
 #[derive(Debug, Clone)]
 pub struct IndexStats {
@@ -994,6 +1089,13 @@ pub(crate) mod test_support {
         /// When set, `read_fingerprint` errors — simulates a store that is
         /// unreachable (Qdrant down) for the lazy-gate tests.
         pub fingerprint_unavailable: Mutex<bool>,
+        /// When set, `query` errors on a non-empty filter, like the Qdrant
+        /// store does.
+        pub refuse_filtered: bool,
+        /// Served by `note_links`.
+        pub links: HashMap<String, Vec<String>>,
+        /// Vault labels, written by `set_vault_label`.
+        pub labels: Mutex<HashMap<String, String>>,
     }
 
     impl Default for FakeVectorStore {
@@ -1006,7 +1108,7 @@ pub(crate) mod test_support {
                         doc_hash: "h".into(),
                         title: "A".into(),
                         text: "hello world".into(),
-                        date: None,
+                        meta: Default::default(),
                     },
                 )],
                 notes: HashMap::new(),
@@ -1017,6 +1119,9 @@ pub(crate) mod test_support {
                 fingerprint: Mutex::new(None),
                 dropped_all: Mutex::new(false),
                 fingerprint_unavailable: Mutex::new(false),
+                refuse_filtered: false,
+                links: HashMap::new(),
+                labels: Mutex::new(HashMap::new()),
             }
         }
     }
@@ -1053,7 +1158,16 @@ pub(crate) mod test_support {
                 .push((collection.to_string(), paths.to_vec()));
             Ok(())
         }
-        async fn query(&self, _: &str, _: Vec<f32>, _: usize) -> anyhow::Result<Vec<ScoredChunk>> {
+        async fn query(
+            &self,
+            _: &str,
+            _: Vec<f32>,
+            _: usize,
+            filter: &QueryFilter,
+        ) -> anyhow::Result<Vec<ScoredChunk>> {
+            if self.refuse_filtered && !filter.is_empty() {
+                anyhow::bail!("filtered search is not supported on the qdrant store");
+            }
             Ok(self.results.clone())
         }
         async fn indexed_notes(&self, _: &str) -> anyhow::Result<HashMap<String, IndexedNote>> {
@@ -1081,6 +1195,22 @@ pub(crate) mod test_support {
         async fn drop_all_collections(&self) -> anyhow::Result<()> {
             *self.dropped_all.lock().unwrap() = true;
             Ok(())
+        }
+        async fn note_links(&self, _: &str) -> anyhow::Result<HashMap<String, Vec<String>>> {
+            Ok(self.links.clone())
+        }
+        async fn date_sources(&self, _: &str) -> anyhow::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+        async fn set_vault_label(&self, collection: &str, label: &str) -> anyhow::Result<()> {
+            self.labels
+                .lock()
+                .unwrap()
+                .insert(collection.to_string(), label.to_string());
+            Ok(())
+        }
+        async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>> {
+            Ok(self.labels.lock().unwrap().clone())
         }
     }
 
@@ -1140,7 +1270,7 @@ mod tests {
             doc_hash: "h".to_string(),
             title: section.to_string(),
             text: format!("{path}#{section}"),
-            date: None,
+            meta: Default::default(),
         }
     }
 
@@ -1154,6 +1284,45 @@ mod tests {
             Arc::new(FakeEmbedder),
             if llm { Some(Arc::new(FakeLlm)) } else { None },
         )
+    }
+
+    #[test]
+    fn clean_vault_label_trims_and_rejects_what_cannot_be_shown() {
+        let ok = |raw: &str| clean_vault_label(raw).unwrap();
+        let rejected = |raw: &str| {
+            assert!(
+                matches!(clean_vault_label(raw), Err(RagError::Validation(_))),
+                "{raw:?} must be rejected"
+            )
+        };
+        assert_eq!(ok("  default \t"), "default");
+        assert_eq!(ok("kimun-notes"), "kimun-notes");
+        assert_eq!(ok("Notizen äöü 日本"), "Notizen äöü 日本");
+        assert_eq!(
+            ok(&"é".repeat(100)),
+            "é".repeat(100),
+            "100 chars, not bytes"
+        );
+        rejected(&"a".repeat(101));
+        rejected("");
+        rejected("   ");
+        rejected("two\nlines");
+        rejected("tab\there");
+        rejected("bell\u{7}");
+    }
+
+    #[tokio::test]
+    async fn vault_labels_go_through_the_store() {
+        let r = rag(FakeVectorStore::default(), false);
+        r.set_vault_label(&key("vault-1"), " default ")
+            .await
+            .unwrap();
+        let labels = r.vault_labels().await.unwrap();
+        assert_eq!(labels.get("vault-1").map(String::as_str), Some("default"));
+        assert!(matches!(
+            r.set_vault_label(&key("vault-1"), " ").await,
+            Err(RagError::Validation(_))
+        ));
     }
 
     #[test]
@@ -1224,8 +1393,15 @@ mod tests {
         // 0.99/0.98/0.97 stay while 0.80 (normalized 0.34) and 0.70 (0.0)
         // drop, even though the request asked for top_k = 2.
         let rag = rag(section_heavy_store(), true);
-        let answer = rag.answer(&key("vault-1"), "q", &[], 2).await.unwrap();
-        assert_eq!(answer.text, "answer");
+        let answer = rag
+            .answer(&key("vault-1"), "q", &[], 2, None, &|_| {})
+            .await
+            .unwrap();
+        // The fake answer cites nothing, so it carries the notice.
+        assert_eq!(
+            answer.text,
+            format!("{}\n\nanswer", crate::agent::NO_CITATION_NOTICE)
+        );
         assert_eq!(answer.sources.len(), 3);
         assert_eq!(answer.sources[0].1.1.doc_path, "/a.md");
         assert_eq!(
@@ -1251,7 +1427,7 @@ mod tests {
             ..Default::default()
         };
         let answer = rag(store, true)
-            .answer(&key("vault-1"), "q", &[], 2)
+            .answer(&key("vault-1"), "q", &[], 2, None, &|_| {})
             .await
             .unwrap();
         assert_eq!(answer.sources.len(), 1);
@@ -1402,7 +1578,10 @@ mod tests {
 
         // answer: same fallback, same cut → 3 chunks of context.
         let answerer = rag(section_heavy_store(), true).with_reranker(Arc::new(FailingReranker));
-        let answer = answerer.answer(&key("v"), "q", &[], 2).await.unwrap();
+        let answer = answerer
+            .answer(&key("v"), "q", &[], 2, None, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(answer.sources.len(), 3);
     }
 
@@ -1471,7 +1650,10 @@ mod tests {
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(LogitReranker));
-        let answer = ragged.answer(&key("v"), "q", &[], 2).await.unwrap();
+        let answer = ragged
+            .answer(&key("v"), "q", &[], 2, None, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(answer.sources.len(), 2, "normalized scores keep the cut");
         assert!(
             answer
@@ -1517,7 +1699,10 @@ mod tests {
             ..Default::default()
         };
         let ragged = rag(store, true).with_reranker(Arc::new(NanReranker));
-        let answer = ragged.answer(&key("v"), "q", &[], 3).await.unwrap();
+        let answer = ragged
+            .answer(&key("v"), "q", &[], 3, None, &|_| {})
+            .await
+            .unwrap();
         assert!(!answer.sources.is_empty(), "NaN must not empty the results");
         assert!(answer.sources.iter().all(|(_, (s, _))| s.is_finite()));
     }
@@ -1577,7 +1762,7 @@ mod tests {
         assert_eq!(fixed.search(&key("v"), "q", 0).await.unwrap().len(), 1);
         assert_eq!(
             fixed
-                .answer(&key("v"), "q", &[], 0)
+                .answer(&key("v"), "q", &[], 0, None, &|_| {})
                 .await
                 .unwrap()
                 .sources
@@ -1596,7 +1781,10 @@ mod tests {
             ..Default::default()
         };
         let adaptive = rag(store(), true).with_reranker(Arc::new(SpikyReranker));
-        let answer = adaptive.answer(&key("v"), "q", &[], 4).await.unwrap();
+        let answer = adaptive
+            .answer(&key("v"), "q", &[], 4, None, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(answer.sources.len(), 1, "cut on reranked scores");
         assert_eq!(answer.sources[0].1.0, 0.9);
 
@@ -1604,7 +1792,10 @@ mod tests {
         let fixed = rag(store(), true)
             .with_reranker(Arc::new(SpikyReranker))
             .with_context_cut(ContextCut::Fixed);
-        let answer = fixed.answer(&key("v"), "q", &[], 4).await.unwrap();
+        let answer = fixed
+            .answer(&key("v"), "q", &[], 4, None, &|_| {})
+            .await
+            .unwrap();
         assert_eq!(answer.sources.len(), 4);
 
         // search with a reranker: only the surviving note shows.
@@ -1666,7 +1857,7 @@ mod tests {
         let default_cut = rag(store(), true);
         assert_eq!(
             default_cut
-                .answer(&key("v"), "q", &[], 2)
+                .answer(&key("v"), "q", &[], 2, None, &|_| {})
                 .await
                 .unwrap()
                 .sources
@@ -1678,7 +1869,7 @@ mod tests {
         let elbow = rag(store(), true).with_context_cut(ContextCut::LargestDrop);
         assert_eq!(
             elbow
-                .answer(&key("v"), "q", &[], 2)
+                .answer(&key("v"), "q", &[], 2, None, &|_| {})
                 .await
                 .unwrap()
                 .sources
@@ -1691,7 +1882,10 @@ mod tests {
     async fn answer_on_semantic_only_server_is_a_typed_rejection() {
         let rag = rag(section_heavy_store(), false);
         assert!(!rag.can_answer());
-        match rag.answer(&key("vault-1"), "q", &[], 5).await {
+        match rag
+            .answer(&key("vault-1"), "q", &[], 5, None, &|_| {})
+            .await
+        {
             Err(RagError::SemanticOnly) => {}
             other => panic!("expected SemanticOnly, got {:?}", other.map(|a| a.text)),
         }
@@ -1842,7 +2036,7 @@ mod tests {
             "What is the retention policy?".to_string(),
             "Snapshots are kept 30 days.".to_string(),
         )];
-        rag.answer(&key("vault-1"), "yes", &history, 2)
+        rag.answer(&key("vault-1"), "yes", &history, 2, None, &|_| {})
             .await
             .unwrap();
 
@@ -1852,8 +2046,12 @@ mod tests {
             "retrieval embedded the conditioned query: {embedded_query}"
         );
         // The prompt-side question is the bare follow-up, not the conditioned
-        // blob — the invariant amendment is retrieval-only.
-        assert_eq!(asked.lock().unwrap()[0], "yes");
+        // blob — the invariant amendment is retrieval-only. The single-pass
+        // fallback puts today's date before it.
+        let asked = asked.lock().unwrap()[0].clone();
+        assert!(asked.starts_with("Today is "), "{asked}");
+        assert!(asked.ends_with(").\n\nyes"), "{asked}");
+        assert!(!asked.contains("retention"), "{asked}");
     }
 
     #[tokio::test]
@@ -1866,7 +2064,7 @@ mod tests {
             Arc::new(RecordingEmbedder(embedded.clone())),
             Some(Arc::new(FakeLlm)),
         );
-        rag.answer(&key("vault-1"), "how do I deploy?", &[], 2)
+        rag.answer(&key("vault-1"), "how do I deploy?", &[], 2, None, &|_| {})
             .await
             .unwrap();
         assert_eq!(embedded.lock().unwrap()[0], "how do I deploy?");
@@ -1880,6 +2078,7 @@ mod tests {
                 title: "T".to_string(),
                 text: text.to_string(),
             }],
+            ..Default::default()
         }
     }
 
@@ -1918,6 +2117,45 @@ mod tests {
         assert_eq!(stats.skipped, 1);
         assert_eq!(stats.updated, 1);
         assert_eq!(stats.indexed, 1);
+    }
+
+    #[tokio::test]
+    async fn index_reports_embedding_progress_per_batch() {
+        // 250 one-chunk notes embed in batches of EMBED_BATCH (100): the pass
+        // reports 0 of 250 once the work is known, then after each batch.
+        let rag = rag(FakeVectorStore::default(), false);
+        let docs: Vec<KimunDoc> = (0..250)
+            .map(|i| doc(&format!("n{i}.md"), "h", &format!("text {i}")))
+            .collect();
+        let seen = std::sync::Mutex::new(Vec::new());
+        rag.index_with_progress(&key("v"), &docs, &|p| seen.lock().unwrap().push(p))
+            .await
+            .unwrap();
+
+        let total = 250;
+        let expected: Vec<IndexProgress> = [0, 100, 200, 250]
+            .into_iter()
+            .map(|done| IndexProgress { done, total })
+            .collect();
+        assert_eq!(seen.into_inner().unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn index_reports_no_progress_when_nothing_needs_embedding() {
+        // Every note is already stored at the same hash: nothing is embedded,
+        // so there is no progress to report.
+        let store = FakeVectorStore {
+            notes: [note("a.md", "h1")].into(),
+            ..Default::default()
+        };
+        let rag = rag(store, false);
+        let seen = std::sync::Mutex::new(Vec::new());
+        rag.index_with_progress(&key("v"), &[doc("a.md", "h1", "alpha")], &|p| {
+            seen.lock().unwrap().push(p)
+        })
+        .await
+        .unwrap();
+        assert!(seen.into_inner().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1973,7 +2211,7 @@ mod tests {
                 doc_hash: "h1".to_string(),
                 title: "T".to_string(),
                 text: text.to_string(),
-                date: None,
+                meta: Default::default(),
             },
             vector,
         };
@@ -2000,6 +2238,7 @@ mod tests {
                     text: "gamma".to_string(),
                 },
             ],
+            ..Default::default()
         };
         rag.index(&key("v"), &[doc]).await.unwrap();
 
@@ -2048,7 +2287,7 @@ mod tests {
                     doc_hash: "h1".to_string(),
                     title: "T".to_string(),
                     text: "alpha".to_string(),
-                    date: None,
+                    meta: Default::default(),
                 },
                 vector: vec![9.0; 8],
             }],
@@ -2070,6 +2309,7 @@ mod tests {
                     text: "gamma".to_string(),
                 },
             ],
+            ..Default::default()
         };
         assert!(rag.index(&key("v"), &[doc]).await.is_err());
 

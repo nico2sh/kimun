@@ -3,8 +3,9 @@ use qdrant_client::{
     Qdrant,
     qdrant::{
         Condition, CreateCollectionBuilder, CreateFieldIndexCollectionBuilder, DeletePointsBuilder,
-        Distance, FieldType, Filter, PointId, PointStruct, ScoredPoint, ScrollPointsBuilder,
-        SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+        Distance, FieldType, Filter, PayloadIncludeSelector, PointId, PointStruct, ScoredPoint,
+        ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder,
+        with_payload_selector::SelectorOptions,
     },
 };
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use uuid::Uuid;
 
 use crate::document::FlattenedChunk;
 
-use super::{CollectionInfo, EmbeddedChunk, IndexedNote, VectorStore};
+use super::{CollectionInfo, EmbeddedChunk, IndexedNote, QueryFilter, VectorStore};
 
 pub struct VecQdrant {
     client: Qdrant,
@@ -117,9 +118,11 @@ impl VecQdrant {
         let mut payload = HashMap::new();
         payload.insert("path".to_string(), Value::from(chunk.doc_path.clone()));
         payload.insert("title".to_string(), Value::from(chunk.title.clone()));
+        // The whole note metadata as one JSON string: Qdrant does not filter
+        // on it (see `query`), it only carries it back to the caller.
         payload.insert(
-            "date".to_string(),
-            Value::from(chunk.get_date_string().unwrap_or_default()),
+            "meta".to_string(),
+            Value::from(serde_json::to_string(&chunk.meta).unwrap_or_default()),
         );
         payload.insert("text".to_string(), Value::from(chunk.text.clone()));
         payload.insert("hash".to_string(), Value::from(chunk.doc_hash.clone()));
@@ -138,7 +141,6 @@ impl VecQdrant {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .unwrap_or_default();
-        let date_str = payload.get("date").and_then(|v| v.as_str());
         let text = payload
             .get("text")
             .and_then(|v| v.as_str())
@@ -150,17 +152,54 @@ impl VecQdrant {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let date = date_str.filter(|ds| !ds.is_empty()).and_then(|ds| {
-            chrono::NaiveDate::parse_from_str(ds, crate::document::JOURNAL_DATE_FORMAT).ok()
-        });
+        // A point that has no readable `meta` still searches, without dates,
+        // tags or links.
+        let meta = payload
+            .get("meta")
+            .and_then(|v| v.as_str())
+            .and_then(|m| serde_json::from_str(m).ok())
+            .unwrap_or_default();
 
         FlattenedChunk {
             doc_path: path,
             doc_hash: hash,
             title,
             text,
-            date,
+            meta,
         }
+    }
+
+    /// `(path, meta)` of every point in a collection, reading only those two
+    /// payload fields (no vectors, no text). Missing collection → empty.
+    async fn scroll_metas(
+        &self,
+        collection: &str,
+    ) -> anyhow::Result<Vec<(String, crate::document::NoteMeta)>> {
+        let name = self.collection_name(collection);
+        if !self.collection_exists(&name).await? {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        let mut pagination = PaginationStatus::First;
+        while pagination.has_more() {
+            let spb = ScrollPointsBuilder::new(&name)
+                .with_payload(SelectorOptions::Include(PayloadIncludeSelector {
+                    fields: vec!["path".to_string(), "meta".to_string()],
+                }))
+                .with_vectors(false)
+                .limit(500);
+            let spb = match pagination {
+                PaginationStatus::Next(point_id) => spb.offset(point_id),
+                _ => spb,
+            };
+            let scroll_result = self.client.scroll(spb).await?;
+            for p in &scroll_result.result {
+                let chunk = Self::payload_to_chunk(&p.payload);
+                out.push((chunk.doc_path, chunk.meta));
+            }
+            pagination = scroll_result.next_page_offset.into();
+        }
+        Ok(out)
     }
 
     fn point_to_chunk(point: &ScoredPoint) -> FlattenedChunk {
@@ -230,6 +269,8 @@ impl VectorStore for VecQdrant {
             return Ok(Vec::new());
         }
 
+        // Scroll returns points in id order, and the ids are random UUIDs. On
+        // Qdrant the order of a note's sections is not guaranteed.
         let filter = Filter::must([Condition::matches("path", paths.to_vec())]);
         let page_size = 200;
         let mut out = Vec::new();
@@ -272,7 +313,13 @@ impl VectorStore for VecQdrant {
         collection: &str,
         vector: Vec<f32>,
         limit: usize,
+        filter: &QueryFilter,
     ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
+        // Checked first so it needs no round trip to the server. SQLite is the
+        // fully supported store; filtering here would need payload indexes.
+        if !filter.is_empty() {
+            anyhow::bail!("filtered search is not supported on the qdrant store");
+        }
         let name = self.collection_name(collection);
         // Missing collection → no results, never an error (matches the trait
         // contract; a search may race the first push).
@@ -457,6 +504,28 @@ impl VectorStore for VecQdrant {
         }
         Ok(())
     }
+
+    async fn note_links(&self, collection: &str) -> anyhow::Result<HashMap<String, Vec<String>>> {
+        let metas = self.scroll_metas(collection).await?;
+        Ok(super::aggregate_links(metas))
+    }
+
+    async fn date_sources(&self, collection: &str) -> anyhow::Result<Vec<String>> {
+        let metas = self.scroll_metas(collection).await?;
+        Ok(super::aggregate_date_sources(
+            metas.into_iter().map(|(_, m)| m),
+        ))
+    }
+
+    // Qdrant does not store vault labels. SQLite is the default store; on
+    // Qdrant the web UI shows no label.
+    async fn set_vault_label(&self, _collection: &str, _label: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>> {
+        Ok(HashMap::new())
+    }
 }
 
 /// Conformance against a live Qdrant. `#[ignore]`d because they need a running
@@ -503,6 +572,27 @@ mod tests {
     async fn conformance_missing_collection() {
         let s = store("missing").await;
         conformance::missing_collection_is_empty_not_error(&s, "nope").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_note_links() {
+        let s = store("links").await;
+        conformance::note_links_returns_each_note_once(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_date_sources() {
+        let s = store("sources").await;
+        conformance::date_sources_lists_distinct_sorted_sources_including_journal(&s, "v").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live Qdrant (set QDRANT_URL, default localhost:6334)"]
+    async fn conformance_missing_collection_meta_reads() {
+        let s = store("missingmeta").await;
+        conformance::missing_collection_returns_empty_for_both_reads(&s, "nope").await;
     }
 
     #[tokio::test]
@@ -560,5 +650,58 @@ mod tests {
     async fn conformance_fingerprint_not_a_collection() {
         let s = store("fpslot").await;
         conformance::fingerprint_slot_never_appears_as_a_collection(&s).await;
+    }
+
+    // These two run in plain `cargo test`: the client connects lazily, and
+    // neither touches the server.
+    #[tokio::test]
+    async fn non_empty_filter_is_refused_before_any_server_call() {
+        let s = VecQdrant::new(
+            "http://127.0.0.1:1".to_string(),
+            "unused".to_string(),
+            conformance::DIM,
+        )
+        .await
+        .unwrap();
+        let filter = QueryFilter {
+            tags: vec!["x".to_string()],
+            ..Default::default()
+        };
+        let err = s
+            .query("v", conformance::vector_for("q"), 1, &filter)
+            .await
+            .expect_err("filter must be refused");
+        assert_eq!(
+            "filtered search is not supported on the qdrant store",
+            err.to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_labels_are_not_stored_and_never_call_the_server() {
+        let s = VecQdrant::new(
+            "http://127.0.0.1:1".to_string(),
+            "unused".to_string(),
+            conformance::DIM,
+        )
+        .await
+        .unwrap();
+        s.set_vault_label("v", "default").await.unwrap();
+        assert!(s.vault_labels().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_round_trips_through_the_payload() {
+        use crate::document::NoteDate;
+        let mut row = conformance::row("a.md", "h", "body");
+        row.chunk.meta.dates = vec![NoteDate {
+            source: "due".to_string(),
+            day: chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap(),
+        }];
+        row.chunk.meta.tags = vec!["work".to_string()];
+        row.chunk.meta.links = vec!["Project X".to_string()];
+        let point = VecQdrant::row_to_point(&row);
+        let back = VecQdrant::payload_to_chunk(&point.payload);
+        assert_eq!(row.chunk.meta, back.meta);
     }
 }

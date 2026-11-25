@@ -139,7 +139,8 @@ See `config.example.toml` for the annotated template. Sections:
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`). Kimün never sends
   a key. The `openrouter` provider also takes an optional `reasoning`
   (`low` | `medium` | `high`), sent as `reasoning.effort`; leave it out and the
-  model keeps its default.
+  model keeps its default. A model call that takes longer than 10 minutes
+  fails.
 - **`[reranker]`** — `enabled` (default true), the **context cut** — the one
   sizing rule for query results on both surfaces and both reranker paths:
   `context_cut` picks the strategy, each with its own knobs.
@@ -207,6 +208,17 @@ ones are skipped. The `hash` covers note **content**, not the chunking — so
 changing the chunking/embedding logic won't re-embed existing notes on its own;
 drop the store (or bump the embedder, which recreates it) to force a re-index.
 
+Each document also carries note dates, tags and outgoing links. The server
+takes the folder from the path. The assistant uses them to filter by date,
+folder or tag. These do not change the
+`hash`. The SQLite store drops and recreates its `chunks` table on the first
+start after an upgrade, because the columns differ. Then every client pushes all
+notes again once, which re-embeds the whole vault. Qdrant stores the metadata
+too, but it refuses filtered searches. On Qdrant the assistant cannot filter by
+date, folder or tags. On Qdrant the order of a note's sections in
+`read_note` is not guaranteed. Older Qdrant points keep no metadata until their note
+changes. They also lose their journal date until their note is pushed again.
+
 ### `POST /api/index/delete`
 
 Remove notes from a vault's collection.
@@ -220,6 +232,28 @@ Remove notes from a vault's collection.
 The `{ note-path: content-hash }` map the server holds for a vault. The client
 diffs it against its own authoritative set to reconcile — pushing/deleting only
 the differences.
+
+### `PUT /api/collections/{vault_id}/label`
+
+Set the vault label for a vault. The web UI shows the label next to the
+vault id, so you can see which collection is which. The label is display only.
+The server still identifies a vault by its id.
+
+```json
+{ "label": "kimun-notes" }
+```
+
+On success the server answers `204 No Content`. A second call overwrites the
+label. The server answers `400` in these cases:
+
+- The vault id is not valid.
+- The label is empty after trimming, or longer than 100 characters.
+- The label contains a control character, for example a newline or a tab.
+
+When an `[auth]` token is set, the route needs the bearer token. Kimün sends
+the name of the workspace from its configuration. It never sends a disk path.
+Qdrant does not store labels: on Qdrant the call succeeds and the web UI shows
+no label.
 
 ### `POST /api/embeddings`
 
@@ -237,13 +271,63 @@ the background; returns a `job_id`. Poll `/api/job/{job_id}` for the result
 (`answer` + `sources`).
 
 ```json
-{ "vault_id": "…", "query": "Explain RAG systems", "context_size": "large" }
+{ "vault_id": "…", "query": "Explain RAG systems", "context_size": "large",
+  "today": "2026-11-25" }
 ```
+
+`today` is optional (`YYYY-MM-DD`). It is the client's local date, used for
+questions like "last week". If the value is malformed, the server rejects the
+request as a bad request (HTTP 422). If the value is well formed but more than
+400 days from the server clock, or missing, the server uses its own clock.
+
+The completed job result holds `answer`, `sources` and `trail`. `trail` is a
+list of strings, one per step the assistant took (for example a search or a
+note it read).
+
+**How answers work.** The first search always runs. After that, the model can
+call tools for up to 5 rounds. There are four tools: `search` (notes by
+meaning, with optional date, folder and tag filters), `list_date_keys` (the
+date properties the notes have), `read_note` (a whole note or one section) and
+`related_notes` (the links to and from a note). If the LLM provider rejects
+tool calls, the server falls back to a single pass over the first search
+results. If a later round fails, the server answers in a single pass from the
+notes gathered so far. If that single pass fails too, the server tries once more
+with the first search results only. The model can run at most 4 tool calls in
+one turn. The server does not run the extra calls and tells the model so. The assistant is told to start each passage from the
+model's own knowledge with "Not from your notes:". If no note matched, the
+answer starts with a notice that says so. If the answer cites none of your
+notes, it starts with a second notice that says so.
+
+One answer can make several calls to the model. It can therefore take longer
+than 10 minutes in total. If the app stops waiting, the server cancels a
+streamed answer. A polled answer keeps running until it finishes.
+
+### `POST /api/answer/stream`
+
+Same request body as `/api/answer`, but the answer streams back as server-sent
+events instead of a job. No job is created. The events are:
+
+- `step`: `{"text": "…"}`, one per step, as the assistant works;
+- `answer`: `{"answer": "…", "sources": […], "trail": […]}`, the last event
+  on success;
+- `error`: `{"error": "…"}`, the last event on failure.
+
+The server rejects a bad request (an invalid `vault_id`, or no LLM
+configured) with a normal HTTP error before the stream starts. After that,
+failures arrive as an `error` event.
 
 ### `GET /api/job/{job_id}`
 
 Job status: `queued` | `processing` | `completed` (with `result`) | `failed`
 (with `error`).
+
+While an indexing job embeds notes, the response also has a `progress` object:
+`{"done": 100, "total": 250}`. Both numbers count chunks, because the embedder
+works on chunks and the server only knows their number after it splits the
+notes. The field is absent for other jobs and before embedding starts. A note
+is stored only after all of its chunks are embedded, so a vault appears on the
+collections page when its job completes. The Jobs page of the web UI shows the
+same numbers in its Detail column.
 
 ## Web UI
 
@@ -259,7 +343,8 @@ server-rendered pages, no build step, no external assets. It offers:
   applies them in place: the process drains in-flight requests, re-reads the
   config file, and rebinds — no service manager needed, and a
   bind-address change moves the server to the new address;
-- a **collections** list with per-vault indexed-note counts;
+- a **collections** list with per-vault indexed-note counts. The list shows
+  the vault label of each vault, or a dash when the vault has no label;
 - a **jobs** view (auto-refreshing) for indexing/answer jobs;
 - a **test-query** box that runs a semantic search against a collection.
 
