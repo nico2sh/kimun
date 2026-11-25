@@ -71,7 +71,7 @@ pub(crate) const IMPORT_NOTICE_ID: &str = "preferences-keyboard-import-notice";
 
 /// The note under the Keymap file heading.
 pub(crate) const FILE_NOTE: &str =
-    "Export saves your changed shortcuts to a file. Import loads a file in their place.";
+    "Export saves all your shortcuts to a file. Import loads a file in their place.";
 
 /// The file name Export starts with, in the home folder.
 /// The default file name: it names the system, so a file shared between

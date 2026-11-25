@@ -631,7 +631,7 @@ pub fn classify_location(text: &str) -> LocationInput {
     let text = text.trim();
     if text.is_empty() {
         LocationInput::Empty
-    } else if text.starts_with('~')
+    } else if kimun_core::system::home_relative(text).is_some()
         || Path::new(text).is_absolute()
         || text.contains(std::path::is_separator)
         || is_dots(text)
@@ -1146,7 +1146,10 @@ mod tests {
         assert_eq!(classify_location("sub/dir"), Path("sub/dir".into()));
         assert_eq!(classify_location(" docs "), Filter("docs".into()));
         assert_eq!(classify_location("a b"), Filter("a b".into()));
+        // `~name` names nothing: it narrows the list.
+        assert_eq!(classify_location("~notes"), Filter("~notes".into()));
         if cfg!(windows) {
+            assert_eq!(classify_location(r"~\x"), Path(r"~\x".into()));
             assert_eq!(classify_location(r"C:\x"), Path(r"C:\x".into()));
             assert_eq!(classify_location(r"sub\dir"), Path(r"sub\dir".into()));
         }
