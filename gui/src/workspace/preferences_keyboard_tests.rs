@@ -1216,7 +1216,7 @@ mod file {
         );
         assert_eq!(
             FILE_NOTE,
-            "Export saves your changed shortcuts to a file. Import loads a file in \
+            "Export saves all your shortcuts to a file. Import loads a file in \
              their place."
         );
     }

@@ -200,13 +200,12 @@ impl SystemPath {
     pub fn resolve<P: AsRef<Path>>(path: P, base: &SystemPath) -> Self {
         let path = path.as_ref();
         let text = path.to_string_lossy();
-        let expanded = if text.starts_with("~/") || text == "~" {
-            match home() {
-                Ok(home) => home.0.join(text.strip_prefix("~/").unwrap_or("")),
+        let expanded = match home_relative(&text) {
+            Some(rest) => match home() {
+                Ok(home) => home.0.join(rest),
                 Err(_) => path.to_path_buf(),
-            }
-        } else {
-            path.to_path_buf()
+            },
+            None => path.to_path_buf(),
         };
         let absolute = if expanded.is_relative() {
             base.0.join(expanded)
@@ -341,6 +340,20 @@ fn normalize(path: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------
 // Layout — where kimün keeps its own files
 // ---------------------------------------------------------------------------
+
+/// What follows the home marker in `text`: the whole text must be `~`, or
+/// `~` and a path separator of this system (`/`, and `\` on Windows), then
+/// the rest (empty for a bare `~`). `None` for any other text, `~name`
+/// included: that is a name, not the home folder.
+pub fn home_relative(text: &str) -> Option<&str> {
+    let rest = text.strip_prefix('~')?;
+    let mut chars = rest.chars();
+    match chars.next() {
+        None => Some(""),
+        Some(c) if std::path::is_separator(c) => Some(chars.as_str()),
+        Some(_) => None,
+    }
+}
 
 /// The user's home directory (`HOME`, then `USERPROFILE`).
 pub fn home() -> Result<SystemPath, SystemError> {

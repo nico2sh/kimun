@@ -757,3 +757,15 @@ fn exe_name_follows_the_host() {
     assert_eq!(exe_name_for(Host::Unix, "nvim"), "nvim");
     assert_eq!(exe_name_for(Host::Windows, "nvim"), "nvim.exe");
 }
+
+#[test]
+fn home_relative_reads_only_the_home_marker() {
+    assert_eq!(home_relative("~"), Some(""));
+    assert_eq!(home_relative("~/notes"), Some("notes"));
+    assert_eq!(home_relative("~notes"), None);
+    assert_eq!(home_relative("a/~"), None);
+    assert_eq!(home_relative(""), None);
+    if cfg!(windows) {
+        assert_eq!(home_relative(r"~\notes"), Some("notes"));
+    }
+}
