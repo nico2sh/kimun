@@ -2524,6 +2524,22 @@ mod keymap_file {
     }
 
     #[test]
+    fn replace_takes_an_extra_chord_even_when_the_line_loads_as_the_defaults() {
+        // On macOS Open note has only `primary+o`. The line adds Cmd+K, which
+        // Search notes holds: loaded alone, the line reads as the defaults.
+        // The chord is still taken from its holder.
+        let mut draft = KeyDraft::new(MacOs, &BTreeMap::new());
+        let taken = draft.replace(&map(&[("OpenNote", &["primary+o", "primary+k"])]));
+        let cmd_k = parse_chord("cmd+k", MacOs).unwrap();
+        assert!(
+            taken.contains(&(A::OpenNote, cmd_k, A::SearchNotes)),
+            "{taken:?}"
+        );
+        assert!(draft.chords(&A::OpenNote).contains(&cmd_k));
+        assert!(!draft.chords(&A::SearchNotes).contains(&cmd_k));
+    }
+
+    #[test]
     fn replace_gives_a_clash_inside_the_file_to_one_line_only() {
         let mut draft = KeyDraft::new(LinuxWindows, &BTreeMap::new());
         let text = map(&[
