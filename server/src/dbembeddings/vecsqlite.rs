@@ -5,7 +5,7 @@
 //! `embeddings.db` file inside a local directory. Rows live in one `chunks`
 //! table, scoped by a `collections` table — one **collection per vault**
 //! (keyed by the vault id) — holding every chunk's embedding blob
-//! plus its metadata columns.
+//! plus its metadata (`meta`, the note's `NoteMeta` as JSON).
 //!
 //! There is deliberately no ANN index. Vaults hold thousands to tens of
 //! thousands of chunks; an exhaustive scan at that scale is a few dozen
@@ -25,12 +25,15 @@ use log::debug;
 use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
 
-use super::{CollectionInfo, EmbeddedChunk, IndexedNote, VectorStore};
+use super::{CollectionInfo, EmbeddedChunk, IndexedNote, QueryFilter, VectorStore};
 use crate::document::FlattenedChunk;
 
 /// The database file inside the store directory.
 const DB_FILE: &str = "embeddings.db";
 const FINGERPRINT_KEY: &str = "embedder.fingerprint";
+/// Prefix of the `meta` keys that hold vault labels: `label:{vault_id}`. It
+/// cannot collide with [`FINGERPRINT_KEY`].
+const LABEL_KEY_PREFIX: &str = "label:";
 
 pub struct VecSqlite {
     /// Vector width every collection is created at — the embedder's dimension,
@@ -56,6 +59,7 @@ impl VecSqlite {
             .max_connections(1)
             .connect_with(options)
             .await?;
+        Self::recreate_stale_chunks_table(&pool).await?;
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS collections (
                  id        INTEGER PRIMARY KEY,
@@ -68,7 +72,7 @@ impl VecSqlite {
                  path          TEXT NOT NULL,
                  hash          TEXT NOT NULL,
                  title         TEXT,
-                 date          TEXT,
+                 meta          TEXT NOT NULL,
                  text          TEXT NOT NULL,
                  embedding     BLOB NOT NULL
              );
@@ -81,6 +85,24 @@ impl VecSqlite {
         .execute(&pool)
         .await?;
         Ok(Self { dim, pool })
+    }
+
+    /// The store has no migrations: a `chunks` table from an older layout (no
+    /// `meta` column, or the retired `date` column) is dropped and recreated
+    /// empty. Clients then see no indexed notes and re-push everything.
+    async fn recreate_stale_chunks_table(pool: &SqlitePool) -> anyhow::Result<()> {
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(chunks)")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .map(|r| r.get::<String, _>("name"))
+            .collect();
+        let current = columns.iter().any(|c| c == "meta") && !columns.iter().any(|c| c == "date");
+        if !columns.is_empty() && !current {
+            debug!("Recreating the chunks table: its columns are from an older layout");
+            sqlx::raw_sql("DROP TABLE chunks").execute(pool).await?;
+        }
+        Ok(())
     }
 
     /// The collection's `(id, dimension)`, or `None` if it was never created.
@@ -128,7 +150,7 @@ impl VecSqlite {
         path: String,
         hash: String,
         title: Option<String>,
-        date: Option<String>,
+        meta: &str,
         text: String,
     ) -> FlattenedChunk {
         FlattenedChunk {
@@ -136,9 +158,9 @@ impl VecSqlite {
             doc_hash: hash,
             title: title.unwrap_or_default(),
             text,
-            date: date.and_then(|d| {
-                chrono::NaiveDate::parse_from_str(&d, crate::document::JOURNAL_DATE_FORMAT).ok()
-            }),
+            // A row whose metadata cannot be read is still searchable, just
+            // without dates, tags or links.
+            meta: serde_json::from_str(meta).unwrap_or_default(),
         }
     }
 }
@@ -184,14 +206,14 @@ impl VectorStore for VecSqlite {
                 );
             }
             sqlx::query(
-                "INSERT INTO chunks (collection_id, path, hash, title, date, text, embedding)
+                "INSERT INTO chunks (collection_id, path, hash, title, meta, text, embedding)
                  VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(cid)
             .bind(&row.chunk.doc_path)
             .bind(&row.chunk.doc_hash)
             .bind(&row.chunk.title)
-            .bind(row.chunk.get_date_string())
+            .bind(serde_json::to_string(&row.chunk.meta)?)
             .bind(&row.chunk.text)
             .bind(Self::to_blob(&row.vector))
             .execute(&mut *tx)
@@ -232,9 +254,12 @@ impl VectorStore for VecSqlite {
         let Some((cid, _)) = Self::collection(&self.pool, collection).await? else {
             return Ok(Vec::new());
         };
+        // Rows go in in document order, so `id` order is a note's section
+        // order. `read_note` shows the sections in this order.
         let sql = format!(
-            "SELECT path, hash, title, date, text, embedding
-             FROM chunks WHERE collection_id = ? AND path IN ({})",
+            "SELECT path, hash, title, meta, text, embedding
+             FROM chunks WHERE collection_id = ? AND path IN ({})
+             ORDER BY id",
             Self::placeholders(paths.len())
         );
         let mut query = sqlx::query(&sql).bind(cid);
@@ -248,7 +273,13 @@ impl VectorStore for VecSqlite {
             .map(|r| {
                 let blob: Vec<u8> = r.get(5);
                 EmbeddedChunk {
-                    chunk: Self::chunk_from_parts(r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)),
+                    chunk: Self::chunk_from_parts(
+                        r.get(0),
+                        r.get(1),
+                        r.get(2),
+                        &r.get::<String, _>(3),
+                        r.get(4),
+                    ),
                     // Stored normalized; renormalizing on a later store is a
                     // no-op, so the blob round-trips as-is.
                     vector: blob
@@ -268,6 +299,7 @@ impl VectorStore for VecSqlite {
         collection: &str,
         vector: Vec<f32>,
         limit: usize,
+        filter: &QueryFilter,
     ) -> anyhow::Result<Vec<(f64, FlattenedChunk)>> {
         let Some((cid, _)) = Self::collection(&self.pool, collection).await? else {
             return Ok(Vec::new());
@@ -287,8 +319,10 @@ impl VectorStore for VecSqlite {
             vector.iter().map(|x| x * scale).collect::<Vec<_>>()
         };
 
-        // Pass 1: exhaustive scan over the embedding blobs only — top-k ids.
-        let mut scored: Vec<(f32, i64)> =
+        // Pass 1: exhaustive scan. The filter runs here, while scoring, so
+        // only matching chunks compete for the top `limit` slots. An empty
+        // filter reads just the embedding blobs.
+        let mut scored: Vec<(f32, i64)> = if filter.is_empty() {
             sqlx::query("SELECT id, embedding FROM chunks WHERE collection_id = ?")
                 .bind(cid)
                 .fetch_all(&self.pool)
@@ -298,7 +332,28 @@ impl VectorStore for VecSqlite {
                     let blob: Vec<u8> = r.get(1);
                     (Self::score(&blob, &query), r.get::<i64, _>(0))
                 })
-                .collect();
+                .collect()
+        } else {
+            sqlx::query("SELECT id, path, meta, embedding FROM chunks WHERE collection_id = ?")
+                .bind(cid)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .filter_map(|r| {
+                    let candidate = Self::chunk_from_parts(
+                        r.get(1),
+                        String::new(),
+                        None,
+                        &r.get::<String, _>(2),
+                        String::new(),
+                    );
+                    filter.matches(&candidate).then(|| {
+                        let blob: Vec<u8> = r.get(3);
+                        (Self::score(&blob, &query), r.get::<i64, _>(0))
+                    })
+                })
+                .collect()
+        };
         scored.sort_unstable_by(|a, b| b.0.total_cmp(&a.0));
         scored.truncate(limit);
 
@@ -308,7 +363,7 @@ impl VectorStore for VecSqlite {
             return Ok(Vec::new());
         }
         let sql = format!(
-            "SELECT id, path, hash, title, date, text FROM chunks WHERE id IN ({})",
+            "SELECT id, path, hash, title, meta, text FROM chunks WHERE id IN ({})",
             Self::placeholders(ids.len())
         );
         let mut fetch = sqlx::query(&sql);
@@ -322,7 +377,13 @@ impl VectorStore for VecSqlite {
             .map(|r| {
                 (
                     r.get::<i64, _>(0),
-                    Self::chunk_from_parts(r.get(1), r.get(2), r.get(3), r.get(4), r.get(5)),
+                    Self::chunk_from_parts(
+                        r.get(1),
+                        r.get(2),
+                        r.get(3),
+                        &r.get::<String, _>(4),
+                        r.get(5),
+                    ),
                 )
             })
             .collect();
@@ -430,6 +491,59 @@ impl VectorStore for VecSqlite {
             .await?;
         Ok(())
     }
+
+    async fn note_links(&self, collection: &str) -> anyhow::Result<HashMap<String, Vec<String>>> {
+        let Some((cid, _)) = Self::collection(&self.pool, collection).await? else {
+            return Ok(HashMap::new());
+        };
+        let rows = sqlx::query("SELECT path, meta FROM chunks WHERE collection_id = ? ORDER BY id")
+            .bind(cid)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(super::aggregate_links(rows.into_iter().map(|r| {
+            let meta = serde_json::from_str(&r.get::<String, _>(1)).unwrap_or_default();
+            (r.get::<String, _>(0), meta)
+        })))
+    }
+
+    async fn date_sources(&self, collection: &str) -> anyhow::Result<Vec<String>> {
+        let Some((cid, _)) = Self::collection(&self.pool, collection).await? else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query("SELECT meta FROM chunks WHERE collection_id = ?")
+            .bind(cid)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(super::aggregate_date_sources(rows.into_iter().map(|r| {
+            serde_json::from_str(&r.get::<String, _>(0)).unwrap_or_default()
+        })))
+    }
+
+    async fn set_vault_label(&self, collection: &str, label: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO meta (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(format!("{LABEL_KEY_PREFIX}{collection}"))
+        .bind(label)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>> {
+        let labels = sqlx::query("SELECT key, value FROM meta WHERE key LIKE 'label:%'")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|r| {
+                let key: String = r.get(0);
+                let id = key.strip_prefix(LABEL_KEY_PREFIX)?.to_string();
+                Some((id, r.get::<String, _>(1)))
+            })
+            .collect();
+        Ok(labels)
+    }
 }
 
 #[cfg(test)]
@@ -468,6 +582,12 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chunks_with_vectors_keeps_document_order() {
+        let (_dir, s) = store().await;
+        conformance::chunks_with_vectors_keeps_document_order(&s, "v").await;
+    }
+
+    #[tokio::test]
     async fn conformance_delete() {
         let (_dir, s) = store().await;
         conformance::delete_removes_every_chunk_of_the_note(&s, "v").await;
@@ -483,6 +603,48 @@ mod tests {
     async fn conformance_collections() {
         let (_dir, s) = store().await;
         conformance::collections_list_each_vault(&s, "vault_a", "vault_b").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_filter_dates() {
+        let (_dir, s) = store().await;
+        conformance::query_filters_by_date_range_and_source(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_filter_before_limit() {
+        let (_dir, s) = store().await;
+        conformance::filter_applies_before_the_limit(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_filter_folder_and_tags() {
+        let (_dir, s) = store().await;
+        conformance::query_filters_by_folder_and_tags(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_note_links() {
+        let (_dir, s) = store().await;
+        conformance::note_links_returns_each_note_once(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_date_sources() {
+        let (_dir, s) = store().await;
+        conformance::date_sources_lists_distinct_sorted_sources_including_journal(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_missing_collection_meta_reads() {
+        let (_dir, s) = store().await;
+        conformance::missing_collection_returns_empty_for_both_reads(&s, "nope").await;
+    }
+
+    #[tokio::test]
+    async fn conformance_metadata_round_trip() {
+        let (_dir, s) = store().await;
+        conformance::store_round_trips_metadata(&s, "v").await;
     }
 
     #[tokio::test]
@@ -543,10 +705,60 @@ mod tests {
         }
         let s = VecSqlite::new(dir.path(), conformance::DIM).await.unwrap();
         let results = s
-            .query("v", conformance::vector_for("persistent chunk"), 1)
+            .query(
+                "v",
+                conformance::vector_for("persistent chunk"),
+                1,
+                &QueryFilter::default(),
+            )
             .await
             .unwrap();
         assert_eq!(results[0].1.doc_path, "a.md");
         assert_eq!(s.read_fingerprint().await.unwrap().as_deref(), Some("fp"));
+    }
+
+    #[tokio::test]
+    async fn vault_labels_round_trip_without_touching_the_fingerprint() {
+        let (_dir, s) = store().await;
+        assert!(s.vault_labels().await.unwrap().is_empty(), "starts empty");
+        s.write_fingerprint("fp").await.unwrap();
+        s.store("va", &[conformance::row("a.md", "h", "x")])
+            .await
+            .unwrap();
+
+        s.set_vault_label("va", "default").await.unwrap();
+        // A vault with no chunks yet keeps its label too.
+        s.set_vault_label("vb", "kimun-notes").await.unwrap();
+        s.set_vault_label("va", "renamed").await.unwrap();
+
+        let labels = s.vault_labels().await.unwrap();
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        assert_eq!(labels["va"], "renamed", "a second write overwrites");
+        assert_eq!(labels["vb"], "kimun-notes", "the other vault keeps its own");
+        assert_eq!(s.read_fingerprint().await.unwrap().as_deref(), Some("fp"));
+        let names = s.collection_names().await.unwrap();
+        assert_eq!(names, vec!["va".to_string()], "a label is not a collection");
+    }
+
+    #[tokio::test]
+    async fn old_layout_chunks_table_is_recreated() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let options = SqliteConnectOptions::new()
+                .filename(dir.path().join(DB_FILE))
+                .create_if_missing(true);
+            let pool = SqlitePool::connect_with(options).await.unwrap();
+            sqlx::raw_sql(
+                "CREATE TABLE chunks (id INTEGER PRIMARY KEY, collection_id INTEGER,
+                 path TEXT, hash TEXT, title TEXT, date TEXT, text TEXT, embedding BLOB);
+                 INSERT INTO chunks (path) VALUES ('old.md');",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let s = VecSqlite::new(dir.path(), conformance::DIM).await.unwrap();
+        assert!(s.indexed_notes("v").await.unwrap().is_empty());
+        conformance::store_round_trips_metadata(&s, "v").await;
     }
 }

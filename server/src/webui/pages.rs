@@ -157,6 +157,12 @@ pub(super) async fn collections_page(State(state): State<Arc<AppState>>) -> Mark
         },
         Some(rag) => {
             let result = rag.collections().await;
+            // Labels are display only. If they cannot be read, the table still
+            // shows every vault, each with a dash.
+            let labels = rag.vault_labels().await.unwrap_or_else(|e| {
+                log::debug!("Could not read vault labels: {e}");
+                Default::default()
+            });
             html! {
                 h1 { "Collections" }
                 @match result {
@@ -167,10 +173,14 @@ pub(super) async fn collections_page(State(state): State<Arc<AppState>>) -> Mark
                         }
                     },
                     Ok(cols) => table {
-                        thead { tr { th { "Vault id" } th { "Indexed notes" } } }
+                        thead { tr { th { "Vault" } th { "Vault id" } th { "Indexed notes" } } }
                         tbody {
                             @for col in &cols {
-                                tr { td .mono { (col.name) } td { (col.note_count) } }
+                                tr {
+                                    td { (labels.get(&col.name).map_or("—", String::as_str)) }
+                                    td .mono { (col.name) }
+                                    td { (col.note_count) }
+                                }
                             }
                         }
                     },
@@ -228,6 +238,7 @@ async fn jobs_table(state: &AppState) -> Markup {
                             td .snippet {
                                 @if let Some(err) = &job.error { (err) }
                                 @else if let Some(res) = &job.result { (truncate(res, 160)) }
+                                @else if let Some(progress) = &job.progress { (progress.label()) }
                                 @else { "—" }
                             }
                         }

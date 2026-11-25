@@ -171,6 +171,49 @@ provider = "gemini"
     }
 
     #[tokio::test]
+    async fn jobs_fragment_shows_the_progress_of_a_running_job() {
+        let st = state(None, None);
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut tracker = st.job_tracker.lock().await;
+            tracker.create(id, crate::server_state::JobStatus::Processing);
+            tracker.set_progress(
+                &id,
+                crate::server_state::JobProgress {
+                    done: 100,
+                    total: 250,
+                },
+            );
+        }
+        let resp = app(st)
+            .oneshot(Request::get("/jobs/fragment").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_text(resp).await;
+        assert!(
+            body.contains("Embedding 100 of 250 chunks (40%)"),
+            "progress line missing: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn jobs_fragment_shows_a_dash_for_a_job_without_progress() {
+        let st = state(None, None);
+        st.job_tracker.lock().await.create(
+            uuid::Uuid::new_v4(),
+            crate::server_state::JobStatus::Processing,
+        );
+        let resp = app(st)
+            .oneshot(Request::get("/jobs/fragment").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_text(resp).await;
+        assert!(!body.contains("Embedding"), "{body}");
+        assert!(body.contains("—"), "{body}");
+    }
+
+    #[tokio::test]
     async fn collections_page_lists_store_collections() {
         let app = app(state(None, None));
         let resp = app
@@ -178,6 +221,50 @@ provider = "gemini"
             .await
             .unwrap();
         assert!(body_text(resp).await.contains("vault-1"));
+    }
+
+    #[tokio::test]
+    async fn collections_page_shows_the_vault_label_or_a_dash() {
+        let st = state(None, None);
+        let page = || async {
+            let resp = app(st.clone())
+                .oneshot(Request::get("/collections").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            body_text(resp).await
+        };
+        let body = page().await;
+        assert!(body.contains("<th>Vault</th>"), "{body}");
+        assert!(body.contains("<td>—</td>"), "unlabelled vault: {body}");
+
+        let rag = st.rag.as_ref().unwrap();
+        rag.set_vault_label(
+            &crate::CollectionKey::parse("vault-1").unwrap(),
+            "kimun-notes",
+        )
+        .await
+        .unwrap();
+        let body = page().await;
+        assert!(body.contains("<td>kimun-notes</td>"), "{body}");
+        assert!(!body.contains("<td>—</td>"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn collections_page_escapes_the_vault_label() {
+        let st = state(None, None);
+        st.rag
+            .as_ref()
+            .unwrap()
+            .set_vault_label(&crate::CollectionKey::parse("vault-1").unwrap(), "<b>x</b>")
+            .await
+            .unwrap();
+        let resp = app(st)
+            .oneshot(Request::get("/collections").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_text(resp).await;
+        assert!(body.contains("&lt;b&gt;x&lt;/b&gt;"), "{body}");
+        assert!(!body.contains("<b>x</b>"), "{body}");
     }
 
     #[tokio::test]
@@ -738,6 +825,7 @@ api_key = "gemini-key"
             query: "hello".into(),
             context_size: None,
             history: vec![],
+            today: None,
         };
         let err = crate::handlers::answer_handler(axum::extract::State(state), axum::Json(req))
             .await

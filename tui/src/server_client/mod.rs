@@ -18,16 +18,17 @@ use std::time::Duration;
 pub mod dto;
 pub mod observer;
 pub mod reconcile;
+pub mod sse;
 
 pub mod sync;
 
 use async_trait::async_trait;
 use dto::{
     DeleteRequest, EmbeddingsResponse, Health, HistoryTurn, IndexDocsRequest, JobAccepted,
-    JobStatus, QueryRequest, WireDoc,
+    JobStatus, LabelRequest, QueryRequest, WireDoc,
 };
 
-pub use dto::{AnswerResult, ChunkResult, WireSection};
+pub use dto::{AnswerEvent, AnswerResult, ChunkResult, WireSection};
 pub use observer::{DirtyOp, DirtySet, RagObserver};
 pub use reconcile::{ReconcilePlan, diff as reconcile_diff};
 
@@ -103,6 +104,23 @@ pub trait QueryTransport: Send + Sync {
         history: &[(String, String)],
         context_size: Option<ContextSize>,
     ) -> Result<AnswerResult, RagError>;
+
+    /// Streamed variant of [`QueryTransport::ask`]. The default runs `ask` and
+    /// emits one `Answer` or `Error` event, so a stub need not implement it.
+    async fn ask_stream(
+        &self,
+        query: &str,
+        history: &[(String, String)],
+        context_size: Option<ContextSize>,
+    ) -> Result<tokio::sync::mpsc::Receiver<AnswerEvent>, RagError> {
+        let event = match self.ask(query, history, context_size).await {
+            Ok(answer) => AnswerEvent::Answer(answer),
+            Err(e) => AnswerEvent::Error(e.to_string()),
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let _ = tx.send(event).await;
+        Ok(rx)
+    }
 }
 
 /// The single place a note's content hash is turned into its wire/reconcile
@@ -280,6 +298,27 @@ impl RagClient {
             .await?)
     }
 
+    /// Registers this vault's **vault label** (the workspace name) with the
+    /// server, so its web UI can show which collection is which. An older
+    /// server without the route answers 404 or 405. That counts as done,
+    /// because a retry cannot succeed.
+    ///
+    /// `vault_id` is interpolated into the URL path un-encoded, as in
+    /// [`Self::server_hashes`].
+    pub async fn put_collection_label(&self, label: &str) -> Result<(), RagError> {
+        let (path, body) = label_request(&self.vault_id, label);
+        let resp = self
+            .auth(self.http.put(self.url(&path)).json(&body))
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        label_status(status, body)
+    }
+
     /// Semantic search: returns the matching chunks (no LLM). `context_size`
     /// omitted uses the server's configured default.
     pub async fn search(
@@ -295,6 +334,7 @@ impl RagClient {
             query: query.to_string(),
             context_size: context_size.map(|c| c.as_str().to_string()),
             history: vec![],
+            today: None,
         };
         let resp = self
             .auth(self.http.post(self.url("/api/embeddings")).json(&body))
@@ -318,24 +358,59 @@ impl RagClient {
         if let Some(stub) = &self.stub {
             return stub.ask(query, history, context_size).await;
         }
-        let body = QueryRequest {
-            vault_id: self.vault_id.clone(),
-            query: query.to_string(),
-            context_size: context_size.map(|c| c.as_str().to_string()),
-            history: history
-                .iter()
-                .map(|(q, a)| HistoryTurn {
-                    question: q.clone(),
-                    answer: a.clone(),
-                })
-                .collect(),
-        };
+        let body = answer_request(
+            &self.vault_id,
+            query,
+            history,
+            context_size,
+            chrono::Local::now().date_naive(),
+        );
         let resp = self
             .auth(self.http.post(self.url("/api/answer")).json(&body))
             .send()
             .await?;
         let job_id = Self::ok(resp).await?.json::<JobAccepted>().await?.job_id;
         self.poll_answer(&job_id).await
+    }
+
+    /// Streams a question's answer over `POST /api/answer/stream`: the events
+    /// arrive on the returned channel (poll it with `try_recv`/`recv`) as the
+    /// server produces them — `Step`s, then exactly one `Answer` or `Error`,
+    /// after which the channel closes. A rejection before the stream starts
+    /// (bad vault, semantic-only server, auth) is an `Err`, as for [`Self::ask`].
+    /// Dropping the receiver stops the reader; the server finishes the answer
+    /// on its own.
+    ///
+    /// The request carries its own overall timeout of `Self::ANSWER_POLL_ATTEMPTS`
+    /// seconds (the same ~12 minute budget `ask` polls for), not the 30 second
+    /// `REQUEST_TIMEOUT` of the short calls: reqwest's timeout covers reading
+    /// the body, and an answer can take minutes. A stream that ends without a
+    /// final event (dropped connection, timeout) yields an `Error` event.
+    pub async fn ask_stream(
+        &self,
+        query: &str,
+        history: &[(String, String)],
+        context_size: Option<ContextSize>,
+    ) -> Result<tokio::sync::mpsc::Receiver<AnswerEvent>, RagError> {
+        if let Some(stub) = &self.stub {
+            return stub.ask_stream(query, history, context_size).await;
+        }
+        let body = answer_request(
+            &self.vault_id,
+            query,
+            history,
+            context_size,
+            chrono::Local::now().date_naive(),
+        );
+        let resp = self
+            .auth(self.http.post(self.url("/api/answer/stream")).json(&body))
+            .timeout(Duration::from_secs(u64::from(Self::ANSWER_POLL_ATTEMPTS)))
+            .send()
+            .await?;
+        let resp = Self::ok(resp).await?;
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(read_answer_stream(resp, tx));
+        Ok(rx)
     }
 
     /// Poll iterations before giving up on an answer job, at ~1s each: ~12
@@ -394,9 +469,140 @@ impl RagClient {
     }
 }
 
+/// Reads the SSE body chunk by chunk and forwards each event; stops after the
+/// final event or when the receiver is gone. A body that ends (or fails)
+/// before a final event is reported as an `Error` event.
+async fn read_answer_stream(
+    mut resp: reqwest::Response,
+    tx: tokio::sync::mpsc::Sender<AnswerEvent>,
+) {
+    let mut parser = sse::SseParser::default();
+    loop {
+        let events = match resp.chunk().await {
+            Ok(Some(chunk)) => parser.push(&chunk),
+            Ok(None) => {
+                let rest = parser.finish();
+                if !forward(&tx, rest).await {
+                    return;
+                }
+                let _ = tx
+                    .send(AnswerEvent::Error(
+                        "the answer stream ended before an answer".into(),
+                    ))
+                    .await;
+                return;
+            }
+            Err(e) => {
+                let _ = tx
+                    .send(AnswerEvent::Error(format!("answer stream failed: {e}")))
+                    .await;
+                return;
+            }
+        };
+        if !forward(&tx, events).await {
+            return;
+        }
+    }
+}
+
+/// Sends the mapped events; `false` once the stream is over (a final event
+/// went out, or the receiver was dropped).
+async fn forward(tx: &tokio::sync::mpsc::Sender<AnswerEvent>, events: Vec<sse::SseEvent>) -> bool {
+    for event in events {
+        let Some(mapped) = sse::to_answer_event(&event) else {
+            continue;
+        };
+        let last = matches!(mapped, AnswerEvent::Answer(_) | AnswerEvent::Error(_));
+        if tx.send(mapped).await.is_err() || last {
+            return false;
+        }
+    }
+    true
+}
+
+/// The path and body of the vault label request.
+fn label_request(vault_id: &str, label: &str) -> (String, LabelRequest) {
+    (
+        format!("/api/collections/{vault_id}/label"),
+        LabelRequest {
+            label: label.to_string(),
+        },
+    )
+}
+
+/// The result of a vault label request with this status. A 2xx is done. A 404
+/// or 405 comes from an older server without the route, and is done too. Every
+/// other status is a [`RagError::Status`].
+fn label_status(status: u16, body: String) -> Result<(), RagError> {
+    match status {
+        200..=299 | 404 | 405 => Ok(()),
+        _ => Err(RagError::Status { status, body }),
+    }
+}
+
+/// The `/api/answer` request body: the question, its history, and the
+/// client's local date so "yesterday" means the user's yesterday.
+fn answer_request(
+    vault_id: &str,
+    query: &str,
+    history: &[(String, String)],
+    context_size: Option<ContextSize>,
+    today: chrono::NaiveDate,
+) -> QueryRequest {
+    QueryRequest {
+        vault_id: vault_id.to_string(),
+        query: query.to_string(),
+        context_size: context_size.map(|c| c.as_str().to_string()),
+        history: history
+            .iter()
+            .map(|(q, a)| HistoryTurn {
+                question: q.clone(),
+                answer: a.clone(),
+            })
+            .collect(),
+        today: Some(today.format("%Y-%m-%d").to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answer_request_carries_the_local_date() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 25).unwrap();
+        let body = answer_request("v", "q", &[("q1".into(), "a1".into())], None, today);
+        assert_eq!(body.today.as_deref(), Some("2026-11-25"));
+        assert_eq!(body.history.len(), 1);
+        let json = serde_json::to_string(&body).unwrap();
+        assert!(json.contains(r#""today":"2026-11-25""#), "{json}");
+    }
+
+    #[test]
+    fn label_request_puts_the_label_on_the_vault_path() {
+        let (path, body) = label_request("vault-1", "kimun-notes");
+        assert_eq!(path, "/api/collections/vault-1/label");
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"label":"kimun-notes"}"#
+        );
+    }
+
+    #[test]
+    fn label_status_treats_a_server_without_the_route_as_done() {
+        assert!(label_status(204, String::new()).is_ok());
+        assert!(label_status(200, String::new()).is_ok());
+        assert!(label_status(404, String::new()).is_ok(), "older server");
+        assert!(label_status(405, String::new()).is_ok(), "older server");
+        let auth = label_status(401, "no".into()).unwrap_err();
+        assert!(auth.is_auth(), "{auth}");
+        let err = label_status(500, "boom".into()).unwrap_err();
+        assert!(
+            matches!(err, RagError::Status { status: 500, ref body } if body == "boom"),
+            "{err}"
+        );
+        assert!(label_status(400, String::new()).is_err());
+    }
 
     #[test]
     fn is_auth_matches_only_credential_rejections() {

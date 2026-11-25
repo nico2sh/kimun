@@ -85,6 +85,10 @@ pub struct AnswerRequest {
     pub context_size: Option<ContextSize>,
     #[serde(default)]
     pub history: Vec<HistoryTurn>,
+    /// The client's local date, so "yesterday" means the user's yesterday.
+    /// Clamped by `resolve_today`.
+    #[serde(default)]
+    pub today: Option<chrono::NaiveDate>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,6 +157,10 @@ pub struct JobStatusResponse {
     pub status: String,
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
+    /// How far an indexing job has got, once it knows its amount of work.
+    /// Absent for other jobs and for a job that has not started embedding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::server_state::JobProgress>,
 }
 
 #[derive(Debug, Serialize)]
@@ -215,8 +223,24 @@ pub async fn index_docs_handler(
         // note as new and double-insert its chunks.
         let _index_guard = state_clone.index_lock.lock().await;
 
-        // Perform indexing
-        match rag.index(&collection, &request.docs).await {
+        // Perform indexing. Progress is best effort: the callback is sync, so it
+        // skips an update when the tracker is busy instead of waiting for it.
+        let tracker = state_clone.job_tracker.clone();
+        let on_progress = move |p: crate::IndexProgress| {
+            if let Ok(mut tracker) = tracker.try_lock() {
+                tracker.set_progress(
+                    &job_id,
+                    crate::server_state::JobProgress {
+                        done: p.done,
+                        total: p.total,
+                    },
+                );
+            }
+        };
+        match rag
+            .index_with_progress(&collection, &request.docs, &on_progress)
+            .await
+        {
             Ok(stats) => {
                 let result = serde_json::json!({
                     "indexed": stats.indexed,
@@ -275,6 +299,46 @@ pub async fn get_embeddings_handler(
     }))
 }
 
+/// How far a client-supplied date may sit from the server's date and still be
+/// trusted, in days either side.
+const TODAY_WINDOW_DAYS: i64 = 400;
+
+/// The date that dates the prompt: the client's when it is within
+/// [`TODAY_WINDOW_DAYS`] of the server's, else the server's. A wild value is
+/// ignored rather than rejected, and never reaches date arithmetic.
+fn resolve_today(
+    client: Option<chrono::NaiveDate>,
+    server_today: chrono::NaiveDate,
+) -> chrono::NaiveDate {
+    match client {
+        Some(day) if (day - server_today).num_days().abs() <= TODAY_WINDOW_DAYS => day,
+        Some(day) => {
+            log::debug!("ignoring client date {day}: outside the window around {server_today}");
+            server_today
+        }
+        None => server_today,
+    }
+}
+
+/// The JSON a completed answer job stores as its result.
+fn answer_result_json(answer: crate::Answer) -> String {
+    // Ordinal is the `[n]` the prompt numbered each source with, assigned once
+    // in `answer()` — carried straight through, never re-derived from this
+    // vec's order.
+    let sources: Vec<ChunkResult> = answer
+        .sources
+        .into_iter()
+        .map(|(ordinal, scored)| ChunkResult::from_scored(ordinal, scored))
+        .collect();
+    let trail: Vec<String> = answer.trail.into_iter().map(|s| s.text).collect();
+    serde_json::json!({
+        "answer": answer.text,
+        "sources": sources,
+        "trail": trail,
+    })
+    .to_string()
+}
+
 /// Answer - Query text → LLM answer with context (queued). The LLM is the one
 /// configured on the server (adr: server-owned LLM config); the request carries
 /// no provider/model/key.
@@ -317,24 +381,20 @@ pub async fn answer_handler(
             .await
             .update_status(&job_id, JobStatus::Processing);
 
+        let today = resolve_today(request.today, chrono::Local::now().date_naive());
         match rag
-            .answer(&collection, &request.query, &history, top_k)
+            .answer(
+                &collection,
+                &request.query,
+                &history,
+                top_k,
+                Some(today),
+                &|_| {},
+            )
             .await
         {
             Ok(answer) => {
-                // Ordinal is the `[n]` the prompt numbered each source with,
-                // assigned once in `answer()` — carried straight through, never
-                // re-derived from this vec's order.
-                let sources: Vec<ChunkResult> = answer
-                    .sources
-                    .into_iter()
-                    .map(|(ordinal, scored)| ChunkResult::from_scored(ordinal, scored))
-                    .collect();
-                let result = serde_json::json!({
-                    "answer": answer.text,
-                    "sources": sources,
-                })
-                .to_string();
+                let result = answer_result_json(answer);
                 state_clone
                     .job_tracker
                     .lock()
@@ -355,6 +415,75 @@ pub async fn answer_handler(
         job_id: job_id.to_string(),
         message: "Query job started".to_string(),
     }))
+}
+
+/// Answer, streamed - the same request as [`answer_handler`], answered as
+/// server-sent events instead of a polled job: one `step` event per trail
+/// step as the loop takes it (`{"text": "..."}`), then exactly one final
+/// event, `answer` (the job result JSON) or `error` (`{"error": "..."}`), then
+/// the stream closes. Validation and the semantic-only check reject with the
+/// usual status BEFORE the stream starts.
+///
+/// The loop runs in a spawned task and feeds an unbounded channel (the step
+/// callback is sync and must not block). If the client disconnects, the
+/// receiver drops and the loop is cancelled at its next await: the task ends
+/// without sending anything and makes no more model calls.
+pub async fn answer_stream_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<AnswerRequest>,
+) -> Result<impl IntoResponse, RagError> {
+    use axum::response::sse::{Event, Sse};
+    use tokio_stream::StreamExt;
+
+    let collection = CollectionKey::parse(&request.vault_id)?;
+    let rag = state.rag()?.clone();
+    if !rag.can_answer() {
+        return Err(RagError::SemanticOnly);
+    }
+    let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
+    let history: Vec<(String, String)> = request
+        .history
+        .into_iter()
+        .map(|t| (t.question, t.answer))
+        .collect();
+    let today = resolve_today(request.today, chrono::Local::now().date_naive());
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    tokio::spawn(async move {
+        let step_tx = tx.clone();
+        let on_step = move |step: &crate::agent::TrailStep| {
+            let data = serde_json::json!({ "text": step.text }).to_string();
+            let _ = step_tx.send(Event::default().event("step").data(data));
+        };
+        let answered = rag.answer(
+            &collection,
+            &request.query,
+            &history,
+            top_k,
+            Some(today),
+            &on_step,
+        );
+        let result = tokio::select! {
+            result = answered => result,
+            // The client is gone: drop the loop, nobody reads the answer.
+            () = tx.closed() => return,
+        };
+        let last = match result {
+            Ok(answer) => Event::default()
+                .event("answer")
+                .data(answer_result_json(answer)),
+            Err(e) => Event::default()
+                .event("error")
+                .data(serde_json::json!({ "error": e.to_string() }).to_string()),
+        };
+        let _ = tx.send(last);
+    });
+
+    let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx)
+        .map(Ok::<Event, std::convert::Infallible>);
+    // A comment line every few seconds keeps proxies from closing a stream
+    // while the model is slow; the client parser skips comments.
+    Ok(Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()))
 }
 
 /// Delete notes by path from a vault's collection (used by the client when a
@@ -388,6 +517,27 @@ pub async fn collection_hashes_handler(
     Ok(Json(state.rag()?.note_hashes(&collection).await?))
 }
 
+/// The body of `PUT /api/collections/{vault_id}/label`.
+#[derive(Debug, Deserialize)]
+pub struct VaultLabelRequest {
+    pub label: String,
+}
+
+/// Records the **vault label** the app registers for a vault, so the web UI
+/// can show which collection is which. Answers 204 No Content.
+pub async fn collection_label_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(vault_id): axum::extract::Path<String>,
+    Json(request): Json<VaultLabelRequest>,
+) -> Result<StatusCode, RagError> {
+    let collection = CollectionKey::parse(&vault_id)?;
+    state
+        .rag()?
+        .set_vault_label(&collection, &request.label)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Job Status - Get status of a job
 pub async fn job_status_handler(
     State(state): State<Arc<AppState>>,
@@ -402,6 +552,12 @@ pub async fn job_status_handler(
         .get(&job_id)
         .ok_or_else(|| RagError::NotFound(format!("Job {} not found", job_id_str)))?;
 
+    Ok(Json(job_response(job_id_str, job)))
+}
+
+/// The status body for one job: its result or error once it ended, and its
+/// progress while it is known.
+fn job_response(job_id: String, job: &crate::server_state::Job) -> JobStatusResponse {
     let (result, error) = match &job.status {
         JobStatus::Completed => (
             job.result
@@ -413,12 +569,13 @@ pub async fn job_status_handler(
         JobStatus::Queued | JobStatus::Processing => (None, None),
     };
 
-    Ok(Json(JobStatusResponse {
-        job_id: job_id_str,
+    JobStatusResponse {
+        job_id,
         status: job.status.as_str().to_string(),
         result,
         error,
-    }))
+        progress: job.progress,
+    }
 }
 
 #[cfg(test)]
@@ -437,7 +594,7 @@ mod tests {
             doc_hash: "h".to_string(),
             title: "t".to_string(),
             text: "body".to_string(),
-            date: None,
+            meta: Default::default(),
         };
         // Deliberately shuffled: vec position 0 carries ordinal 3, etc.
         let sources: Vec<(usize, ScoredChunk)> = vec![
@@ -463,6 +620,81 @@ mod tests {
     fn answer_request_parses_without_history() {
         let r: AnswerRequest = serde_json::from_str(r#"{"vault_id":"v1","query":"q"}"#).unwrap();
         assert!(r.history.is_empty());
+    }
+
+    #[test]
+    fn answer_request_parses_today() {
+        let r: AnswerRequest =
+            serde_json::from_str(r#"{"vault_id":"v1","query":"q","today":"2026-11-25"}"#).unwrap();
+        assert_eq!(r.today, chrono::NaiveDate::from_ymd_opt(2026, 11, 25));
+        let r: AnswerRequest = serde_json::from_str(r#"{"vault_id":"v1","query":"q"}"#).unwrap();
+        assert_eq!(r.today, None);
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn resolve_today_trusts_only_a_near_client_date() {
+        let server = day(2026, 11, 25);
+        assert_eq!(resolve_today(None, server), server);
+        assert_eq!(
+            resolve_today(Some(day(2026, 11, 24)), server),
+            day(2026, 11, 24)
+        );
+        assert_eq!(
+            resolve_today(Some(day(2026, 11, 26)), server),
+            day(2026, 11, 26)
+        );
+        assert_eq!(resolve_today(Some(day(2020, 1, 1)), server), server);
+        assert_eq!(resolve_today(Some(day(2040, 1, 1)), server), server);
+        assert_eq!(resolve_today(Some(chrono::NaiveDate::MIN), server), server);
+        assert_eq!(resolve_today(Some(chrono::NaiveDate::MAX), server), server);
+    }
+
+    #[test]
+    fn job_response_carries_progress_while_a_job_runs() {
+        let mut tracker = crate::server_state::JobTracker::new();
+        let id = Uuid::new_v4();
+        tracker.create(id, JobStatus::Processing);
+        tracker.set_progress(
+            &id,
+            crate::server_state::JobProgress {
+                done: 100,
+                total: 250,
+            },
+        );
+        let body =
+            serde_json::to_value(job_response(id.to_string(), tracker.get(&id).unwrap())).unwrap();
+        assert_eq!(body["status"], "processing");
+        assert_eq!(body["progress"]["done"], 100);
+        assert_eq!(body["progress"]["total"], 250);
+    }
+
+    #[test]
+    fn job_response_omits_progress_when_there_is_none() {
+        let mut tracker = crate::server_state::JobTracker::new();
+        let id = Uuid::new_v4();
+        tracker.create(id, JobStatus::Queued);
+        let body =
+            serde_json::to_value(job_response(id.to_string(), tracker.get(&id).unwrap())).unwrap();
+        assert!(body.get("progress").is_none());
+    }
+
+    #[test]
+    fn answer_result_json_carries_the_trail() {
+        let answer = crate::Answer {
+            text: "hi".into(),
+            sources: vec![],
+            trail: vec![crate::agent::TrailStep {
+                text: "Searched".into(),
+            }],
+        };
+        let json: serde_json::Value = serde_json::from_str(&answer_result_json(answer)).unwrap();
+        assert_eq!(json["answer"], "hi");
+        assert_eq!(json["sources"], serde_json::json!([]));
+        assert_eq!(json["trail"], serde_json::json!(["Searched"]));
     }
 
     #[test]
@@ -548,6 +780,7 @@ mod tests {
                 query: "q".into(),
                 context_size: None,
                 history: vec![],
+                today: None,
             }),
         )
         .await

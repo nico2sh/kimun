@@ -10,7 +10,7 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::State,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 
 use crate::KimunRag;
@@ -20,8 +20,8 @@ use crate::dbembeddings::embedder::{Embedder, fastembedder::FastEmbedder, http::
 use crate::dbembeddings::vecqdrant::VecQdrant;
 use crate::dbembeddings::vecsqlite::VecSqlite;
 use crate::handlers::{
-    answer_handler, collection_hashes_handler, get_embeddings_handler, index_delete_handler,
-    index_docs_handler, job_status_handler,
+    answer_handler, answer_stream_handler, collection_hashes_handler, collection_label_handler,
+    get_embeddings_handler, index_delete_handler, index_docs_handler, job_status_handler,
 };
 use crate::llmclients::{ChatClient, LLMClient};
 use crate::server_state::AppState;
@@ -338,9 +338,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/index/delete", post(index_delete_handler))
         .route("/api/embeddings", post(get_embeddings_handler))
         .route("/api/answer", post(answer_handler))
+        .route("/api/answer/stream", post(answer_stream_handler))
         .route(
             "/api/collections/{vault_id}/hashes",
             get(collection_hashes_handler),
+        )
+        .route(
+            "/api/collections/{vault_id}/label",
+            put(collection_label_handler),
         )
         .route("/api/job/{job_id}", get(job_status_handler))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -747,5 +752,314 @@ mod tests {
                 .is_some_and(|e| e.contains("not found")),
             "the handler answered, not the route fallback: {body}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // POST /api/answer/stream
+    // ------------------------------------------------------------------
+
+    /// A model that plays `replies` in order through `chat`; `None` is a
+    /// provider failure. Past the script it answers plainly.
+    struct ScriptLlm(
+        std::sync::Mutex<std::collections::VecDeque<Option<crate::llmclients::ModelReply>>>,
+    );
+
+    #[async_trait::async_trait]
+    impl LLMClient for ScriptLlm {
+        async fn ask(
+            &self,
+            _: &str,
+            _: &[(String, String)],
+            _: &[(usize, crate::ScoredChunk)],
+        ) -> anyhow::Result<String> {
+            Ok("unused".into())
+        }
+
+        async fn chat(
+            &self,
+            _: &str,
+            _: &[crate::llmclients::ChatMessage],
+            _: &[crate::tools::ToolSpec],
+        ) -> anyhow::Result<crate::llmclients::ModelReply> {
+            match self.0.lock().unwrap().pop_front() {
+                Some(Some(reply)) => Ok(reply),
+                Some(None) => Err(anyhow::anyhow!("provider exploded")),
+                None => Ok(crate::llmclients::ModelReply::Text("final".into())),
+            }
+        }
+    }
+
+    fn scripted_state(replies: Vec<Option<crate::llmclients::ModelReply>>) -> Arc<AppState> {
+        let llm = ScriptLlm(std::sync::Mutex::new(replies.into()));
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            Some(Arc::new(llm) as Arc<dyn LLMClient + Send + Sync>),
+        );
+        Arc::new(AppState::new(Some(rag), config(FULL)))
+    }
+
+    async fn post_stream(app: Router, vault_id: &str) -> (StatusCode, Option<String>, String) {
+        let body = json!({"vault_id": vault_id, "query": "q"}).to_string();
+        let req = Request::post("/api/answer/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let ctype = resp
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_string());
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, ctype, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    /// `(event name, data JSON)` for each event in an SSE body.
+    fn sse_events(body: &str) -> Vec<(String, Value)> {
+        body.split("\n\n")
+            .filter(|b| !b.trim().is_empty())
+            .map(|block| {
+                let mut name = String::new();
+                let mut data = String::new();
+                for line in block.lines() {
+                    if let Some(v) = line.strip_prefix("event:") {
+                        name = v.trim().to_string();
+                    } else if let Some(v) = line.strip_prefix("data:") {
+                        data.push_str(v.trim_start());
+                    }
+                }
+                (name, serde_json::from_str(&data).unwrap())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_stream_sends_steps_then_one_answer() {
+        use crate::llmclients::{ModelReply, ModelToolCall};
+        let state = scripted_state(vec![
+            Some(ModelReply::Calls {
+                text: None,
+                calls: vec![ModelToolCall::new(
+                    "c1",
+                    "search",
+                    json!({"query": "standup"}),
+                )],
+            }),
+            Some(ModelReply::Text("done [1]".into())),
+        ]);
+        let (status, ctype, body) = post_stream(router(state), "vault-1").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.unwrap().starts_with("text/event-stream"));
+        let events = sse_events(&body);
+        let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["step", "step", "answer"], "{body}");
+        assert_eq!(events[0].1["text"], "Searching your notes");
+        let last = &events[2].1;
+        assert_eq!(last["answer"], "done [1]");
+        assert_eq!(last["trail"].as_array().unwrap().len(), 2);
+        assert!(last["sources"].is_array());
+    }
+
+    /// A model whose `chat` never returns. It signals `entered` when a call
+    /// starts and `dropped` when that call is dropped.
+    struct HangingLlm {
+        entered: Arc<tokio::sync::Notify>,
+        dropped: Arc<tokio::sync::Notify>,
+    }
+
+    struct SignalOnDrop(Arc<tokio::sync::Notify>);
+
+    impl Drop for SignalOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMClient for HangingLlm {
+        async fn ask(
+            &self,
+            _: &str,
+            _: &[(String, String)],
+            _: &[(usize, crate::ScoredChunk)],
+        ) -> anyhow::Result<String> {
+            Ok("unused".into())
+        }
+
+        async fn chat(
+            &self,
+            _: &str,
+            _: &[crate::llmclients::ChatMessage],
+            _: &[crate::tools::ToolSpec],
+        ) -> anyhow::Result<crate::llmclients::ModelReply> {
+            let _guard = SignalOnDrop(self.dropped.clone());
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_disconnect_cancels_the_stream_loop() {
+        use std::time::Duration;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let llm = HangingLlm {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        };
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            Some(Arc::new(llm) as Arc<dyn LLMClient + Send + Sync>),
+        );
+        let state = Arc::new(AppState::new(Some(rag), config(FULL)));
+        let body = json!({"vault_id": "vault-1", "query": "q"}).to_string();
+        let req = Request::post("/api/answer/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the loop reached the model");
+
+        // The client goes away: the body, and with it the receiver, drops.
+        drop(resp);
+        tokio::time::timeout(Duration::from_secs(2), dropped.notified())
+            .await
+            .expect("the disconnect cancels the hanging model call");
+    }
+
+    #[tokio::test]
+    async fn a_semantic_only_server_rejects_the_stream_with_the_usual_status() {
+        let state = Arc::new(AppState::new(Some(fake_rag(false)), config(SEMANTIC_ONLY)));
+        let (status, ctype, body) = post_stream(router(state), "vault-1").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!ctype.unwrap().starts_with("text/event-stream"));
+        assert!(body.contains("\"error\""), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_bad_vault_id_is_rejected_before_streaming() {
+        let state = scripted_state(vec![]);
+        let (status, ctype, _) = post_stream(router(state), "../etc").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!ctype.unwrap().starts_with("text/event-stream"));
+    }
+
+    #[tokio::test]
+    async fn a_failing_loop_sends_one_error_event_and_closes() {
+        let state = scripted_state(vec![None]);
+        let (status, _, body) = post_stream(router(state), "vault-1").await;
+        assert_eq!(status, StatusCode::OK, "the stream had started");
+        let events = sse_events(&body);
+        let errors: Vec<_> = events.iter().filter(|(n, _)| n == "error").collect();
+        assert_eq!(errors.len(), 1, "{body}");
+        assert_eq!(events.last().unwrap().0, "error", "error is last");
+        assert!(events.iter().all(|(n, _)| n != "answer"));
+        assert!(
+            errors[0].1["error"]
+                .as_str()
+                .unwrap()
+                .contains("provider exploded")
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // PUT /api/collections/{vault_id}/label
+    // ------------------------------------------------------------------
+
+    async fn put_label(
+        app: Router,
+        vault_id: &str,
+        body: Value,
+        bearer: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::put(format!("/api/collections/{vault_id}/label"))
+            .header("content-type", "application/json");
+        if let Some(token) = bearer {
+            req = req.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let resp = app
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_good_label_is_stored_and_answered_with_no_content() {
+        let state = Arc::new(AppState::new(Some(fake_rag(false)), config(SEMANTIC_ONLY)));
+        let (status, _) = put_label(
+            router(state.clone()),
+            "vault-1",
+            json!({"label": "kimun-notes"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let labels = state.rag().unwrap().vault_labels().await.unwrap();
+        assert_eq!(
+            labels.get("vault-1").map(String::as_str),
+            Some("kimun-notes")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_label_or_vault_id_is_a_bad_request() {
+        let state = Arc::new(AppState::new(Some(fake_rag(false)), config(SEMANTIC_ONLY)));
+        let (status, body) = put_label(
+            router(state.clone()),
+            "vault-1",
+            json!({"label": "  "}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].is_string(), "{body}");
+        let (status, _) =
+            put_label(router(state.clone()), "__meta", json!({"label": "x"}), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "bad vault id");
+        assert!(
+            state
+                .rag()
+                .unwrap()
+                .vault_labels()
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing was stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_label_route_is_behind_the_bearer_gate() {
+        let state = Arc::new(AppState::new(
+            None,
+            config(
+                "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n[auth]\ntoken = \"secret\"\n",
+            ),
+        ));
+        let (status, _) = put_label(router(state), "vault-1", json!({"label": "x"}), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_stream_route_is_behind_the_bearer_gate() {
+        let state = Arc::new(AppState::new(
+            None,
+            config(
+                "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n[auth]\ntoken = \"secret\"\n",
+            ),
+        ));
+        let (status, _, _) = post_stream(router(state), "vault-1").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

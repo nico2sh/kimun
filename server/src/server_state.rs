@@ -150,6 +150,7 @@ impl JobTracker {
             status,
             result: None,
             error: None,
+            progress: None,
             created_at: SystemTime::now(),
         };
         self.jobs.insert(job_id, job);
@@ -172,6 +173,14 @@ impl JobTracker {
     pub fn update_status(&mut self, job_id: &Uuid, status: JobStatus) -> Option<()> {
         let job = self.jobs.get_mut(job_id)?;
         job.status = status;
+        Some(())
+    }
+
+    /// Records how far a running job has got. Progress is informational: it
+    /// never changes the job's status.
+    pub fn set_progress(&mut self, job_id: &Uuid, progress: JobProgress) -> Option<()> {
+        let job = self.jobs.get_mut(job_id)?;
+        job.progress = Some(progress);
         Some(())
     }
 
@@ -217,7 +226,29 @@ pub struct Job {
     pub status: JobStatus,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// How far an indexing job has got, once it knows its amount of work.
+    pub progress: Option<JobProgress>,
     pub created_at: SystemTime,
+}
+
+/// How far a job has got: `done` of `total` chunks embedded. Chunks are the
+/// unit because the embedder works in batches of them, and the number of
+/// chunks is only known after the notes are split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct JobProgress {
+    pub done: usize,
+    pub total: usize,
+}
+
+impl JobProgress {
+    /// One line for the Jobs page, with the percent rounded down.
+    pub fn label(&self) -> String {
+        let percent = (self.done * 100).checked_div(self.total).unwrap_or(0);
+        format!(
+            "Embedding {} of {} chunks ({percent}%)",
+            self.done, self.total
+        )
+    }
 }
 
 /// Job status
@@ -237,5 +268,61 @@ impl JobStatus {
             JobStatus::Completed => "completed",
             JobStatus::Failed => "failed",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_progress_is_stored_on_the_job() {
+        let mut tracker = JobTracker::new();
+        let id = Uuid::new_v4();
+        tracker.create(id, JobStatus::Processing);
+        assert_eq!(tracker.get(&id).unwrap().progress, None);
+
+        tracker.set_progress(
+            &id,
+            JobProgress {
+                done: 100,
+                total: 250,
+            },
+        );
+        assert_eq!(
+            tracker.get(&id).unwrap().progress,
+            Some(JobProgress {
+                done: 100,
+                total: 250
+            })
+        );
+    }
+
+    #[test]
+    fn set_progress_on_an_unknown_job_does_nothing() {
+        let mut tracker = JobTracker::new();
+        assert!(
+            tracker
+                .set_progress(&Uuid::new_v4(), JobProgress { done: 1, total: 2 })
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn progress_label_reads_as_a_sentence_with_a_whole_percent() {
+        let label = JobProgress {
+            done: 340,
+            total: 9100,
+        }
+        .label();
+        assert_eq!(label, "Embedding 340 of 9100 chunks (3%)");
+    }
+
+    #[test]
+    fn progress_label_never_divides_by_zero() {
+        assert_eq!(
+            JobProgress { done: 0, total: 0 }.label(),
+            "Embedding 0 of 0 chunks (0%)"
+        );
     }
 }
