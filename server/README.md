@@ -139,7 +139,8 @@ See `config.example.toml` for the annotated template. Sections:
   `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`). Kimün never sends
   a key. The `openrouter` provider also takes an optional `reasoning`
   (`low` | `medium` | `high`), sent as `reasoning.effort`; leave it out and the
-  model keeps its default.
+  model keeps its default. A model call that takes longer than 10 minutes
+  fails.
 - **`[reranker]`** — `enabled` (default true), the **context cut** — the one
   sizing rule for query results on both surfaces and both reranker paths:
   `context_cut` picks the strategy, each with its own knobs.
@@ -214,7 +215,8 @@ folder or tag. These do not change the
 start after an upgrade, because the columns differ. Then every client pushes all
 notes again once, which re-embeds the whole vault. Qdrant stores the metadata
 too, but it refuses filtered searches. On Qdrant the assistant cannot filter by
-date, folder or tags. Older Qdrant points keep no metadata until their note
+date, folder or tags. On Qdrant the order of a note's sections in
+`read_note` is not guaranteed. Older Qdrant points keep no metadata until their note
 changes. They also lose their journal date until their note is pushed again.
 
 ### `POST /api/index/delete`
@@ -267,10 +269,16 @@ date properties the notes have), `read_note` (a whole note or one section) and
 `related_notes` (the links to and from a note). If the LLM provider rejects
 tool calls, the server falls back to a single pass over the first search
 results. If a later round fails, the server answers in a single pass from the
-notes gathered so far. The assistant is told to start each passage from the
+notes gathered so far. If that single pass fails too, the server tries once more
+with the first search results only. The model can run at most 4 tool calls in
+one turn. The server does not run the extra calls and tells the model so. The assistant is told to start each passage from the
 model's own knowledge with "Not from your notes:". If no note matched, the
 answer starts with a notice that says so. If the answer cites none of your
 notes, it starts with a second notice that says so.
+
+One answer can make several calls to the model. It can therefore take longer
+than 10 minutes in total. If the app stops waiting, the server cancels a
+streamed answer. A polled answer keeps running until it finishes.
 
 ### `POST /api/answer/stream`
 

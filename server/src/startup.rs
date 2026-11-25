@@ -857,6 +857,77 @@ mod tests {
         assert!(last["sources"].is_array());
     }
 
+    /// A model whose `chat` never returns. It signals `entered` when a call
+    /// starts and `dropped` when that call is dropped.
+    struct HangingLlm {
+        entered: Arc<tokio::sync::Notify>,
+        dropped: Arc<tokio::sync::Notify>,
+    }
+
+    struct SignalOnDrop(Arc<tokio::sync::Notify>);
+
+    impl Drop for SignalOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMClient for HangingLlm {
+        async fn ask(
+            &self,
+            _: &str,
+            _: &[(String, String)],
+            _: &[(usize, crate::ScoredChunk)],
+        ) -> anyhow::Result<String> {
+            Ok("unused".into())
+        }
+
+        async fn chat(
+            &self,
+            _: &str,
+            _: &[crate::llmclients::ChatMessage],
+            _: &[crate::tools::ToolSpec],
+        ) -> anyhow::Result<crate::llmclients::ModelReply> {
+            let _guard = SignalOnDrop(self.dropped.clone());
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_disconnect_cancels_the_stream_loop() {
+        use std::time::Duration;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(tokio::sync::Notify::new());
+        let llm = HangingLlm {
+            entered: entered.clone(),
+            dropped: dropped.clone(),
+        };
+        let rag = KimunRag::new(
+            Arc::new(FakeVectorStore::default()),
+            Arc::new(FakeEmbedder),
+            Some(Arc::new(llm) as Arc<dyn LLMClient + Send + Sync>),
+        );
+        let state = Arc::new(AppState::new(Some(rag), config(FULL)));
+        let body = json!({"vault_id": "vault-1", "query": "q"}).to_string();
+        let req = Request::post("/api/answer/stream")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = router(state).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .expect("the loop reached the model");
+
+        // The client goes away: the body, and with it the receiver, drops.
+        drop(resp);
+        tokio::time::timeout(Duration::from_secs(2), dropped.notified())
+            .await
+            .expect("the disconnect cancels the hanging model call");
+    }
+
     #[tokio::test]
     async fn a_semantic_only_server_rejects_the_stream_with_the_usual_status() {
         let state = Arc::new(AppState::new(Some(fake_rag(false)), config(SEMANTIC_ONLY)));

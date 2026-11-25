@@ -57,6 +57,15 @@ const CAP_STEP: &str = "Tool loop stopped: step limit reached";
 /// Malformed calls in a row that end the loop.
 const MALFORMED_LIMIT: usize = 2;
 
+/// Tool calls run from one model turn. The extra calls get
+/// [`DROPPED_CALL_RESULT`] and do not run.
+const MAX_CALLS_PER_ROUND: usize = 4;
+
+const DROPPED_CALL_RESULT: &str =
+    "error: too many tool calls in one turn (limit 4); this call was not run";
+
+const RETRY_FIRST_SEARCH_STEP: &str = "Single-pass answer retried with the first search only";
+
 /// The trail as it grows: every step goes to `on_step` the moment it exists.
 struct Trail<'a> {
     steps: Vec<TrailStep>,
@@ -129,8 +138,11 @@ impl Fallback {
 /// `ToolsUnsupported` on the first request, any model error in a later round,
 /// or two malformed calls in a row, also end the loop. Every fallback is the
 /// single-pass [`LLMClient::ask`] on the chunks gathered so far, with today's
-/// date put before the question. Any other error on the first request fails
-/// the request. An answer gets [`NO_MATCH_NOTICE`] when no chunk was gathered
+/// date put before the question. If that answer fails and the loop gathered
+/// more than the first search, it is retried once on the first-search chunks
+/// only. Any other error on the first request fails the request. A turn runs
+/// at most `MAX_CALLS_PER_ROUND` of its tool calls; each extra call gets an
+/// error result and does not run. An answer gets [`NO_MATCH_NOTICE`] when no chunk was gathered
 /// and [`NO_CITATION_NOTICE`] when it cites none of the gathered chunks.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -156,6 +168,7 @@ pub async fn run(
     first.truncate(rag.cut_len(&first, top_k));
     trail.push(FIRST_SEARCH_STEP);
     let first = sources.add(first);
+    let first_count = sources.list.len();
 
     let system = system_prompt(today, !history.is_empty());
     let mut messages = history_messages(history);
@@ -211,7 +224,8 @@ pub async fn run(
             text,
             calls: calls.clone(),
         });
-        for call in &calls {
+        let (run_now, dropped) = calls.split_at(calls.len().min(MAX_CALLS_PER_ROUND));
+        for call in run_now {
             let result = match parse_model_call(call) {
                 Ok(parsed) => {
                     malformed_in_a_row = 0;
@@ -232,6 +246,20 @@ pub async fn run(
                 text: result,
             });
         }
+        if !dropped.is_empty() {
+            // Every call id needs a result, or the next request is invalid on
+            // every wire. A dropped call is not malformed.
+            for call in dropped {
+                messages.push(ChatMessage::ToolResult {
+                    call_id: call.id.clone(),
+                    text: DROPPED_CALL_RESULT.to_string(),
+                });
+            }
+            trail.push(format!(
+                "Ran {MAX_CALLS_PER_ROUND} of {} tool calls (the limit per turn)",
+                calls.len()
+            ));
+        }
     };
 
     let text = match answer {
@@ -240,7 +268,24 @@ pub async fn run(
             trail.push(fallback.step());
             // The single-pass prompt has no date; the question carries it.
             let dated = format!("Today is {}.\n\n{question}", today_line(today));
-            llm.ask(&dated, history, &sources.list).await?
+            match llm.ask(&dated, history, &sources.list).await {
+                Ok(text) => text,
+                Err(e) if sources.list.len() > first_count => {
+                    // The usual cause is a context that is too long. The
+                    // first-search chunks keep their numbers 1..k, so the
+                    // citations stay right.
+                    log::warn!(
+                        "The single-pass answer failed on {} chunks ({}); retrying with the \
+                         {first_count} chunks of the first search",
+                        sources.list.len(),
+                        first_line(&e.to_string(), ERROR_LOG_CHARS)
+                    );
+                    trail.push(RETRY_FIRST_SEARCH_STEP);
+                    sources.list.truncate(first_count);
+                    llm.ask(&dated, history, &sources.list).await?
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     };
     let text = if sources.list.is_empty() {
@@ -491,6 +536,8 @@ mod tests {
         ask_questions: Mutex<Vec<String>>,
         ask_reply: Option<String>,
         ask_fails: bool,
+        /// `ask` fails this many times, then answers.
+        ask_failures: Mutex<usize>,
     }
 
     impl FakeLlm {
@@ -517,6 +564,13 @@ mod tests {
                 .push(question.to_string());
             if self.ask_fails {
                 anyhow::bail!("single pass exploded");
+            }
+            {
+                let mut failures = self.ask_failures.lock().unwrap();
+                if *failures > 0 {
+                    *failures -= 1;
+                    anyhow::bail!("context too long");
+                }
             }
             Ok(self.ask_reply.as_deref().unwrap_or(CANNED_ASK).to_string())
         }
@@ -979,6 +1033,106 @@ mod tests {
         };
         let err = try_ask(&rag, &llm, &[]).await.err().expect("an error");
         assert!(err.to_string().contains("single pass exploded"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn failing_single_pass_retries_with_the_first_search_only() {
+        let (rag, _dir) = rag_with(&vault()).await;
+        let llm = FakeLlm {
+            ask_failures: Mutex::new(1),
+            ..FakeLlm::new(vec![
+                calls(vec![call("c1", "search", json!({"query": "standup"}))]),
+                Script::Fail,
+            ])
+        };
+        let run = ask(&rag, &llm, &[]).await;
+
+        assert_eq!(run.outcome.text, CANNED_ASK);
+        let asks = llm.asks.lock().unwrap();
+        assert_eq!(asks.len(), 2);
+        assert_eq!(asks[0].len(), 4, "first asked on every gathered chunk");
+        assert_eq!(asks[1].len(), 1, "then on the first search only");
+        assert_eq!(asks[1][0].0, 1, "the first-search chunk keeps number 1");
+        assert_eq!(asks[1], run.outcome.sources);
+        let steps = trail(&run.outcome);
+        assert_eq!(
+            &steps[steps.len() - 2..],
+            [PROVIDER_ERROR_STEP, RETRY_FIRST_SEARCH_STEP]
+        );
+        assert_eq!(
+            run.seen_steps.last().map(String::as_str),
+            Some(RETRY_FIRST_SEARCH_STEP)
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_retry_returns_its_error() {
+        let (rag, _dir) = rag_with(&vault()).await;
+        let llm = FakeLlm {
+            ask_fails: true,
+            ..FakeLlm::new(vec![
+                calls(vec![call("c1", "search", json!({"query": "standup"}))]),
+                Script::Fail,
+            ])
+        };
+        let err = try_ask(&rag, &llm, &[]).await.err().expect("an error");
+        assert!(err.to_string().contains("single pass exploded"), "{err}");
+        let asks = llm.asks.lock().unwrap();
+        assert_eq!(asks.len(), 2, "one retry");
+        assert_eq!(asks[1].len(), 1);
+    }
+
+    #[tokio::test]
+    async fn failing_single_pass_without_extra_chunks_is_not_retried() {
+        let (rag, _dir) = rag_with(&vault()).await;
+        let llm = FakeLlm {
+            ask_failures: Mutex::new(1),
+            ..FakeLlm::new(vec![
+                calls(vec![call("c1", "delete_everything", json!({}))]),
+                calls(vec![call(
+                    "c2",
+                    "list_date_keys",
+                    Value::String("{".into()),
+                )]),
+            ])
+        };
+        let err = try_ask(&rag, &llm, &[]).await.err().expect("an error");
+        assert!(err.to_string().contains("context too long"), "{err}");
+        assert_eq!(llm.asks.lock().unwrap().len(), 1, "no retry");
+    }
+
+    #[tokio::test]
+    async fn extra_calls_in_one_turn_are_not_run() {
+        let (rag, _dir) = rag_with(&vault()).await;
+        let seven: Vec<ModelToolCall> = (1..=7)
+            .map(|i| call(&format!("c{i}"), "list_date_keys", json!({})))
+            .collect();
+        let llm = FakeLlm::new(vec![calls(seven), text("done [1]")]);
+        let run = ask(&rag, &llm, &[]).await;
+
+        assert_eq!(run.outcome.text, "done [1]", "the loop went on");
+        assert!(llm.asks.lock().unwrap().is_empty(), "no fallback");
+        let chats = llm.chats.lock().unwrap();
+        assert_eq!(chats.len(), 2);
+        let results = tool_results(&chats[1].messages);
+        let ids: Vec<&str> = results.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, ["c1", "c2", "c3", "c4", "c5", "c6", "c7"]);
+        for (id, text) in &results[..4] {
+            assert!(!text.starts_with("error:"), "{id}: {text}");
+        }
+        for (id, text) in &results[4..] {
+            assert_eq!(*text, DROPPED_CALL_RESULT, "{id}");
+        }
+        let steps = [
+            "Searching your notes",
+            "Listing date properties",
+            "Listing date properties",
+            "Listing date properties",
+            "Listing date properties",
+            "Ran 4 of 7 tool calls (the limit per turn)",
+        ];
+        assert_eq!(trail(&run.outcome), steps, "four tools ran");
+        assert_eq!(run.seen_steps, steps);
     }
 
     #[tokio::test]

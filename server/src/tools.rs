@@ -10,7 +10,7 @@ use crate::dbembeddings::{DateFilter, QueryFilter};
 use crate::document::JOURNAL_DATE_FORMAT;
 use crate::{CollectionKey, KimunRag, ScoredChunk};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// A tool as the model sees it.
 pub struct ToolSpec {
@@ -427,7 +427,7 @@ impl<'a> ToolRunner<'a> {
             },
             Err(e) => return error_output(e, trail),
         };
-        let index: Vec<(String, String)> = paths.iter().map(|p| (p.clone(), path_key(p))).collect();
+        let index = LinkIndex::new(&paths);
 
         let mut to = BTreeSet::new();
         let mut missing = BTreeSet::new();
@@ -436,11 +436,16 @@ impl<'a> ToolRunner<'a> {
             if target.is_empty() {
                 continue;
             }
-            let hits = resolve_link(&found, &target, &index);
+            let hits = index.resolve(&found, &target);
             if hits.is_empty() {
                 missing.insert(target);
             }
-            to.extend(hits.into_iter().filter(|h| *h != found));
+            to.extend(
+                hits.into_iter()
+                    .map(|i| &paths[i])
+                    .filter(|h| **h != found)
+                    .cloned(),
+            );
         }
         let mut from = BTreeSet::new();
         for (source, written) in &links {
@@ -449,7 +454,11 @@ impl<'a> ToolRunner<'a> {
             }
             let hit = written.iter().any(|link| {
                 let target = clean_target(link);
-                !target.is_empty() && resolve_link(source, &target, &index).contains(&found)
+                !target.is_empty()
+                    && index
+                        .resolve(source, &target)
+                        .iter()
+                        .any(|i| paths[*i] == found)
             });
             if hit {
                 from.insert(source.clone());
@@ -519,52 +528,97 @@ fn clean_target(raw: &str) -> String {
     raw[..end].trim().to_string()
 }
 
-/// The notes (original paths) a link written in `from` points at. `index`
-/// holds `(path, path_key)` pairs.
-fn resolve_link(from: &str, target: &str, index: &[(String, String)]) -> Vec<String> {
-    let is_path = target.starts_with('/') || target.starts_with("./") || target.starts_with("../");
-    if is_path {
-        let mut parts: Vec<String> = Vec::new();
-        if !target.starts_with('/') {
-            let from_key = path_key(from);
-            let folder = from_key.rsplit_once('/').map_or("", |(f, _)| f);
-            parts.extend(
-                folder
-                    .split('/')
-                    .filter(|p| !p.is_empty())
-                    .map(String::from),
-            );
-        }
-        let lower = target.to_lowercase();
-        let lower = lower.strip_suffix(".md").unwrap_or(&lower);
-        for part in lower.split('/') {
-            match part {
-                "" | "." => {}
-                ".." => {
-                    if parts.pop().is_none() {
-                        return Vec::new();
-                    }
-                }
-                other => parts.push(other.to_string()),
+/// The note paths of a collection, prepared once so that each link resolves
+/// without a scan of every note. Results are indices into the paths it was
+/// built from, in that order.
+struct LinkIndex {
+    /// Full `path_key` to the notes with that key.
+    by_key: HashMap<String, Vec<usize>>,
+    /// Last segment of the key to the notes whose key ends in it.
+    by_last: HashMap<String, Vec<usize>>,
+    /// Each note's key split on `/`, empty segments kept.
+    segments: Vec<Vec<String>>,
+}
+
+impl LinkIndex {
+    fn new(paths: &[String]) -> Self {
+        let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_last: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut segments = Vec::with_capacity(paths.len());
+        for (i, path) in paths.iter().enumerate() {
+            let key = path_key(path);
+            let parts: Vec<String> = key.split('/').map(String::from).collect();
+            if let Some(last) = parts.last() {
+                by_last.entry(last.clone()).or_default().push(i);
             }
+            by_key.entry(key).or_default().push(i);
+            segments.push(parts);
         }
-        let wanted = parts.join("/");
-        index
-            .iter()
-            .filter(|(_, key)| *key == wanted)
-            .map(|(p, _)| p.clone())
-            .collect()
-    } else {
-        let key = path_key(target);
-        let wanted: Vec<&str> = key.split('/').filter(|p| !p.is_empty()).collect();
-        index
-            .iter()
-            .filter(|(_, k)| {
-                let have: Vec<&str> = k.split('/').collect();
-                have.len() >= wanted.len() && have[have.len() - wanted.len()..] == wanted[..]
-            })
-            .map(|(p, _)| p.clone())
-            .collect()
+        Self {
+            by_key,
+            by_last,
+            segments,
+        }
+    }
+
+    /// The notes with exactly this key.
+    fn exact(&self, key: &str) -> &[usize] {
+        self.by_key.get(key).map(Vec::as_slice).unwrap_or_default()
+    }
+
+    /// The notes a link written in `from` points at.
+    fn resolve(&self, from: &str, target: &str) -> Vec<usize> {
+        let is_path =
+            target.starts_with('/') || target.starts_with("./") || target.starts_with("../");
+        if is_path {
+            let mut parts: Vec<String> = Vec::new();
+            if !target.starts_with('/') {
+                let from_key = path_key(from);
+                let folder = from_key.rsplit_once('/').map_or("", |(f, _)| f);
+                parts.extend(
+                    folder
+                        .split('/')
+                        .filter(|p| !p.is_empty())
+                        .map(String::from),
+                );
+            }
+            let lower = target.to_lowercase();
+            let lower = lower.strip_suffix(".md").unwrap_or(&lower);
+            for part in lower.split('/') {
+                match part {
+                    "" | "." => {}
+                    ".." => {
+                        if parts.pop().is_none() {
+                            return Vec::new();
+                        }
+                    }
+                    other => parts.push(other.to_string()),
+                }
+            }
+            self.exact(&parts.join("/")).to_vec()
+        } else {
+            let key = path_key(target);
+            let wanted: Vec<&str> = key.split('/').filter(|p| !p.is_empty()).collect();
+            let Some(last) = wanted.last() else {
+                // A name with no segment ends every path.
+                return (0..self.segments.len()).collect();
+            };
+            self.by_last
+                .get(*last)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let have = &self.segments[i];
+                    have.len() >= wanted.len()
+                        && have[have.len() - wanted.len()..]
+                            .iter()
+                            .zip(&wanted)
+                            .all(|(h, w)| h == w)
+                })
+                .collect()
+        }
     }
 }
 
@@ -575,6 +629,7 @@ mod tests {
     use crate::document::{KimunDoc, KimunSection, NoteDate};
     use crate::test_support::{FakeEmbedder, FakeVectorStore};
     use serde_json::json;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn key(s: &str) -> CollectionKey {
@@ -1001,6 +1056,183 @@ mod tests {
 
         let unknown = related("nope.md").await;
         assert!(unknown.text.starts_with("error:"));
+    }
+
+    /// The scanning resolver `LinkIndex` replaced, kept as the oracle.
+    fn naive_resolve(from: &str, target: &str, paths: &[String]) -> Vec<String> {
+        let index: Vec<(String, String)> = paths.iter().map(|p| (p.clone(), path_key(p))).collect();
+        let is_path =
+            target.starts_with('/') || target.starts_with("./") || target.starts_with("../");
+        if is_path {
+            let mut parts: Vec<String> = Vec::new();
+            if !target.starts_with('/') {
+                let from_key = path_key(from);
+                let folder = from_key.rsplit_once('/').map_or("", |(f, _)| f);
+                parts.extend(
+                    folder
+                        .split('/')
+                        .filter(|p| !p.is_empty())
+                        .map(String::from),
+                );
+            }
+            let lower = target.to_lowercase();
+            let lower = lower.strip_suffix(".md").unwrap_or(&lower);
+            for part in lower.split('/') {
+                match part {
+                    "" | "." => {}
+                    ".." => {
+                        if parts.pop().is_none() {
+                            return Vec::new();
+                        }
+                    }
+                    other => parts.push(other.to_string()),
+                }
+            }
+            let wanted = parts.join("/");
+            index
+                .iter()
+                .filter(|(_, key)| *key == wanted)
+                .map(|(p, _)| p.clone())
+                .collect()
+        } else {
+            let key = path_key(target);
+            let wanted: Vec<&str> = key.split('/').filter(|p| !p.is_empty()).collect();
+            index
+                .iter()
+                .filter(|(_, k)| {
+                    let have: Vec<&str> = k.split('/').collect();
+                    have.len() >= wanted.len() && have[have.len() - wanted.len()..] == wanted[..]
+                })
+                .map(|(p, _)| p.clone())
+                .collect()
+        }
+    }
+
+    #[test]
+    fn link_index_matches_the_naive_resolver() {
+        let mut paths: Vec<String> = [
+            "dup.md",
+            "Dup.md",
+            "work/dup.md",
+            "a/work/dup.md",
+            "notwork/dup.md",
+            "/abs/Note.md",
+            "/abs/sub/deep.md",
+            "journal/2026-11-18.md",
+            "journal/local.md",
+            "x/other.md",
+            "x/y/z/leaf.md",
+            "trailing/",
+            "trailing/dup/",
+            "no-ext",
+            "Mixed/CASE/File.MD",
+            "mixed/case/file.md",
+            "a.md.md",
+            "",
+            "/",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        paths.sort();
+        let targets = [
+            "dup",
+            "DUP",
+            "dup.md",
+            "Dup.MD",
+            "work/dup",
+            "WORK/DUP.md",
+            "k/dup",
+            "./local",
+            "./LOCAL.md",
+            "../x/other",
+            "../../x/other",
+            "../../../way/up",
+            "./../x/y/z/leaf",
+            "/x/other",
+            "/X/Other.md",
+            "/abs/note",
+            "/abs/sub/",
+            "abs/sub/deep",
+            "sub/deep/",
+            "trailing",
+            "trailing/",
+            "trailing/dup/",
+            "dup/",
+            "file",
+            "case/file.md",
+            "a.md",
+            "no-ext",
+            "",
+            ".md",
+            "/",
+            "./",
+            "../",
+            "ghost",
+            "nowhere/dup",
+            "z//leaf",
+        ];
+        let index = LinkIndex::new(&paths);
+        let mut froms: Vec<&str> = paths.iter().map(String::as_str).collect();
+        froms.extend(["journal/today.md", "x/y/z/q.md", "top.md"]);
+        for from in &froms {
+            for target in targets {
+                let want = naive_resolve(from, target, &paths);
+                let got: Vec<String> = index
+                    .resolve(from, target)
+                    .into_iter()
+                    .map(|i| paths[i].clone())
+                    .collect();
+                assert_eq!(got, want, "from {from:?} target {target:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn related_notes_is_fast_on_a_large_vault() {
+        const NOTES: usize = 3000;
+        let paths: Vec<String> = (0..NOTES)
+            .map(|i| format!("/folder{}/sub{}/note{i}.md", i % 50, i % 7))
+            .collect();
+        let mut notes = HashMap::new();
+        let mut links = HashMap::new();
+        for (i, path) in paths.iter().enumerate() {
+            notes.insert(
+                path.clone(),
+                crate::dbembeddings::IndexedNote {
+                    path: path.clone(),
+                    content_hash: "h".into(),
+                    last_indexed: 0,
+                },
+            );
+            let written: Vec<String> = (1..=10)
+                .map(|n| match n % 3 {
+                    0 => format!("note{}", (i + n * 37) % NOTES),
+                    1 => format!("../sub{}/note{}", n % 7, (i + n) % NOTES),
+                    _ => format!("/folder{}/sub{}/note{}", n % 50, n % 7, (i * n) % NOTES),
+                })
+                .collect();
+            links.insert(path.clone(), written);
+        }
+        let store = FakeVectorStore {
+            notes,
+            links,
+            ..Default::default()
+        };
+        let rag = KimunRag::new(Arc::new(store), Arc::new(FakeEmbedder), None);
+        let k = key("v");
+        let started = std::time::Instant::now();
+        let out = ToolRunner::new(&rag, &k)
+            .run(&ToolCall::RelatedNotes {
+                path: paths[37].clone(),
+            })
+            .await;
+        let elapsed = started.elapsed();
+        assert!(!out.text.starts_with("error:"), "{}", out.text);
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "related_notes took {elapsed:?}"
+        );
     }
 
     /// Real clients push canonical absolute paths (`/work/a.md`). Every tool

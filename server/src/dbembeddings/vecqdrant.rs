@@ -269,6 +269,8 @@ impl VectorStore for VecQdrant {
             return Ok(Vec::new());
         }
 
+        // Scroll returns points in id order, and the ids are random UUIDs. On
+        // Qdrant the order of a note's sections is not guaranteed.
         let filter = Filter::must([Condition::matches("path", paths.to_vec())]);
         let page_size = 200;
         let mut out = Vec::new();

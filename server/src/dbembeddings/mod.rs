@@ -402,6 +402,36 @@ pub(crate) mod conformance {
         }
     }
 
+    /// Each note's chunks come back in the order they were stored. Only the
+    /// SQLite store keeps this promise; on Qdrant the order is not
+    /// guaranteed.
+    pub(crate) async fn chunks_with_vectors_keeps_document_order(store: &dyn VectorStore, c: &str) {
+        let a: Vec<String> = ["e intro", "c body", "a middle", "d detail", "b end"]
+            .map(String::from)
+            .to_vec();
+        let b: Vec<String> = ["z one", "y two", "x three"].map(String::from).to_vec();
+        // The notes interleave: b's rows sit between a's in storage order.
+        let mut rows = vec![row("b.md", "h2", &b[0])];
+        rows.extend(a[..3].iter().map(|t| row("a.md", "h1", t)));
+        rows.extend(b[1..].iter().map(|t| row("b.md", "h2", t)));
+        store.store(c, &rows).await.unwrap();
+        let rest: Vec<EmbeddedChunk> = a[3..].iter().map(|t| row("a.md", "h1", t)).collect();
+        store.store(c, &rest).await.unwrap();
+
+        let got = store
+            .chunks_with_vectors(c, &["b.md".to_string(), "a.md".to_string()])
+            .await
+            .unwrap();
+        let texts = |path: &str| -> Vec<String> {
+            got.iter()
+                .filter(|r| r.chunk.doc_path == path)
+                .map(|r| r.chunk.text.clone())
+                .collect()
+        };
+        assert_eq!(texts("a.md"), a);
+        assert_eq!(texts("b.md"), b);
+    }
+
     pub(crate) async fn collections_list_each_vault(store: &dyn VectorStore, c1: &str, c2: &str) {
         store.store(c1, &[row("a.md", "h", "x")]).await.unwrap();
         store.store(c2, &[row("b.md", "h", "y")]).await.unwrap();
