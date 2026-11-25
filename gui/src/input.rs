@@ -143,6 +143,22 @@ pub fn key_input(ks: &Keystroke) -> Option<KeyInput> {
     Some(KeyInput::new(Key::Char(c), m))
 }
 
+/// Whether the platform composes text from an Option-only character chord:
+/// macOS dead keys (`Option+e`, then `e` gives `é`) and Option symbols
+/// (`Option+s` gives `ß`). GPUI never sets `prefer_character_input` on macOS,
+/// so these chords look like Alt chords. The host must let them propagate to
+/// the platform's input handler instead of treating them as editor keys.
+/// Named keys (`Option+Left`) are not text and stay chords.
+pub fn option_composes_text(ks: &Keystroke, macos: bool) -> bool {
+    let m = &ks.modifiers;
+    macos
+        && m.alt
+        && !m.control
+        && !m.platform
+        && !m.function
+        && single_char(Some(&ks.key)).is_some()
+}
+
 /// The keystroke's typed text, with an empty `key_char` read as none.
 fn typed_text(ks: &Keystroke) -> Option<&str> {
     ks.key_char.as_deref().filter(|t| !t.is_empty())
@@ -760,6 +776,29 @@ mod tests {
             Some(KeyInput::plain(Key::Char('q')))
         );
         assert!(!carries_text(&down(ks("q", Some(""), NONE), false)));
+    }
+
+    #[test]
+    fn macos_option_chords_compose_text() {
+        let alt = with(|m| m.alt = true);
+        // Dead key: GPUI gives an empty key_char for Option+e.
+        assert!(option_composes_text(&ks("e", Some(""), alt), true));
+        assert!(option_composes_text(&ks("s", Some("ß"), alt), true));
+        // Not macOS: Alt stays a chord.
+        assert!(!option_composes_text(&ks("e", Some(""), alt), false));
+        // Named keys and other chords are not text.
+        assert!(!option_composes_text(&ks("left", None, alt), true));
+        let ctrl_alt = with(|m| {
+            m.alt = true;
+            m.control = true;
+        });
+        assert!(!option_composes_text(&ks("e", None, ctrl_alt), true));
+        let cmd_alt = with(|m| {
+            m.alt = true;
+            m.platform = true;
+        });
+        assert!(!option_composes_text(&ks("e", None, cmd_alt), true));
+        assert!(!option_composes_text(&ks("e", Some("e"), NONE), true));
     }
 
     #[test]
