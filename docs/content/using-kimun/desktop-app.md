@@ -213,7 +213,7 @@ OpenFileBrowser = ["primary+e", "f7"]
 
 `primary` means `Ctrl`, or `Cmd` on macOS. The terminal app does not use this list.
 
-These are the same lines as in a [keymap file](#export-and-import), but under `[gui.keys]` and not `[keys]`. Kimün skips a line it cannot load and writes the reason to its log file. It shows no message.
+These are the same lines as in a [keymap file](#export-and-import), but under `[gui.keys]` and not `[keys]`. Kimün skips a line it cannot load and writes the reason to its log file. It shows no message. In this file, a shortcut that another action already has stays with that action. Only the Keyboard section and an import move shortcuts.
 
 ## Preferences
 
@@ -235,108 +235,82 @@ If the title bar looks wrong on your desktop, add `window_decorations = "system"
 
 ### The folder chooser
 
-The folder chooser is a panel where you pick a folder on your computer. The setup assistant opens it. Preferences > Workspaces opens it with `Choose folder…`. In Preferences > Keyboard, `Choose folder…` for Export opens it too. `Choose file…` for Import opens the same folder chooser to pick a keymap file. This page calls it the Import chooser then.
+The folder chooser is the panel where you pick a folder. The setup assistant, Preferences > Workspaces and Preferences > Keyboard open it. When you import a shortcut file, the same panel lists `.toml` files too, and you pick a file.
 
-The folder chooser lists the folders, and in the Import chooser the keymap files (`.toml`), inside the folder it shows.
+Type in the Location field at the top. The cursor starts there.
 
-The Location field is the text box at the top of the folder chooser. The cursor starts there.
+- Type part of a name to narrow the list. The best match comes first.
+- Type or paste a path and press `Enter` to go there. A path starts with `~`, is a full path, or has a separator in it. `..` goes up one folder. A relative path starts from the folder that the panel shows.
+- On Windows, type `D:\` to switch to another drive.
 
-To narrow the list, type part of a name in the Location field. The list keeps the names that match. It uses a fuzzy match, best first.
+To pick a folder, click `Choose this folder` or press `Ctrl+Enter` (`Cmd+Enter` on macOS). If you typed a path, the panel picks that path. When you import, a path to a keymap file picks that file.
 
-To go to another folder, type or paste its path in the Location field. Then press `Enter`. A path starts with `~`, is a full path, or has a path separator in it. The text `..` goes up one folder. A relative path starts from the folder that the folder chooser shows.
+If a path does not work, a message appears under the field and goes away at your next key: `That folder does not exist`, `That is a file, not a folder`, or `That is not a .toml file`.
 
-If you type a path and then click `Choose this folder` or press `Ctrl+Enter`, the folder chooser chooses that folder.
+The list grows with the height of the window. Scrolling it does not scroll the page behind it.
 
-In the Import chooser, a path to a keymap file picks that file. A path to another kind of file shows `That is not a .toml file`. When you pick a folder, a path to a file shows `That is a file, not a folder`. A path that does not exist shows `That folder does not exist`. The message goes away at your next key.
+These keys work in the panel:
 
-The list grows and shrinks with the height of the window.
-
-These keys work in the folder chooser:
-
-- `Up` and `Down` move the selection. They do nothing while the Location field holds a path.
-- `Enter` opens the selected folder, or goes to the path you typed. In the Import chooser, `Enter` on a selected file picks it.
-- `Esc` clears the text in the Location field. When the field is empty, `Esc` closes the folder chooser. If the new folder field is open, `Esc` closes only that field.
-- `Alt+Up` goes up one folder. On macOS, press `Cmd+Up`.
-- `Backspace` in an empty Location field also goes up one folder.
-- `Ctrl+Enter` chooses the path you typed, or else the folder that the folder chooser shows. On macOS, press `Cmd+Enter`. The Import chooser has no `Ctrl+Enter` and no `Ctrl+N`.
-- `Ctrl+N` makes a new folder inside the folder that the folder chooser shows. On macOS, press `Cmd+N`.
+- `Up` and `Down` move the selection.
+- `Enter` opens the selected folder, or goes to the path you typed. When you import, it also picks a selected file.
+- `Esc` clears the Location field. When the field is empty, `Esc` closes the panel. While you name a new folder, `Esc` closes that field first.
+- `Alt+Up` (`Cmd+Up` on macOS) or `Backspace` in an empty field goes up one folder.
+- `Ctrl+N` (`Cmd+N` on macOS) makes a new folder in the folder you see. The import panel has no new folder.
 
 ### Keyboard shortcuts
 
-Open Preferences and choose Keyboard. The list shows every action in groups, such as Notes, Editor, and Tabs. Each row shows the action and its shortcut. A row with no shortcut shows `none`. The leader key is one of the rows, named Leader.
+Open Preferences and choose Keyboard. The list shows every action in groups, such as Notes, Editor and Tabs. Each row shows the action and its shortcut. A row with no shortcut shows `none` in a muted color. The leader key is one of the rows, named Leader.
 
-Some shortcuts work only in one place. The row says where, for example "editor only" or "search browser only".
+Some shortcuts work in one place only. The row says where, for example "editor only".
 
-To find an action, type in the `Filter shortcuts` field above the list. Type part of its name, or its keys, for example `Ctrl+E` (`Cmd+E` on macOS). Press `Esc` to empty the field.
+To find an action, type in the `Filter shortcuts` field. Type part of the name or the keys, for example `Ctrl+E` (`Cmd+E` on macOS). Press `Esc` to empty the field.
 
 Each row has these buttons:
 
 - `Change` sets a new shortcut.
-- `Clear` removes the shortcut. The row then shows `none`.
-- `Reset` gives the row its default shortcut back. It shows only on a row you changed.
+- `Clear` removes the shortcut.
+- `Reset` gives back the default. It shows only on a row you changed.
 
-To change a shortcut:
+To change a shortcut, click `Change` on the row and press the new keys. Each action has one shortcut, so `Change` replaces the old one. Press `Esc` or click `Cancel` to keep the old shortcut.
 
-1. Click `Change` on the row.
-2. Press the new keys.
+A shortcut needs `Ctrl`, `Alt` or `Cmd`. A function key such as `F6` works alone. The section refuses a plain letter, number or symbol, because it types text. It also refuses editing keys such as `Enter` and `Tab` without one of the three, and the `+` key. It tells you why.
 
-The row then shows the new shortcut. While the row waits for keys, its `Change` button reads `Cancel`. Press `Esc` or click `Cancel` to keep the old shortcut. `Change` replaces all the shortcuts of the row with this one.
+If another action already has the shortcut, the row warns "{shortcut} was {action}. Saving clears it there." The new row keeps it, and the other row loses it. Two actions can share a shortcut when they work in different places, for example in the editor and in the search box. The row says which one wins where.
 
-The section refuses these keys and tells you why.
+A row can also warn you about a key that the editor uses, such as the key for undo. With the new shortcut, the editor no longer reacts to that key. In vim mode, vim reads some keys before Kimün does, so a shortcut on such a key may not work.
 
-- A plain letter, number, or symbol. It types text. Add `Ctrl`, `Alt`, or `Cmd` to use it.
-- `Enter`, `Tab`, `Backspace`, and other editing keys with no `Ctrl`, `Alt`, or `Cmd`. `Shift` alone does not count. Add one of the three.
-- The `+` key, with or without other keys. No other keys fix this. Pick another key.
+On macOS, `Cmd+Q`, `Cmd+W`, `Cmd+H` and `Cmd+M` always act at once, so you cannot use them. A shortcut with `Option` and a letter can fail in the editor, because that key types a special character.
 
-A function key such as `F6` works alone.
+Nothing is kept until you click `Save`. Click `Cancel` to throw the changes away. Saved changes work at once. `Reset all` puts every shortcut back to its default.
 
-On macOS, `Cmd+Q`, `Cmd+W`, `Cmd+H`, and `Cmd+M` act at once, even while a row waits for keys. You cannot set them as shortcuts.
-
-On macOS, `Option` with a letter can type a special character. A shortcut on such a key can then fail in the editor.
-
-What a row can tell you after a change:
-
-- "{shortcut} was {action}. Saving clears it there." Another action had the shortcut. It moves to this row. The other row shows the same warning.
-- "In the editor, this key then runs this shortcut and no longer edits text." The editor uses this key, for example to undo or to copy. The shortcut now takes it.
-- "In the editor with vim mode, vim reads this key first." With vim mode on, the editor handles this key before Kimün does.
-- A line such as "Where a query is typed, F7 is Query builder." Two actions can share a shortcut when they work in different places. The line says which one wins where.
-
-Nothing is kept until you click `Save`. Click `Cancel` to discard all the changes. Saved changes work at once and need no restart.
-
-`Reset all` puts every shortcut back to its default.
-
-If no shortcut opens Preferences anymore, click CFG in the rail. Then click `Preferences…` in the CFG view. In the Keyboard section, click `Reset all`, then `Save`. You can also remove the `[gui.keys]` table from `config.toml`. Every shortcut then goes back to its default.
+If you lose the shortcut that opens Preferences, click CFG in the rail, then `Preferences…`. Click `Reset all` in the Keyboard section, then `Save`.
 
 ### Export and import
 
-Below the list, the Keymap file area has two parts. You can save your changes to a file and load them from a file. This helps you move your shortcuts to another computer.
+You can save your shortcuts to a file and load them on another computer. The Keymap file area sits below the list.
 
-To export:
+To export, check the path in the Export field, then click `Export`. The path starts as `kimun-keys-<system>.toml` in your home folder, where `<system>` is `macos`, `linux` or `windows`. Type another full path or one that starts with `~`, or click `Choose folder…`. Kimün creates a missing folder. It replaces a file with the same name without asking.
 
-1. Check the path in the Export field. It starts as `kimun-keys-<system>.toml` in your home folder, where `<system>` is `macos`, `linux` or `windows`.
-2. Click `Export`.
+The file holds every shortcut, the default ones too. If a later version changes a default, importing the old file brings your shortcut back.
 
-The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder with the [folder chooser](#the-folder-chooser). If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds every shortcut, the default ones too. It starts with a `platform` line that names your system. If a later version changes a default, importing the old file brings back your shortcut. If a line in the file uses a chord that another action holds now, the import takes it from that action and tells you which one lost it.
+To import, type the path of the file in the Import field, or click `Choose file…`, then click `Import`. The list shows the shortcuts of the file in place of your unsaved changes. Click `Save` to keep them, or `Cancel` to throw them away.
 
-To import:
+If a line asks for a shortcut that another action has, the import takes it from that action, as `Change` does. Kimün lists each shortcut it moved. It also lists each line it could not read, with the reason.
 
-1. Type the path of the file in the Import field, or click `Choose file…`.
-2. Click `Import`.
-
-The path must be a full path or start with `~`. The `Choose file…` button opens the same chooser. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
-
-Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. A line takes its shortcut from the action that has it now, as the Change button does. A default shortcut of another action counts too. Kimün lists each shortcut it took and the action that lost it, and Save makes the loss permanent. If two lines ask for the same shortcut, the later line in the file, in action order, gets it. A line replaces all the default shortcuts of its action. If the file comes from macOS and you import it on Linux or Windows, or the other way round, Kimün skips each line that equals the default of the system that wrote the file. It tells you how many lines it skipped. Only the shortcuts you changed come across. Linux and Windows share one set of defaults, so a file between them keeps every line. Kimün reads the `platform` line and not the file name. A file with no `platform` line, or with one Kimün does not know, imports in full.
+Systems share a file with one limit. Linux and Windows have the same defaults. macOS has different ones. If you import a file from the other group, Kimün skips each line that only repeats the defaults of the system that wrote it. It says how many lines it skipped. The shortcuts you changed come across. The file says which system wrote it, so you can rename it. An older file without that information imports in full.
 
 A keymap file looks like this:
 
 ```toml
+platform = "macos"
+
 [keys]
 SaveNote = "primary+s"
 OpenFileBrowser = ["primary+e", "f7"]
 NewTab = []
 ```
 
-- `primary` means `Cmd` on macOS and `Ctrl` on other systems. A file with `primary` works on every system.
+- `primary` means `Cmd` on macOS and `Ctrl` on other systems.
 - An empty list, as in `NewTab = []`, means no shortcut.
 - An action that is not in the file keeps its default shortcut.
 

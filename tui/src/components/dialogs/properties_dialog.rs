@@ -646,7 +646,7 @@ impl FormUi {
         self.focus = focus;
     }
 
-    /// Key → Kind → Value → [StoreAnyway] → Save → Cancel → Key.
+    /// Key → Kind → Value → `StoreAnyway` → Save → Cancel → Key.
     fn focus_next(&mut self) {
         match self.focus {
             FormFocus::Key => self.set_focus(FormFocus::Kind),
