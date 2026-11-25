@@ -18,8 +18,8 @@
 //! The group moves whole, keeping its id, so its state (`groups`), its note
 //! and its unsaved text go with it: nothing is written, nothing is added or
 //! dropped from `groups`. A group alone in its tab leaves no empty group
-//! behind: its tab closes. The tab strip shows during the drag even with
-//! one tab, so the plus button is there to aim at.
+//! behind: its tab closes. With one tab the strip stays hidden during the
+//! drag, so the plus button is not there to aim at.
 //!
 //! [`EditorRegion::move_group_beside`]: kimun_notes::logic::editor_region::EditorRegion::move_group_beside
 //! [`EditorRegion::swap_groups`]: kimun_notes::logic::editor_region::EditorRegion::swap_groups
