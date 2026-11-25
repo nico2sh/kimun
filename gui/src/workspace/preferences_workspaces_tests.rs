@@ -30,6 +30,8 @@ use kimun_notes::settings::{AppSettings, SharedSettings};
 use tokio::runtime::Runtime;
 
 use super::folder_chooser::{self, FolderChooser, Listing};
+use super::preferences::keyboard::change_id;
+use super::preferences::keyboard::file::EXPORT_CHOOSE_ID;
 use super::preferences::workspaces::{
     ASK_GO_ID, CONFLICT_ID, FAST_ID, FULL_ID, FULL_YES_ID, Form, INDEX_INERT_ID, PROGRESS_ID,
     WS_CHOOSE_ID, WS_CREATE_ID, WS_DELETE_YES_ID, WS_EMPTY_ID, WS_FOLDER_ID, WS_NEW_ID,
@@ -42,6 +44,7 @@ use super::reopen_tests::{Pair, current, files_rows, on_disk_current, open_on_a,
 use super::start_tests::{Started, drive, runtime, send};
 use super::{LayoutStore, Workspace};
 use crate::editor_view::{self, EditorView};
+use crate::keymap::draft::bindable_groups;
 use crate::keymap::{self, Keymap, Platform};
 use crate::startup::Start;
 
@@ -347,6 +350,7 @@ fn workspaces_and_indexing_sit_in_the_tui_order(cx: &mut TestAppContext) {
             Section::Editor,
             Section::Server,
             Section::RemoteImages,
+            Section::Keyboard,
         ]
     );
     for _ in 0..4 {
@@ -450,7 +454,7 @@ fn a_new_workspace_is_checked_chosen_and_saved(cx: &mut TestAppContext) {
     assert!(s.pw_chooser(cx).is_some());
     assert!(s.pw_shows("preferences-chooser", cx));
     s.pw_browse(&rt, &base, cx);
-    s.pw_press("n", cx);
+    s.pw_press("ctrl-n", cx);
     s.pw_typed("third-notes", cx);
     s.pw_press("enter", cx);
     let chooser = s.pw_chooser(cx).unwrap();
@@ -494,6 +498,94 @@ fn a_new_workspace_is_checked_chosen_and_saved(cx: &mut TestAppContext) {
         "Esc closes the form"
     );
     assert!(s.pw_is_open(cx), "and only the form");
+    settle(&rt, cx);
+}
+
+/// Esc in a Workspaces chooser closes only the chooser. In the New form,
+/// the Location field has the keyboard as the chooser opens; `n` types an
+/// `n` (no New folder); Enter opens the best row and never creates the
+/// workspace; Esc with text clears it; Esc from the empty field closes the
+/// chooser, the form stays and its name field has the keyboard again. The
+/// Change path chooser closes its form, Preferences stay.
+#[gpui_kit::test]
+fn workspaces_chooser_esc_closes_only_the_chooser(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let base = root(&p).join("browse");
+    std::fs::create_dir_all(base.join("notes")).unwrap();
+    std::fs::create_dir_all(base.join("zebra")).unwrap();
+    let s = on_a_with_prefs(cx, &rt, &p);
+    s.pw_list_focus(cx);
+    s.pw_press("n", cx);
+    type_new_name(&s, "third", cx);
+    s.pw_press("enter", cx);
+    s.pw_browse(&rt, &base, cx);
+    let chooser = s.pw_chooser(cx).expect("the chooser is up");
+    let location = cx.read(|cx| chooser.read(cx).location_input());
+    let field = cx.read(|cx| location.read(cx).focus_handle(cx));
+    assert!(
+        s.pw_has_focus(field, cx),
+        "the Location field has the keyboard"
+    );
+    let text = |cx: &TestAppContext| cx.read(|cx| location.read(cx).value().to_string());
+
+    s.pw_typed("n", cx);
+    assert_eq!(text(cx), "n");
+    assert!(!cx.read(|cx| chooser.read(cx).new_folder_open()));
+    let shown = cx.read(|cx| chooser.read(cx).shown_rows().len());
+    assert_eq!(shown, 1, "the filter keeps `notes` only");
+
+    // Enter opens `notes`: the same chooser, and no workspace made.
+    s.pw_press("enter", cx);
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| {
+            let c = chooser.read(cx);
+            c.dir().as_path() == base.join("notes") && !matches!(c.listing(), Listing::Loading)
+        })
+    });
+    assert_eq!(
+        s.pw_chooser(cx).map(|c| c.entity_id()),
+        Some(chooser.entity_id())
+    );
+    assert!(!names(&p.settings.read().unwrap()).contains(&"third".to_string()));
+
+    s.pw_typed("zz", cx);
+    s.pw_press("escape", cx);
+    assert_eq!(text(cx), "", "Esc clears the text first");
+    assert!(s.pw_chooser(cx).is_some(), "the chooser stays");
+    // Tab to the chooser's buttons: Esc there is still the chooser's.
+    s.pw_press("tab", cx);
+    let field = cx.read(|cx| location.read(cx).focus_handle(cx));
+    assert!(!s.pw_has_focus(field, cx), "a button has the keyboard");
+    s.pw_press("escape", cx);
+    assert!(s.pw_chooser(cx).is_none(), "Esc closes the chooser");
+    let input = s
+        .pw_read(cx, |v| v.ws_new_input())
+        .expect("and only the chooser");
+    let name_field = cx.read(|cx| input.read(cx).focus_handle(cx));
+    assert!(s.pw_has_focus(name_field, cx), "the name field has it back");
+    assert!(s.pw_is_open(cx));
+    assert!(
+        s.pw_read(cx, |v| v.confirm().is_none()),
+        "no question asked"
+    );
+
+    // The Change path chooser: Esc twice closes its form, nothing else.
+    s.pw_press("escape", cx);
+    s.pw_pick("b", cx);
+    s.pw_list_focus(cx);
+    s.pw_press("b", cx);
+    let chooser = s.pw_chooser(cx).expect("the Change path chooser");
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| !matches!(chooser.read(cx).listing(), Listing::Loading))
+    });
+    s.pw_typed("q", cx);
+    s.pw_press("escape", cx);
+    assert!(s.pw_chooser(cx).is_some(), "Esc cleared the text only");
+    s.pw_press("escape", cx);
+    assert!(s.pw_read(cx, |v| v.ws_form().is_none()));
+    assert!(s.pw_is_open(cx), "Preferences stay");
     settle(&rt, cx);
 }
 
@@ -814,6 +906,50 @@ fn another_workspaces_path_is_saved_at_once(cx: &mut TestAppContext) {
     settle(&rt, cx);
 }
 
+/// A Change path chooser left up in Workspaces does not take the keys of
+/// the Keyboard section's chooser: Ctrl+Enter there picks the Export
+/// folder, and the other workspace's folder stays.
+#[gpui_kit::test]
+fn a_hidden_workspaces_chooser_never_takes_the_keyboard_choosers_keys(cx: &mut TestAppContext) {
+    use super::preferences::keyboard::file::EXPORT_CHOOSE_ID;
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let before = path_of(&on_disk(&p), "b");
+    let s = on_a_with_prefs(cx, &rt, &p);
+    s.pw_pick("b", cx);
+    s.pw_press("b", cx);
+    assert!(s.pw_read(cx, |v| v.ws_path_chooser().is_some()));
+    s.pw_section(Section::Keyboard, cx);
+    let export = s.pw_read(cx, |v| v.keyboard_path_input(true));
+    let target = root(&p).join("keys.toml");
+    let text = kimun_core::system::path_to_string(&target);
+    s.pw_with_view(cx, |_, window, cx| {
+        export.update(cx, |i, cx| i.set_value(text, window, cx))
+    });
+    // The Keymap file area is under the shortcut list: scroll to it.
+    super::preferences_keyboard_tests::reveal(&s, EXPORT_CHOOSE_ID, cx);
+    s.pw_click(EXPORT_CHOOSE_ID, cx);
+    let chooser = s.pw_read(cx, |v| v.keyboard_chooser()).expect("up");
+    drive(&rt, cx, |cx| {
+        cx.read(|cx| !matches!(chooser.read(cx).listing(), Listing::Loading))
+    });
+    s.pw_press("ctrl-enter", cx);
+    assert!(
+        s.pw_read(cx, |v| v.keyboard_chooser().is_none()),
+        "the keys reached the Keyboard chooser"
+    );
+    assert_eq!(
+        cx.read(|cx| export.read(cx).value().to_string()),
+        kimun_core::system::path_to_string(&target)
+    );
+    s.pw_written(&rt, cx);
+    for settings in [p.settings.read().unwrap().clone(), on_disk(&p)] {
+        assert_eq!(path_of(&settings, "b"), before, "b's folder is unchanged");
+    }
+    settle(&rt, cx);
+}
+
 /// The current workspace's new folder: indexed first behind the progress
 /// panel (everything waits, Esc too), then saved, and the window enters it.
 #[gpui_kit::test]
@@ -1106,6 +1242,89 @@ fn esc_closes_the_topmost_layer_and_never_saves(cx: &mut TestAppContext) {
     s.pw_press("escape", cx);
     assert!(!s.pw_is_open(cx), "then Preferences (clean)");
     assert_eq!(std::fs::read_to_string(&p.config).unwrap(), file);
+    settle(&rt, cx);
+}
+
+/// A question hidden in Workspaces does not take the Keyboard section's
+/// keys: Change captures there, Esc ends only the capture, and Enter with
+/// the root holding the keyboard deletes nothing.
+#[gpui_kit::test]
+fn a_hidden_workspaces_question_leaves_the_keyboard_keys_alone(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let (index, history) = p.settings.read().unwrap().workspace_artifacts("b");
+    let s = on_a_with_prefs(cx, &rt, &p);
+    s.pw_list_focus(cx);
+    s.pw_press("down", cx);
+    s.pw_press("delete", cx);
+    let asked = |s: &Started, cx: &TestAppContext| {
+        s.pw_read(
+            cx,
+            |v| matches!(v.ws_form(), Some(Form::Delete(n)) if n == "b"),
+        )
+    };
+    assert!(asked(&s, cx));
+
+    s.pw_section(Section::Keyboard, cx);
+    let action = bindable_groups()[0].rows[0].action.clone();
+    s.pw_click(change_id(&action), cx);
+    assert_eq!(
+        s.pw_read(cx, |v| v.keyboard_listening().cloned()),
+        Some(action.clone())
+    );
+    s.pw_press("escape", cx);
+    assert_eq!(s.pw_read(cx, |v| v.keyboard_listening().cloned()), None);
+    assert!(asked(&s, cx), "Esc ends the capture only");
+    s.pw_click(change_id(&action), cx);
+    s.pw_press("ctrl-g", cx);
+    assert_eq!(s.pw_read(cx, |v| v.keyboard_listening().cloned()), None);
+    assert!(
+        s.pw_read(cx, |v| v
+            .model()
+            .unwrap()
+            .gui_key_overrides
+            .contains_key(&action.to_string())),
+        "Change captured the chord"
+    );
+
+    super::preferences_keyboard_tests::reveal(&s, EXPORT_CHOOSE_ID, cx);
+    s.pw_click(EXPORT_CHOOSE_ID, cx);
+    s.pw_press("enter", cx);
+    s.pw_written(&rt, cx);
+    assert!(asked(&s, cx), "the question waits in Workspaces");
+    assert!(names(&p.settings.read().unwrap()).contains(&"b".to_string()));
+    assert!(index.path().exists() && history.path().exists());
+    settle(&rt, cx);
+}
+
+/// The "Discard your changes?" ask shows in every section: after a click
+/// on Keyboard, Esc still keeps editing, with the draft intact.
+#[gpui_kit::test]
+fn the_switch_ask_answers_esc_in_another_section(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let p = rt.block_on(pair());
+    let s = on_a_with_prefs(cx, &rt, &p);
+    s.pw_section(Section::Display, cx);
+    s.pw_click(super::preferences::UPDATE_CHECK_ID, cx);
+    s.pw_section(Section::Workspaces, cx);
+    s.pw_pick("b", cx);
+    s.pw_press("enter", cx);
+    assert!(s.pw_read(cx, |v| v.ws_ask().is_some()), "it asks");
+    s.pw_section(Section::Keyboard, cx);
+    s.pw_press("escape", cx);
+    assert!(
+        s.pw_read(cx, |v| v.ws_ask().is_none()),
+        "Esc closes the ask"
+    );
+    assert!(
+        s.pw_read(cx, |v| v.confirm().is_none()),
+        "no second question"
+    );
+    assert!(s.pw_is_open(cx));
+    assert!(s.pw_read(cx, |v| v.is_dirty()), "the draft is intact");
+    assert_eq!(current(&p.settings).as_deref(), Some("a"));
     settle(&rt, cx);
 }
 

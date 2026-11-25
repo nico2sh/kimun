@@ -430,6 +430,26 @@ _Avoid_: key event (crossterm's type), keystroke.
 A **GUI** Preferences setting that takes effect and is written to `config.toml` the moment it changes — theme, fonts, scale, editor backend, autosave, sorting. Heavy changes (switching a workspace, reindex, the server URL) are explicit actions with confirmation instead. The TUI keeps its explicit Save.
 _Avoid_: auto-save (that is the note **autosave**), live setting.
 
+**Chord**:
+One key plus its modifiers, as the **GUI** keymap binds it to an action (`primary+shift+f`). `primary` is Cmd on macOS and Ctrl elsewhere. An action can have more than one chord. The Preferences Keyboard section shows them all and sets one chord with Change. No chord is a valid state. Distinct from a **key combo**, the TUI's terminal-shaped spelling, and from **key input**, the raw typed key.
+_Avoid_: shortcut (the user-facing word for the same thing), binding (it also names the chord-to-action pair).
+
+**Shortcut override**:
+A **chord** of an action that differs from the **GUI**'s default for it, including no chord at all. Cleared actions count: an action that lost its chord to another action is an override with no chord, so that the loss survives a reload. An action whose default is no chord has nothing to clear. Only an interactive edit in Preferences can take a chord from another action whose scope overlaps. An imported **keymap file** takes chords the same way: each line takes its chord from the action that holds it, and the import reports each take. A hand-edited file never takes a chord: the action that holds a chord keeps it (defaults bind first, then overrides in action order, not file order), and the chord asked for elsewhere is dropped and reported. The rest of that line is kept.
+_Avoid_: custom binding, remap.
+
+**Keymap file**:
+The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding one line per action: an export writes every bindable action, defaults included, and an import may hold only some. It names the system that wrote it in a top-level `platform` line (`macos`, `linux` or `windows`); the default export name carries it too, but only the line counts. An import from the other family (macOS against Linux and Windows) skips every line that equals that system's defaults and reports one count. A file with no line, or an unknown one, imports in full. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
+_Avoid_: keymap (that is the whole table in effect, defaults included), profile.
+
+**Folder chooser**:
+The panel the **GUI** uses to pick a folder, or in files mode a file, inside a full-window view. It is not a dialog. The setup assistant, Preferences > Workspaces and the Preferences keyboard section share it. It lists one folder at a time, and the person goes up, enters a folder or picks one. Its list grows with the window, with a floor and a ceiling.
+_Avoid_: file dialog, file picker (it is not the system dialog).
+
+**Location field**:
+The one text field of the **folder chooser**. With nothing typed, it shows the folder being browsed. Text that starts with `~`, is a full path, or holds a path separator is a path. Enter goes there. In files mode, a path to a file picks that file. Any other text is a filter. It ranks the listing by fuzzy match and selects the best match. `Choose this folder` and Ctrl+Enter choose a typed path, and otherwise the folder shown. From the moment the chooser opens, the field has the keyboard. A click on a row or on the list gives it back.
+_Avoid_: search box, address bar.
+
 ### GUI motion
 
 **Motion**:

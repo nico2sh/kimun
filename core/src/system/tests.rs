@@ -531,6 +531,21 @@ fn read_dir_lists_entries_as_absolute_paths() {
 }
 
 #[test]
+fn path_kind_tells_a_folder_a_file_and_a_missing_path_apart() {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("one.toml"), "").unwrap();
+    std::fs::create_dir(dir.path().join("two")).unwrap();
+    let root = SystemPath::try_absolute(dir.path()).unwrap();
+
+    assert_eq!(path_kind(&root.join("two")).unwrap(), Some(PathKind::Dir));
+    assert_eq!(
+        path_kind(&root.join("one.toml")).unwrap(),
+        Some(PathKind::File)
+    );
+    assert_eq!(path_kind(&root.join("nope")).unwrap(), None);
+}
+
+#[test]
 fn read_dir_reports_a_missing_directory() {
     let dir = tempfile::TempDir::new().unwrap();
     let missing = SystemPath::try_absolute(dir.path()).unwrap().join("nope");
@@ -741,4 +756,16 @@ fn create_dir_returns_an_absolute_normalized_path() {
 fn exe_name_follows_the_host() {
     assert_eq!(exe_name_for(Host::Unix, "nvim"), "nvim");
     assert_eq!(exe_name_for(Host::Windows, "nvim"), "nvim.exe");
+}
+
+#[test]
+fn home_relative_reads_only_the_home_marker() {
+    assert_eq!(home_relative("~"), Some(""));
+    assert_eq!(home_relative("~/notes"), Some("notes"));
+    assert_eq!(home_relative("~notes"), None);
+    assert_eq!(home_relative("a/~"), None);
+    assert_eq!(home_relative(""), None);
+    if cfg!(windows) {
+        assert_eq!(home_relative(r"~\notes"), Some("notes"));
+    }
 }

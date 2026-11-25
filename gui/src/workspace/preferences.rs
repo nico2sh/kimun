@@ -7,7 +7,8 @@
 //!
 //! **Layout.** A section list on the left (Workspaces, Appearance, Display,
 //! Sorting, Indexing, Editor, Server: the TUI's order, and like the TUI they
-//! open on Workspaces; then Remote images, which the TUI does not have),
+//! open on Workspaces; then Remote images and Keyboard, which the TUI does
+//! not have),
 //! the selected section's controls on the right, a
 //! footer with `Cancel` and `Save`. In a narrow window the section list
 //! becomes a row of section tabs above the controls, so the controls keep
@@ -21,6 +22,9 @@
 //!
 //! **Remote images** ([`remote_images`]) acts at once too: a removed host is
 //! written as it is removed, and the image cache is emptied as asked.
+//!
+//! **Keyboard** ([`keyboard`]) edits the draft like the other sections: its
+//! shortcut overrides are the model's, kept only when you save.
 //!
 //! **State.** The draft and its rules (ranges, steps, cycles, which settings
 //! the desktop app shows) are the logic `PreferencesModel`'s; this view
@@ -66,8 +70,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role,
-    ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    UniformListScrollHandle, Window, div, rems, uniform_list,
+    ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout_tree::RailPosition;
@@ -92,6 +96,7 @@ use super::note::Closing;
 use super::{LayoutStore, Workspace, reopen};
 use kimun_notes::logic::preferences::SavePlan;
 
+pub(crate) mod keyboard;
 pub(crate) mod remote_images;
 pub(crate) mod workspaces;
 use crate::input;
@@ -107,6 +112,8 @@ pub(crate) const KEEP_EDITING_ID: &str = "preferences-keep-editing";
 pub(crate) const DISCARD_ID: &str = "preferences-discard";
 /// The inline problem line (a failed save).
 pub(crate) const MESSAGE_ID: &str = "preferences-message";
+/// The selected section's scrolling pane.
+pub(crate) const CONTENT_ID: &str = "preferences-content";
 /// The section list.
 pub(crate) const SECTIONS_ID: &str = "preferences-sections";
 /// The controls.
@@ -193,10 +200,11 @@ pub(crate) enum Section {
     Editor,
     Server,
     RemoteImages,
+    Keyboard,
 }
 
 impl Section {
-    pub(crate) const ALL: [Section; 8] = [
+    pub(crate) const ALL: [Section; 9] = [
         Section::Workspaces,
         Section::Appearance,
         Section::Display,
@@ -205,6 +213,7 @@ impl Section {
         Section::Editor,
         Section::Server,
         Section::RemoteImages,
+        Section::Keyboard,
     ];
 
     fn title(self) -> &'static str {
@@ -217,6 +226,7 @@ impl Section {
             Section::Editor => "Editor",
             Section::Server => "Server",
             Section::RemoteImages => "Remote images",
+            Section::Keyboard => "Keyboard",
         }
     }
 
@@ -230,6 +240,7 @@ impl Section {
             Section::Editor => "editor",
             Section::Server => "server",
             Section::RemoteImages => "remote-images",
+            Section::Keyboard => "keyboard",
         }
     }
 
@@ -435,12 +446,17 @@ pub(crate) struct PreferencesView {
     /// The write under way: every control waits for it.
     saving: Option<Task<()>>,
     theme_scroll: UniformListScrollHandle,
+    /// The content pane's scroll. Only the Keyboard section moves it, to
+    /// bring its chooser into view at the foot of the page.
+    content_scroll: ScrollHandle,
     /// Preferences > Workspaces ([`workspaces`]).
     ws: workspaces::Workspaces,
     /// Preferences > Indexing, the reindex under way and its panels.
     index: workspaces::Indexing,
     /// Preferences > Remote images ([`remote_images`]).
     remote: remote_images::RemoteSection,
+    /// Preferences > Keyboard ([`keyboard`]).
+    keyboard: keyboard::KeyboardSection,
     _load: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -544,9 +560,17 @@ impl PreferencesView {
             confirm: None,
             saving: None,
             theme_scroll: UniformListScrollHandle::new(),
+            content_scroll: ScrollHandle::new(),
             ws: workspaces::Workspaces::new(cx.focus_handle().tab_stop(true)),
             index: workspaces::Indexing::new(),
             remote: remote_images::RemoteSection::new(cx.focus_handle().tab_stop(true)),
+            keyboard: keyboard::KeyboardSection::new(
+                cx.focus_handle(),
+                cx.focus_handle(),
+                keyboard::file::KeyFile::new(window, cx),
+                window,
+                cx,
+            ),
             _load: Some(load),
             _subscriptions: subscriptions,
         }
@@ -574,6 +598,7 @@ impl PreferencesView {
                 self.server_input
                     .update(cx, |input, cx| input.set_value(url, window, cx));
                 self.server_error = None;
+                self.keyboard_loaded(cx);
                 self.sync_font_choices(window, cx);
             }
             Err(e) => self.message = Some(format!("Couldn't read the preferences: {e}").into()),
@@ -763,6 +788,7 @@ impl PreferencesView {
         cx: &mut Context<Self>,
     ) {
         self.section = section;
+        self.keyboard.leave(window, cx);
         window.focus(&self.sections_focus, cx);
         if section == Section::Display {
             // The family dropdown's list: read once, in the background.
@@ -969,6 +995,7 @@ impl PreferencesView {
         if self.busy() {
             return;
         }
+        self.keyboard.stop_listening();
         if self.is_dirty() {
             self.confirm = Some(Discard { close_window });
             window.focus(&self.focus, cx);
@@ -1030,6 +1057,7 @@ impl PreferencesView {
     /// `Save` (Ctrl+S, Enter in the server field): write the settings with
     /// the draft applied, off the UI thread; see the module docs.
     pub(crate) fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keyboard.stop_listening();
         if !self.can_save() {
             return;
         }
@@ -1121,24 +1149,46 @@ impl PreferencesView {
 
     // ---- keys -------------------------------------------------------------
 
+    /// Whether a field of a chooser up (Workspaces, Keyboard) has the
+    /// keyboard: its Enter and Esc are the chooser's, which sees them after
+    /// these capture handlers.
+    pub(crate) fn chooser_field_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        [self.ws_chooser(), self.keyboard_chooser()]
+            .into_iter()
+            .flatten()
+            .any(|c| c.read(cx).field_focused(window, cx))
+    }
+
     /// Enter in the server field (the kit's action, seen first): Save.
     fn on_field_enter(&mut self, _: &Enter, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chooser_field_focused(window, cx) {
+            return;
+        }
         if self.server_focused(window, cx) {
             self.save(window, cx);
             cx.stop_propagation();
         } else if self.ws_field_focused(window, cx) {
             self.ws_field_enter(window, cx);
             cx.stop_propagation();
+        } else if self.keyboard_field_focused(window, cx) {
+            self.keyboard_field_enter(window, cx);
+            cx.stop_propagation();
         }
     }
 
     /// Esc in the server field: Cancel, as everywhere in the view.
     fn on_field_escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chooser_field_focused(window, cx) {
+            return;
+        }
         if self.server_focused(window, cx) {
             self.cancel(false, window, cx);
             cx.stop_propagation();
         } else if self.ws_field_focused(window, cx) {
             self.ws_field_escape(window, cx);
+            cx.stop_propagation();
+        } else if self.keyboard_field_focused(window, cx) {
+            self.keyboard_field_escape(window, cx);
             cx.stop_propagation();
         }
     }
@@ -1177,6 +1227,11 @@ impl PreferencesView {
             }
             return true;
         }
+        // The "Discard your changes?" ask shows in every section, so it
+        // answers the keys in every section, as `confirm` does. The Delete
+        // form and the full reindex question outlive a section switch but
+        // show only in their own section: they answer only there.
+        let on_workspaces = self.section == Section::Workspaces;
         if self.ws.ask.is_some() {
             match key.key {
                 Key::Esc => self.ask_keep(window, cx),
@@ -1185,7 +1240,7 @@ impl PreferencesView {
             }
             return true;
         }
-        if self.index.confirm_full {
+        if self.section == Section::Indexing && self.index.confirm_full {
             match key.key {
                 Key::Esc => self.full_cancel(window, cx),
                 Key::Enter if plain && on_root => self.full_confirm(window, cx),
@@ -1193,7 +1248,7 @@ impl PreferencesView {
             }
             return true;
         }
-        if matches!(self.ws.form, Some(workspaces::Form::Delete(_))) {
+        if on_workspaces && matches!(self.ws.form, Some(workspaces::Form::Delete(_))) {
             match key.key {
                 Key::Esc => self.ws_close_form(window, cx),
                 Key::Enter if plain && on_root => self.ws_delete_confirm(window, cx),
@@ -1201,21 +1256,41 @@ impl PreferencesView {
             }
             return true;
         }
+        // A Keyboard row that listens takes every key, Ctrl+S and Esc too.
+        if self.keyboard_capture(key, window, cx) {
+            return true;
+        }
         if primary && key.key == Key::Char('s') {
             self.save(window, cx);
             return true;
         }
-        if self.server_focused(window, cx) || self.ws_field_focused(window, cx) {
+        if self.server_focused(window, cx)
+            || self.ws_field_focused(window, cx)
+            || self.keyboard_field_focused(window, cx)
+        {
             return false;
         }
-        // The chooser up in Workspaces has the arrows, Enter and Esc.
-        if let Some(chooser) = self.ws_chooser()
-            && on_root
-        {
-            return chooser.update(cx, |c, cx| c.key(key, window, cx));
+        // The chooser of the section shown has the arrows, Enter and Esc. A
+        // Workspaces form outlives a section switch: its chooser, hidden,
+        // must not take the keys.
+        let chooser = match self.section {
+            Section::Workspaces => self.ws_chooser(),
+            Section::Keyboard => self.keyboard_chooser(),
+            _ => None,
+        };
+        if let Some(chooser) = chooser {
+            if on_root {
+                return chooser.update(cx, |c, cx| c.key(key, window, cx));
+            }
+            // Elsewhere (a chooser button): Esc is still the chooser's, which
+            // clears its text, then closes. Never the form or the view.
+            if key.key == Key::Esc {
+                chooser.update(cx, |c, cx| c.escape(window, cx));
+                return true;
+            }
         }
         if key.key == Key::Esc {
-            if self.ws.form.is_some() {
+            if on_workspaces && self.ws.form.is_some() {
                 self.ws_close_form(window, cx);
             } else {
                 self.cancel(false, window, cx);
@@ -2273,17 +2348,20 @@ impl PreferencesView {
                     Section::Editor => self.render_editor(model, window, cx),
                     Section::Server => self.render_server(cx),
                     Section::RemoteImages => self.render_remote_images(window, cx),
+                    Section::Keyboard => self.render_keyboard(cx),
                 },
             ),
         };
         div()
-            .id("preferences-content")
+            .id(CONTENT_ID)
+            .test_support()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.content_scroll)
             .child(
                 div()
                     .flex()
@@ -2347,6 +2425,13 @@ impl PreferencesView {
                 .text_xs()
                 .text_color(theme::muted(t))
                 .child("Enter: discard and go on · Esc: keep editing")
+                .into_any_element(),
+            (None, None) if self.keyboard.is_listening() => div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(theme::muted(t))
+                .child("Press the new shortcut · Esc: cancel")
                 .into_any_element(),
             (None, None) => div()
                 .flex_1()
@@ -2629,6 +2714,8 @@ impl Workspace {
     ///
     /// - which-key delay: read by every leader sequence as it starts;
     /// - the leader tree: rebuilt from the settings;
+    /// - the keymap: `[gui.keys]` loaded as at startup ([`crate::load_keymap`]),
+    ///   so a chord works or stops at once and the chord hints follow;
     /// - autosave interval: a running tick restarts on the new period;
     /// - sort defaults: FILES takes them (its folder re-sorts unless sorted
     ///   by hand);
@@ -2647,6 +2734,9 @@ impl Workspace {
         };
         let snapshot = settings.read().unwrap_or_else(|e| e.into_inner()).clone();
         self.leader.set_tree(snapshot.leader_tree());
+        // The saved `[gui.keys]` replace the keymap in effect; the views that
+        // derived chord hints from it follow through `keymap::observe`.
+        crate::keymap::init(cx, crate::rebuild_keymap(&snapshot));
         crate::apply_reduce_motion(snapshot.gui.reduce_motion(), cx);
         crate::editor_font::apply(&snapshot.gui, cx);
         // The saved position moves the rail in this window now; the next
