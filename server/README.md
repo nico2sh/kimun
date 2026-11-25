@@ -291,6 +291,14 @@ failures arrive as an `error` event.
 Job status: `queued` | `processing` | `completed` (with `result`) | `failed`
 (with `error`).
 
+While an indexing job embeds notes, the response also has a `progress` object:
+`{"done": 100, "total": 250}`. Both numbers count chunks, because the embedder
+works on chunks and the server only knows their number after it splits the
+notes. The field is absent for other jobs and before embedding starts. A note
+is stored only after all of its chunks are embedded, so a vault appears on the
+collections page when its job completes. The Jobs page of the web UI shows the
+same numbers in its Detail column.
+
 ## Web UI
 
 The server also renders a small admin UI at its root (`http://<host>:<port>/`) —

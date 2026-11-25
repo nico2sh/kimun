@@ -157,6 +157,10 @@ pub struct JobStatusResponse {
     pub status: String,
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
+    /// How far an indexing job has got, once it knows its amount of work.
+    /// Absent for other jobs and for a job that has not started embedding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::server_state::JobProgress>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,8 +223,24 @@ pub async fn index_docs_handler(
         // note as new and double-insert its chunks.
         let _index_guard = state_clone.index_lock.lock().await;
 
-        // Perform indexing
-        match rag.index(&collection, &request.docs).await {
+        // Perform indexing. Progress is best effort: the callback is sync, so it
+        // skips an update when the tracker is busy instead of waiting for it.
+        let tracker = state_clone.job_tracker.clone();
+        let on_progress = move |p: crate::IndexProgress| {
+            if let Ok(mut tracker) = tracker.try_lock() {
+                tracker.set_progress(
+                    &job_id,
+                    crate::server_state::JobProgress {
+                        done: p.done,
+                        total: p.total,
+                    },
+                );
+            }
+        };
+        match rag
+            .index_with_progress(&collection, &request.docs, &on_progress)
+            .await
+        {
             Ok(stats) => {
                 let result = serde_json::json!({
                     "indexed": stats.indexed,
@@ -507,6 +527,12 @@ pub async fn job_status_handler(
         .get(&job_id)
         .ok_or_else(|| RagError::NotFound(format!("Job {} not found", job_id_str)))?;
 
+    Ok(Json(job_response(job_id_str, job)))
+}
+
+/// The status body for one job: its result or error once it ended, and its
+/// progress while it is known.
+fn job_response(job_id: String, job: &crate::server_state::Job) -> JobStatusResponse {
     let (result, error) = match &job.status {
         JobStatus::Completed => (
             job.result
@@ -518,12 +544,13 @@ pub async fn job_status_handler(
         JobStatus::Queued | JobStatus::Processing => (None, None),
     };
 
-    Ok(Json(JobStatusResponse {
-        job_id: job_id_str,
+    JobStatusResponse {
+        job_id,
         status: job.status.as_str().to_string(),
         result,
         error,
-    }))
+        progress: job.progress,
+    }
 }
 
 #[cfg(test)]
@@ -599,6 +626,35 @@ mod tests {
         assert_eq!(resolve_today(Some(day(2040, 1, 1)), server), server);
         assert_eq!(resolve_today(Some(chrono::NaiveDate::MIN), server), server);
         assert_eq!(resolve_today(Some(chrono::NaiveDate::MAX), server), server);
+    }
+
+    #[test]
+    fn job_response_carries_progress_while_a_job_runs() {
+        let mut tracker = crate::server_state::JobTracker::new();
+        let id = Uuid::new_v4();
+        tracker.create(id, JobStatus::Processing);
+        tracker.set_progress(
+            &id,
+            crate::server_state::JobProgress {
+                done: 100,
+                total: 250,
+            },
+        );
+        let body =
+            serde_json::to_value(job_response(id.to_string(), tracker.get(&id).unwrap())).unwrap();
+        assert_eq!(body["status"], "processing");
+        assert_eq!(body["progress"]["done"], 100);
+        assert_eq!(body["progress"]["total"], 250);
+    }
+
+    #[test]
+    fn job_response_omits_progress_when_there_is_none() {
+        let mut tracker = crate::server_state::JobTracker::new();
+        let id = Uuid::new_v4();
+        tracker.create(id, JobStatus::Queued);
+        let body =
+            serde_json::to_value(job_response(id.to_string(), tracker.get(&id).unwrap())).unwrap();
+        assert!(body.get("progress").is_none());
     }
 
     #[test]
