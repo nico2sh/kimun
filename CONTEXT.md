@@ -439,7 +439,7 @@ A **chord** of an action that differs from the **GUI**'s default for it, includi
 _Avoid_: custom binding, remap.
 
 **Keymap file**:
-The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding one line per action: an export writes every bindable action, defaults included, and an import may hold only some. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
+The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding one line per action: an export writes every bindable action, defaults included, and an import may hold only some. It names the system that wrote it in a top-level `platform` line (`macos`, `linux` or `windows`); the default export name carries it too, but only the line counts. An import from the other family (macOS against Linux and Windows) skips every line that equals that system's defaults and reports one count. A file with no line, or an unknown one, imports in full. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
 _Avoid_: keymap (that is the whole table in effect, defaults included), profile.
 
 **Folder chooser**:

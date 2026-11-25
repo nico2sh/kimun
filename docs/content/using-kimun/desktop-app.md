@@ -313,10 +313,10 @@ Below the list, the Keymap file area has two parts. You can save your changes to
 
 To export:
 
-1. Check the path in the Export field. It starts as `kimun-keys.toml` in your home folder.
+1. Check the path in the Export field. It starts as `kimun-keys-<system>.toml` in your home folder, where `<system>` is `macos`, `linux` or `windows`.
 2. Click `Export`.
 
-The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder with the [folder chooser](#the-folder-chooser). If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds every shortcut, the default ones too. If a later version changes a default, importing the old file brings back your shortcut. If a line in the file uses a chord that another action holds now, the import takes it from that action and tells you which one lost it.
+The path must be a full path or start with `~`. Click `Choose folder…` to pick the folder with the [folder chooser](#the-folder-chooser). If the folder in the path does not exist, Kimün creates it. Export replaces a file with the same name and does not ask first. The file holds every shortcut, the default ones too. It starts with a `platform` line that names your system. If a later version changes a default, importing the old file brings back your shortcut. If a line in the file uses a chord that another action holds now, the import takes it from that action and tells you which one lost it.
 
 To import:
 
@@ -325,7 +325,7 @@ To import:
 
 The path must be a full path or start with `~`. The `Choose file…` button opens the same chooser. Import fills the list with the shortcuts of the file. It replaces your unsaved changes. Click `Save` to keep them. Click `Cancel` to throw them away.
 
-Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. A line takes its shortcut from the action that has it now, as the Change button does. A default shortcut of another action counts too. Kimün lists each shortcut it took and the action that lost it, and Save makes the loss permanent. If two lines ask for the same shortcut, the later line in the file, in action order, gets it. A line replaces all the default shortcuts of its action.
+Kimün shows how many changes it loaded. It lists each line or shortcut it skipped and gives the reason. A line takes its shortcut from the action that has it now, as the Change button does. A default shortcut of another action counts too. Kimün lists each shortcut it took and the action that lost it, and Save makes the loss permanent. If two lines ask for the same shortcut, the later line in the file, in action order, gets it. A line replaces all the default shortcuts of its action. If the file comes from macOS and you import it on Linux or Windows, or the other way round, Kimün skips each line that equals the default of the system that wrote the file. It tells you how many lines it skipped. Only the shortcuts you changed come across. Linux and Windows share one set of defaults, so a file between them keeps every line. Kimün reads the `platform` line and not the file name. A file with no `platform` line, or with one Kimün does not know, imports in full.
 
 A keymap file looks like this:
 

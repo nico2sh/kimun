@@ -2,7 +2,7 @@
 //! ([`crate::keymap::file`], ADR-0064).
 //!
 //! - **Export** writes every shortcut of the draft, defaults too, to the path in its field
-//!   (`kimun-keys.toml` in the home folder at first) and says where, or why
+//!   (`kimun-keys-<system>.toml` in the home folder at first) and says where, or why
 //!   not. `Choose folder…` opens the [`FolderChooser`]; the folder chosen
 //!   goes before the field's file name.
 //! - **Import** reads the path in its field. `Choose file…` opens the
@@ -74,7 +74,12 @@ pub(crate) const FILE_NOTE: &str =
     "Export saves your changed shortcuts to a file. Import loads a file in their place.";
 
 /// The file name Export starts with, in the home folder.
-const FILE_NAME: &str = "kimun-keys.toml";
+/// The default file name: it names the system, so a file shared between
+/// systems says where it came from. The import reads the label inside the
+/// file, never this name.
+pub(crate) fn file_name() -> String {
+    format!("kimun-keys-{}.toml", crate::keymap::file::os_label())
+}
 /// The extension the files mode of the chooser lists.
 const EXTENSION: &str = "toml";
 
@@ -107,10 +112,10 @@ pub(crate) struct KeyFile {
 }
 
 impl KeyFile {
-    /// The two fields, Export's on `kimun-keys.toml` in the home folder.
+    /// The two fields, Export's on `kimun-keys-<system>.toml` in the home folder.
     pub(crate) fn new(window: &mut Window, cx: &mut Context<PreferencesView>) -> Self {
         let start = system::browse_root()
-            .map(|home| system::path_to_string(home.join(FILE_NAME)))
+            .map(|home| system::path_to_string(home.join(file_name())))
             .unwrap_or_default();
         let export_input = cx.new(|cx| {
             InputState::new(window, cx)
@@ -180,6 +185,17 @@ fn loaded(n: usize) -> String {
     }
 }
 
+/// The line for the lines left out of a file from the other family of
+/// systems.
+fn other_defaults_line(count: usize, system: &str) -> String {
+    let (lines, verb) = if count == 1 {
+        ("line", "matches")
+    } else {
+        ("lines", "match")
+    };
+    format!("Skipped {count} {lines} that {verb} the {system} defaults.")
+}
+
 /// One line for what the loader skipped, with the names as the file has
 /// them.
 fn skipped(error: &KeymapError) -> String {
@@ -206,7 +222,8 @@ fn export_to(
 ) -> Result<(), String> {
     if path.is_dir() {
         return Err(format!(
-            "This is a folder. Add a file name, such as {FILE_NAME}."
+            "This is a folder. Add a file name, such as {}.",
+            file_name()
         ));
     }
     write_file(path, overrides).map_err(|e| format!("Couldn't save the file: {e}"))
@@ -389,7 +406,7 @@ impl PreferencesView {
                 let name = typed_path(&self.keyboard.file.export_input, cx)
                     .ok()
                     .and_then(|p| p.as_path().file_name().map(|n| n.to_os_string()))
-                    .unwrap_or_else(|| FILE_NAME.into());
+                    .unwrap_or_else(|| file_name().into());
                 Some(dir.join(name))
             }
             (Target::Import, FolderChooserEvent::ChosenFile(path)) => Some(path.clone()),
@@ -499,6 +516,9 @@ impl PreferencesView {
         };
         let taken = draft.replace(&imported.overrides);
         let mut lines: Vec<SharedString> = vec![loaded(draft.changes()).into()];
+        if let Some((count, system)) = imported.other_defaults {
+            lines.push(other_defaults_line(count, system).into());
+        }
         lines.extend(imported.dropped.iter().map(|e| skipped(e).into()));
         self.keyboard.lines.clear();
         self.keyboard.forget_kept();

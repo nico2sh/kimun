@@ -1757,7 +1757,9 @@ mod file {
         let rt = runtime();
         let _guard = rt.enter();
         let (_v, s) = keyboard(cx, &rt);
-        let home = system::browse_root().unwrap().join("kimun-keys.toml");
+        let home = system::browse_root()
+            .unwrap()
+            .join(super::super::preferences::keyboard::file::file_name());
         assert_eq!(path_text(&s, true, cx), system::path_to_string(&home));
         change(&s, &A::OpenNote, "ctrl-e", cx);
         let (_tmp, dir) = folder();
@@ -1781,8 +1783,11 @@ mod file {
         set_path(&s, true, &dir, cx);
         run(&s, &rt, EXPORT_ID, cx);
         assert_eq!(
-            label(&s, EXPORT_NOTICE_ID, cx).as_deref(),
-            Some("This is a folder. Add a file name, such as kimun-keys.toml.")
+            label(&s, EXPORT_NOTICE_ID, cx),
+            Some(format!(
+                "This is a folder. Add a file name, such as {}.",
+                super::super::preferences::keyboard::file::file_name()
+            ))
         );
         // Reset all takes the result line away.
         click(&s, RESET_ALL_ID, cx);
@@ -1795,8 +1800,11 @@ mod file {
         set_path(&s, true, Path::new("~"), cx);
         run(&s, &rt, EXPORT_ID, cx);
         assert_eq!(
-            label(&s, EXPORT_NOTICE_ID, cx).as_deref(),
-            Some("This is a folder. Add a file name, such as kimun-keys.toml.")
+            label(&s, EXPORT_NOTICE_ID, cx),
+            Some(format!(
+                "This is a folder. Add a file name, such as {}.",
+                super::super::preferences::keyboard::file::file_name()
+            ))
         );
         // A path that is not a full path.
         set_path(&s, true, Path::new("keys.toml"), cx);
@@ -1868,6 +1876,31 @@ mod file {
         );
         let notice = label(&s, IMPORT_NOTICE_ID, cx).unwrap();
         assert!(!notice.contains("Skipped"), "{notice}");
+        settle(&rt, cx);
+    }
+
+    /// A file from the other family: the lines that equal that system's
+    /// defaults are left out, and one line says how many.
+    #[gpui_kit::test]
+    fn import_from_another_system_counts_the_skipped_defaults(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = keyboard(cx, &rt);
+        let (_tmp, dir) = folder();
+        let path = dir.join("keys.toml");
+        std::fs::write(
+            &path,
+            "platform = \"macos\"\n[keys]\nToggleSidebar = [\"primary+alt+l\"]\n\
+             OpenNote = [\"primary+alt+o\"]\n",
+        )
+        .unwrap();
+        set_path(&s, false, &path, cx);
+        run(&s, &rt, IMPORT_ID, cx);
+        assert_eq!(overrides(&s, cx), [entry("OpenNote", &["primary+alt+o"])]);
+        assert_eq!(
+            label(&s, IMPORT_NOTICE_ID, cx).as_deref(),
+            Some("Loaded 1 change. Skipped 1 line that matches the macOS defaults.")
+        );
         settle(&rt, cx);
     }
 
