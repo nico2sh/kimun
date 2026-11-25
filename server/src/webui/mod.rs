@@ -171,6 +171,49 @@ provider = "gemini"
     }
 
     #[tokio::test]
+    async fn jobs_fragment_shows_the_progress_of_a_running_job() {
+        let st = state(None, None);
+        let id = uuid::Uuid::new_v4();
+        {
+            let mut tracker = st.job_tracker.lock().await;
+            tracker.create(id, crate::server_state::JobStatus::Processing);
+            tracker.set_progress(
+                &id,
+                crate::server_state::JobProgress {
+                    done: 100,
+                    total: 250,
+                },
+            );
+        }
+        let resp = app(st)
+            .oneshot(Request::get("/jobs/fragment").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_text(resp).await;
+        assert!(
+            body.contains("Embedding 100 of 250 chunks (40%)"),
+            "progress line missing: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn jobs_fragment_shows_a_dash_for_a_job_without_progress() {
+        let st = state(None, None);
+        st.job_tracker.lock().await.create(
+            uuid::Uuid::new_v4(),
+            crate::server_state::JobStatus::Processing,
+        );
+        let resp = app(st)
+            .oneshot(Request::get("/jobs/fragment").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_text(resp).await;
+        assert!(!body.contains("Embedding"), "{body}");
+        assert!(body.contains("—"), "{body}");
+    }
+
+    #[tokio::test]
     async fn collections_page_lists_store_collections() {
         let app = app(state(None, None));
         let resp = app

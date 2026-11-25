@@ -551,6 +551,20 @@ impl KimunRag {
         collection: &CollectionKey,
         docs: &[KimunDoc],
     ) -> Result<IndexStats, RagError> {
+        self.index_with_progress(collection, docs, &|_| {}).await
+    }
+
+    /// [`index`](Self::index) that also reports its embedding progress. Once
+    /// the chunks that need an embedding are known, `on_progress` is called
+    /// with `0` of that total, then again after each batch. It is never
+    /// called when nothing needs embedding. The callback is synchronous and
+    /// must not block.
+    pub async fn index_with_progress(
+        &self,
+        collection: &CollectionKey,
+        docs: &[KimunDoc],
+        on_progress: &(dyn Fn(IndexProgress) + Send + Sync),
+    ) -> Result<IndexStats, RagError> {
         self.check_fingerprint().await?;
         let indexed_notes = self.store.indexed_notes(collection.as_str()).await?;
         debug!(
@@ -631,6 +645,11 @@ impl KimunRag {
         // client's reconcile re-pushes them (self-healing), while a partial
         // store at the new hash would read as complete (hash == hash) and the
         // missing chunks would never be repaired.
+        let total = to_embed.len();
+        let mut done = 0;
+        if total > 0 {
+            on_progress(IndexProgress { done, total });
+        }
         for batch in to_embed.chunks(EMBED_BATCH) {
             let embeddings = self.embedder.generate_embeddings(batch).await?;
             if embeddings.len() != batch.len() {
@@ -649,6 +668,8 @@ impl KimunRag {
                         vector,
                     }),
             );
+            done += batch.len();
+            on_progress(IndexProgress { done, total });
         }
 
         // Store per note, and each store() call is atomic in both backends
@@ -966,6 +987,13 @@ pub async fn enforce_embedder_fingerprint(
             Ok(false)
         }
     }
+}
+
+/// How far an index pass has got: `done` of `total` chunks embedded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexProgress {
+    pub done: usize,
+    pub total: usize,
 }
 
 /// Statistics from indexing operation
@@ -1988,6 +2016,45 @@ mod tests {
         assert_eq!(stats.skipped, 1);
         assert_eq!(stats.updated, 1);
         assert_eq!(stats.indexed, 1);
+    }
+
+    #[tokio::test]
+    async fn index_reports_embedding_progress_per_batch() {
+        // 250 one-chunk notes embed in batches of EMBED_BATCH (100): the pass
+        // reports 0 of 250 once the work is known, then after each batch.
+        let rag = rag(FakeVectorStore::default(), false);
+        let docs: Vec<KimunDoc> = (0..250)
+            .map(|i| doc(&format!("n{i}.md"), "h", &format!("text {i}")))
+            .collect();
+        let seen = std::sync::Mutex::new(Vec::new());
+        rag.index_with_progress(&key("v"), &docs, &|p| seen.lock().unwrap().push(p))
+            .await
+            .unwrap();
+
+        let total = 250;
+        let expected: Vec<IndexProgress> = [0, 100, 200, 250]
+            .into_iter()
+            .map(|done| IndexProgress { done, total })
+            .collect();
+        assert_eq!(seen.into_inner().unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn index_reports_no_progress_when_nothing_needs_embedding() {
+        // Every note is already stored at the same hash: nothing is embedded,
+        // so there is no progress to report.
+        let store = FakeVectorStore {
+            notes: [note("a.md", "h1")].into(),
+            ..Default::default()
+        };
+        let rag = rag(store, false);
+        let seen = std::sync::Mutex::new(Vec::new());
+        rag.index_with_progress(&key("v"), &[doc("a.md", "h1", "alpha")], &|p| {
+            seen.lock().unwrap().push(p)
+        })
+        .await
+        .unwrap();
+        assert!(seen.into_inner().unwrap().is_empty());
     }
 
     #[tokio::test]

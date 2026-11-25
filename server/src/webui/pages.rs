@@ -228,6 +228,7 @@ async fn jobs_table(state: &AppState) -> Markup {
                             td .snippet {
                                 @if let Some(err) = &job.error { (err) }
                                 @else if let Some(res) = &job.result { (truncate(res, 160)) }
+                                @else if let Some(progress) = &job.progress { (progress.label()) }
                                 @else { "—" }
                             }
                         }

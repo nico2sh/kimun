@@ -7,7 +7,7 @@
 //! merged list, so each `[n]` citation points into the sources of the answer.
 //! A model or endpoint that cannot call tools gets the single-pass answer.
 
-use chrono::{Duration, NaiveDate};
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use serde_json::Value;
 
 use crate::document::JOURNAL_SOURCE;
@@ -364,13 +364,75 @@ fn first_message(
     )
 }
 
+/// The dates a model needs to turn a time phrase into a range, worked out
+/// from `today` so the model copies them and never does calendar arithmetic.
+/// Every step falls back to `today` at the calendar's ends, so it never panics.
+fn date_guide(today: NaiveDate) -> String {
+    let fmt = |d: NaiveDate| d.format("%Y-%m-%d").to_string();
+    let days_back = |n: i64| today.checked_sub_signed(Duration::days(n)).unwrap_or(today);
+    let yesterday = days_back(1);
+    let week_from = days_back(7);
+    let two_weeks_from = days_back(14);
+    let week_start = days_back(i64::from(today.weekday().num_days_from_monday()));
+    let month_start = today.with_day(1).unwrap_or(today);
+    let last_month_end = month_start.pred_opt().unwrap_or(today);
+    let last_month_start = last_month_end.with_day(1).unwrap_or(today);
+    let year_start = NaiveDate::from_ymd_opt(today.year(), 1, 1).unwrap_or(today);
+    let last_year = today.year() - 1;
+    let last_year_start = NaiveDate::from_ymd_opt(last_year, 1, 1).unwrap_or(today);
+    let last_year_end = NaiveDate::from_ymd_opt(last_year, 12, 31).unwrap_or(today);
+
+    // "Last Monday" is the most recent Monday strictly before today, so a
+    // weekday that is today itself maps to seven days back.
+    let weekdays = [
+        ("Monday", Weekday::Mon),
+        ("Tuesday", Weekday::Tue),
+        ("Wednesday", Weekday::Wed),
+        ("Thursday", Weekday::Thu),
+        ("Friday", Weekday::Fri),
+        ("Saturday", Weekday::Sat),
+        ("Sunday", Weekday::Sun),
+    ]
+    .map(|(name, day)| {
+        let ahead = i64::from(today.weekday().num_days_from_monday())
+            - i64::from(day.num_days_from_monday());
+        let back = if ahead <= 0 { ahead + 7 } else { ahead };
+        format!("{name} {}", fmt(days_back(back)))
+    })
+    .join(", ");
+
+    format!(
+        "Work out date ranges from today's date, and state in the answer the range you used.\n\
+A period with a length is a clear range: \"the last N days\" or \"the last N weeks\" is the N full days ending yesterday, where a week is 7 days. For another number of days or weeks, count back from yesterday in the same way. For today's date these are:\n\
+- yesterday: {yesterday}\n\
+- the last week: {week_from} to {yesterday}; the last two weeks: {two_weeks_from} to {yesterday}\n\
+- this week (from Monday): {week_start} to {today}\n\
+- this month: {month_start} to {today}; last month: {last_month_start} to {last_month_end}\n\
+- this year: {year_start} to {today}; last year: {last_year_start} to {last_year_end}\n\
+- last <weekday>, the most recent such day before today: {weekdays}\n\
+A period with a name is used as named: a date, a month or a year (\"in March\"), resolved from today's date.\n\
+Use the range of the last week as the default only when the period is vague, for example \"recently\" or \"lately\". Never say that no range was given when the question names a period.\n\
+Search the whole period in one search. Do not start with a shorter range and then widen it. In the answer, name the period the user asked for together with its dates exactly as listed here, for example \"the last two weeks ({two_weeks_from} to {yesterday})\", and never attach the dates of one period to the name of another.",
+        yesterday = fmt(yesterday),
+        week_from = fmt(week_from),
+        two_weeks_from = fmt(two_weeks_from),
+        week_start = fmt(week_start),
+        today = fmt(today),
+        month_start = fmt(month_start),
+        last_month_start = fmt(last_month_start),
+        last_month_end = fmt(last_month_end),
+        year_start = fmt(year_start),
+        last_year_start = fmt(last_year_start),
+        last_year_end = fmt(last_year_end),
+    )
+}
+
 /// The system prompt: today's date, how to use the tools, and the citation
 /// and disclosure rules of the single-pass prompt.
 fn system_prompt(today: NaiveDate, mid_conversation: bool) -> String {
     let today_line = today_line(today);
     // Panic-free at the calendar's ends: fall back to `today`.
-    let week_from = today.checked_sub_signed(Duration::days(7)).unwrap_or(today);
-    let week_to = today.checked_sub_signed(Duration::days(1)).unwrap_or(today);
+    let date_guide = date_guide(today);
     let followup = if mid_conversation {
         FOLLOWUP_INSTRUCTION
     } else {
@@ -380,7 +442,7 @@ fn system_prompt(today: NaiveDate, mid_conversation: bool) -> String {
         r#"You are an intelligent assistant with access to a personal knowledge base of the user's notes.
 Today is {today_line}.
 The user's message holds the question and the numbered results of a first search of the notes. Answer from them when they are enough. When they are not, use the tools to look further: search again (with a date range for questions about a period of time, a folder or tags), list the date keys, read a whole note or one of its sections, or find the notes linked to or from a note. Look only as far as the question needs.
-When the question names a period whose range is not clear (for example "last week" or "recently"), prefer the previous seven full days ending yesterday ({week_from} to {week_to}), and state in the answer the range you used.
+{date_guide}
 {followup}Every claim drawn from the notes MUST carry an inline citation in the form [n], where n is the number of the supporting note entry, from the first search or from a tool result. A sentence may carry several citations. Cite only numbers you were shown.
 You may supplement with accurate, widely accepted common knowledge when the notes fall short. Start each such passage with the label "{MODEL_ONLY_LABEL}" and never cite [n] for it.
 Preserve any [[wikilinks]] and #tags that appear in the notes verbatim when you quote or reference them.
@@ -1026,6 +1088,129 @@ mod tests {
             "the default range is the seven days ending yesterday: {system}"
         );
         assert!(system.contains("[n]"), "{system}");
+    }
+
+    #[test]
+    fn the_date_guide_gives_a_range_for_every_common_phrase() {
+        // Reported bug: "the last two weeks" was answered with the seven-day
+        // default and the claim that no range was specified. The guide now
+        // spells out each common phrase for a known today (Wednesday).
+        let today = NaiveDate::from_ymd_opt(2026, 11, 25).unwrap();
+        let system = system_prompt(today, false);
+        for (what, expected) in [
+            ("yesterday", "yesterday: 2026-11-24"),
+            ("the last week", "2026-11-18 to 2026-11-24"),
+            ("the last two weeks", "2026-11-11 to 2026-11-24"),
+            (
+                "this week, from Monday",
+                "this week (from Monday): 2026-11-23 to 2026-11-25",
+            ),
+            ("this month", "this month: 2026-11-01 to 2026-11-25"),
+            ("last month", "last month: 2026-10-01 to 2026-10-31"),
+            ("this year", "this year: 2026-01-01 to 2026-11-25"),
+            ("last year", "last year: 2025-01-01 to 2025-12-31"),
+            ("last Monday", "Monday 2026-11-23"),
+            ("last Tuesday", "Tuesday 2026-11-24"),
+            // Today is a Wednesday: "last Wednesday" is a week ago, not today.
+            ("last Wednesday", "Wednesday 2026-11-18"),
+            ("last Thursday", "Thursday 2026-11-19"),
+            ("last Friday", "Friday 2026-11-20"),
+            ("last Saturday", "Saturday 2026-11-21"),
+            ("last Sunday", "Sunday 2026-11-22"),
+        ] {
+            assert!(
+                system.contains(expected),
+                "{what}: missing '{expected}' in {system}"
+            );
+        }
+        assert!(
+            system.contains("A period with a length is a clear range"),
+            "{system}"
+        );
+        assert!(
+            system.contains("only when the period is vague"),
+            "the default must be limited to vague periods: {system}"
+        );
+        assert!(
+            !system.contains("range is not clear"),
+            "the old rule that invited the default for named periods is gone: {system}"
+        );
+    }
+
+    #[test]
+    fn the_guide_names_each_period_with_its_own_dates_and_does_not_repeat_the_default() {
+        // Reported answer: it called 2026-11-18 to 2026-11-24 "the last two
+        // weeks", then added the earlier week as a "wider window". The seven
+        // days must appear once, tied to "the last week", and the model must
+        // be told to search the whole period at once and to pair each period
+        // name with its own dates.
+        let today = NaiveDate::from_ymd_opt(2026, 11, 25).unwrap();
+        let system = system_prompt(today, false);
+        assert_eq!(
+            system.matches("2026-11-18 to 2026-11-24").count(),
+            1,
+            "the seven-day dates must not be repeated as a second anchor: {system}"
+        );
+        assert!(
+            system.contains("Search the whole period in one search"),
+            "{system}"
+        );
+        assert!(
+            system.contains("never attach the dates of one period to the name of another"),
+            "{system}"
+        );
+        assert!(
+            system.contains("the last two weeks (2026-11-11 to 2026-11-24)"),
+            "the example in the rule uses the real dates: {system}"
+        );
+    }
+
+    #[test]
+    fn last_weekday_is_always_strictly_before_today() {
+        // Every weekday of one week: the date given for "last <today's own
+        // weekday>" is exactly seven days back, never today.
+        for offset in 0..7 {
+            let today = NaiveDate::from_ymd_opt(2026, 11, 23).unwrap() + Duration::days(offset);
+            let system = system_prompt(today, false);
+            let name = today.format("%A").to_string();
+            let a_week_ago = (today - Duration::days(7)).format("%Y-%m-%d").to_string();
+            assert!(
+                system.contains(&format!("{name} {a_week_ago}")),
+                "{today} ({name}): {system}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_guide_handles_month_and_year_edges() {
+        // January: "last month" is December of the year before.
+        let jan = system_prompt(NaiveDate::from_ymd_opt(2026, 1, 5).unwrap(), false);
+        assert!(
+            jan.contains("last month: 2025-12-01 to 2025-12-31"),
+            "{jan}"
+        );
+        // March after a leap year: February has 29 days.
+        let mar = system_prompt(NaiveDate::from_ymd_opt(2028, 3, 2).unwrap(), false);
+        assert!(
+            mar.contains("last month: 2028-02-01 to 2028-02-29"),
+            "{mar}"
+        );
+        // A Monday: "this week" is just today.
+        let monday = system_prompt(NaiveDate::from_ymd_opt(2026, 11, 23).unwrap(), false);
+        assert!(
+            monday.contains("this week (from Monday): 2026-11-23 to 2026-11-23"),
+            "{monday}"
+        );
+    }
+
+    #[test]
+    fn the_date_guide_is_panic_free_at_the_calendar_ends() {
+        // Same guarantee as `system_prompt_survives_the_calendar_ends`, for
+        // every worked range in the guide.
+        let min = system_prompt(NaiveDate::MIN, false);
+        let max = system_prompt(NaiveDate::MAX, false);
+        assert!(min.contains("A period with a length is a clear range"));
+        assert!(max.contains("A period with a length is a clear range"));
     }
 
     #[tokio::test]
