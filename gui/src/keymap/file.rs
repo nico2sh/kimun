@@ -1,14 +1,14 @@
-//! The standalone keymap file (ADR-0064): a top-level `[keys]` table of
-//! overrides only, action name to a list of chords as written. An empty list
-//! means "no shortcut". Pure text in and out, headless-testable.
+//! The standalone keymap file (ADR-0064): a top-level `[keys]` table, action
+//! name to a list of chords as written. An export writes every bindable action,
+//! an imported file may hold only some. An empty list means "no shortcut". Pure
+//! text in and out, headless-testable.
 //!
-//! **Import never steals.** A hand-edited or imported file keeps the
-//! loader's rule: a chord stays with the action that holds it. Defaults bind
-//! first, then overrides in action order (not file order), so a line also
-//! loses to another action's default. Only the clashing chord is dropped,
-//! not the whole line. What the loader drops is reported in
-//! [`Imported::dropped`](crate::keymap::file::Imported::dropped); the rest is kept. Only text that is not TOML, or
-//! has no `[keys]` table, is a [`FileError`](crate::keymap::file::FileError).
+//! **Import takes the chord.** A line of an imported file binds its chord as an
+//! interactive edit does: the action that holds it, by default or in an earlier
+//! line, loses it (`KeyDraft::replace`, which reports each take). This file
+//! module only reads: [`Imported::dropped`](crate::keymap::file::Imported::dropped)
+//! lists what the loader cannot read (unknown actions, bad chords). Text that is
+//! not TOML, or has no `[keys]` table, is a [`FileError`](crate::keymap::file::FileError).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -49,10 +49,10 @@ pub(crate) struct Imported {
     /// The overrides as written, less what the loader could not read: an
     /// unknown action goes, and so does a chord that does not parse (an
     /// action left with none keeps an empty list, which the loader reads
-    /// the same). A chord dropped for a clash stays: the loader drops it
-    /// again on every load, and the row then shows what it got.
+    /// the same). A chord that clashes stays: the draft gives it to the
+    /// line that names it.
     pub(crate) overrides: BTreeMap<String, Vec<String>>,
-    /// What the loader rejected: unknown actions, bad chords, clashes.
+    /// What the loader rejected: unknown actions and bad chords.
     pub(crate) dropped: Vec<KeymapError>,
 }
 
@@ -83,7 +83,7 @@ pub(crate) fn import(text: &str, platform: Platform) -> Result<Imported, FileErr
         return Err(FileError::NoKeysTable);
     };
     let mut overrides = read_keys(keys);
-    let (_, dropped) = Keymap::load(platform, &overrides);
+    let (_, mut dropped) = Keymap::load(platform, &overrides);
     for error in &dropped {
         match error {
             KeymapError::UnknownAction { name } => {
@@ -101,6 +101,9 @@ pub(crate) fn import(text: &str, platform: Platform) -> Result<Imported, FileErr
             KeymapError::Collision { .. } => {}
         }
     }
+    // A clash is no loss: the draft gives the chord to the line that
+    // names it (`KeyDraft::replace`) and reports whom it took it from.
+    dropped.retain(|e| !matches!(e, KeymapError::Collision { .. }));
     Ok(Imported { overrides, dropped })
 }
 

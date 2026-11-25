@@ -435,11 +435,11 @@ One key plus its modifiers, as the **GUI** keymap binds it to an action (`primar
 _Avoid_: shortcut (the user-facing word for the same thing), binding (it also names the chord-to-action pair).
 
 **Shortcut override**:
-A **chord** of an action that differs from the **GUI**'s default for it, including no chord at all. Cleared actions count: an action that lost its chord to another action is an override with no chord, so that the loss survives a reload. An action whose default is no chord has nothing to clear. Only an interactive edit in Preferences can take a chord from another action whose scope overlaps. A hand-edited file or an imported **keymap file** never takes a chord: the action that holds a chord keeps it (defaults bind first, then overrides in action order, not file order), and the chord asked for elsewhere is dropped and reported. The rest of that line is kept.
+A **chord** of an action that differs from the **GUI**'s default for it, including no chord at all. Cleared actions count: an action that lost its chord to another action is an override with no chord, so that the loss survives a reload. An action whose default is no chord has nothing to clear. Only an interactive edit in Preferences can take a chord from another action whose scope overlaps. An imported **keymap file** takes chords the same way: each line takes its chord from the action that holds it, and the import reports each take. A hand-edited file never takes a chord: the action that holds a chord keeps it (defaults bind first, then overrides in action order, not file order), and the chord asked for elsewhere is dropped and reported. The rest of that line is kept.
 _Avoid_: custom binding, remap.
 
 **Keymap file**:
-The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding only the **shortcut overrides**, one line per action. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
+The standalone TOML file Preferences exports and imports: a top-level `[keys]` table holding one line per action: an export writes every bindable action, defaults included, and an import may hold only some. Import replaces the whole set of overrides in the Preferences draft, and nothing is kept until Save.
 _Avoid_: keymap (that is the whole table in effect, defaults included), profile.
 
 **Folder chooser**:
