@@ -11,7 +11,7 @@
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, ScrollDelta, TestAppContext, point};
 use kimun_notes::logic::actions::ActionShortcuts as A;
-use kimun_notes::logic::input::KeyInput;
+use kimun_notes::logic::input::{Key, KeyInput, Mods};
 use kimun_notes::logic::layout::Dir;
 use kimun_notes::logic::nav::DrawerView;
 use tokio::runtime::Runtime;
@@ -55,6 +55,16 @@ fn label(
     })
     .unwrap()
     .map(|text| spelled(&text))
+}
+
+/// Filter `text` as the rows read on this host: on a Mac `Ctrl+` is `⌃`,
+/// the glyph the rows are searched by (see [`spelled`]).
+fn typed(text: &str) -> String {
+    if cfg!(target_os = "macos") {
+        text.replace("Ctrl+", "⌃").replace("ctrl+", "⌃")
+    } else {
+        text.to_string()
+    }
 }
 
 /// `text` with the macOS key glyphs written out (`⌃⇧E` as `Ctrl+Shift+E`).
@@ -177,7 +187,7 @@ fn keyboard_section_lists_every_bindable_action_in_groups(cx: &mut TestAppContex
             if let Some(tag) = r.scope_tag {
                 want.push_str(&format!(" ({tag})"));
             }
-            assert_eq!(row(&s, &r.action, cx), want);
+            assert_eq!(row(&s, &r.action, cx), spelled(&want));
             reveal(&s, change_id(&r.action), cx);
             assert!(
                 label(&s, reset_id(&r.action), cx).is_none(),
@@ -688,8 +698,9 @@ fn the_row_buttons_line_up_across_rows(cx: &mut TestAppContext) {
 
 /// Give the filter field the keyboard and type `text` into it.
 fn filter(s: &Started, text: &str, cx: &mut TestAppContext) {
+    let text = typed(text);
     click(s, FILTER_ID, cx);
-    cx.update_window(s.handle, |_, window, cx| window.input(text, cx))
+    cx.update_window(s.handle, |_, window, cx| window.input(&text, cx))
         .unwrap();
     cx.run_until_parked();
 }
@@ -794,7 +805,7 @@ fn every_word_of_the_filter_must_match(cx: &mut TestAppContext) {
 
 /// Set the filter field's text, the keyboard staying where it is.
 fn set_filter(s: &Started, text: &str, cx: &mut TestAppContext) {
-    let text = text.to_string();
+    let text = typed(text);
     s.pf_with_view(cx, |v, window, cx| {
         let input = v.keyboard_filter_input();
         input.update(cx, |i, cx| i.set_value(text, window, cx));
@@ -992,7 +1003,13 @@ fn save_applies_the_new_chord_without_a_restart(cx: &mut TestAppContext) {
     );
     s.pf_save(&rt, cx);
     assert!(!s.pf_is_open(cx), "Save closes Preferences");
-    assert_eq!(resolves(&s, KeyInput::ctrl('e'), cx), Some(A::OpenNote));
+    // Save rebuilds the keymap for the host, where `primary` is Cmd on a Mac.
+    let saved = if cfg!(target_os = "macos") {
+        KeyInput::new(Key::Char('e'), Mods::SUPER)
+    } else {
+        KeyInput::ctrl('e')
+    };
+    assert_eq!(resolves(&s, saved, cx), Some(A::OpenNote));
     settle(&rt, cx);
 }
 
