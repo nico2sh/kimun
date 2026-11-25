@@ -207,6 +207,16 @@ ones are skipped. The `hash` covers note **content**, not the chunking — so
 changing the chunking/embedding logic won't re-embed existing notes on its own;
 drop the store (or bump the embedder, which recreates it) to force a re-index.
 
+Each document also carries note dates, tags and outgoing links. The server
+takes the folder from the path. The assistant uses them to filter by date,
+folder or tag. These do not change the
+`hash`. The SQLite store drops and recreates its `chunks` table on the first
+start after an upgrade, because the columns differ. Then every client pushes all
+notes again once, which re-embeds the whole vault. Qdrant stores the metadata
+too, but it refuses filtered searches. On Qdrant the assistant cannot filter by
+date, folder or tags. Older Qdrant points keep no metadata until their note
+changes. They also lose their journal date until their note is pushed again.
+
 ### `POST /api/index/delete`
 
 Remove notes from a vault's collection.
@@ -237,8 +247,44 @@ the background; returns a `job_id`. Poll `/api/job/{job_id}` for the result
 (`answer` + `sources`).
 
 ```json
-{ "vault_id": "…", "query": "Explain RAG systems", "context_size": "large" }
+{ "vault_id": "…", "query": "Explain RAG systems", "context_size": "large",
+  "today": "2026-11-25" }
 ```
+
+`today` is optional (`YYYY-MM-DD`). It is the client's local date, used for
+questions like "last week". If the value is malformed, the server rejects the
+request as a bad request (HTTP 422). If the value is well formed but more than
+400 days from the server clock, or missing, the server uses its own clock.
+
+The completed job result holds `answer`, `sources` and `trail`. `trail` is a
+list of strings, one per step the assistant took (for example a search or a
+note it read).
+
+**How answers work.** The first search always runs. After that, the model can
+call tools for up to 5 rounds. There are four tools: `search` (notes by
+meaning, with optional date, folder and tag filters), `list_date_keys` (the
+date properties the notes have), `read_note` (a whole note or one section) and
+`related_notes` (the links to and from a note). If the LLM provider rejects
+tool calls, the server falls back to a single pass over the first search
+results. If a later round fails, the server answers in a single pass from the
+notes gathered so far. The assistant is told to start each passage from the
+model's own knowledge with "Not from your notes:". If no note matched, the
+answer starts with a notice that says so. If the answer cites none of your
+notes, it starts with a second notice that says so.
+
+### `POST /api/answer/stream`
+
+Same request body as `/api/answer`, but the answer streams back as server-sent
+events instead of a job. No job is created. The events are:
+
+- `step`: `{"text": "…"}`, one per step, as the assistant works;
+- `answer`: `{"answer": "…", "sources": […], "trail": […]}`, the last event
+  on success;
+- `error`: `{"error": "…"}`, the last event on failure.
+
+The server rejects a bad request (an invalid `vault_id`, or no LLM
+configured) with a normal HTTP error before the stream starts. After that,
+failures arrive as an `error` event.
 
 ### `GET /api/job/{job_id}`
 

@@ -135,7 +135,11 @@ impl QueryTransport for Stub {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| ("See [1].".to_string(), a_and_b()));
-        Ok(AnswerResult { answer, sources })
+        Ok(AnswerResult {
+            answer,
+            sources,
+            trail: vec![],
+        })
     }
 }
 

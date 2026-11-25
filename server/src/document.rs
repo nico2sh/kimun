@@ -8,11 +8,48 @@ use serde::{Deserialize, Serialize};
 /// usually split by markdown section titles
 /// The breadcrumb (the hierarchical sequence of titles and subtitles) is used
 /// as the title of each chunk
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KimunDoc {
     pub path: String,
     pub hash: String,
     pub sections: Vec<KimunSection>,
+    /// Dates pushed by the client (e.g. a `due` property), labelled by source.
+    #[serde(default)]
+    pub dates: Vec<NoteDate>,
+    /// Tags of the note, as pushed by the client.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Link targets of the note, as written in the note.
+    #[serde(default)]
+    pub links: Vec<String>,
+}
+
+/// Source label of the date derived from a journal note's filename.
+pub const JOURNAL_SOURCE: &str = "journal";
+
+/// A date attached to a note, labelled by where it came from.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NoteDate {
+    pub source: String,
+    pub day: chrono::NaiveDate,
+}
+
+/// Note-level metadata copied onto every chunk of a note.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NoteMeta {
+    pub dates: Vec<NoteDate>,
+    pub tags: Vec<String>,
+    pub links: Vec<String>,
+}
+
+impl NoteMeta {
+    /// The day of the `journal` date, if the note has one.
+    pub fn journal_date(&self) -> Option<chrono::NaiveDate> {
+        self.dates
+            .iter()
+            .find(|d| d.source == JOURNAL_SOURCE)
+            .map(|d| d.day)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,7 +64,7 @@ pub struct FlattenedChunk {
     pub doc_hash: String,
     pub title: String,
     pub text: String,
-    pub date: Option<chrono::NaiveDate>,
+    pub meta: NoteMeta,
 }
 
 /// The one wire/storage format for journal dates: how they are derived from a
@@ -60,7 +97,23 @@ impl FlattenedChunk {
     ) -> Vec<FlattenedChunk> {
         let mut result = vec![];
         for doc in chunks {
-            let date = journal_date_from_path(&doc.path);
+            let mut meta = NoteMeta {
+                dates: Vec::new(),
+                tags: doc.tags.iter().map(|t| t.to_lowercase()).collect(),
+                links: doc.links.clone(),
+            };
+            if let Some(day) = journal_date_from_path(&doc.path) {
+                meta.dates.push(NoteDate {
+                    source: JOURNAL_SOURCE.to_string(),
+                    day,
+                });
+            }
+            meta.dates.extend(
+                doc.dates
+                    .iter()
+                    .filter(|d| !d.source.eq_ignore_ascii_case(JOURNAL_SOURCE))
+                    .cloned(),
+            );
             for section in &doc.sections {
                 for piece in crate::split_chunks_for_rag(&section.text, target, max) {
                     result.push(FlattenedChunk {
@@ -68,7 +121,7 @@ impl FlattenedChunk {
                         doc_hash: doc.hash.to_owned(),
                         title: section.title.to_owned(),
                         text: piece,
-                        date,
+                        meta: meta.clone(),
                     });
                 }
             }
@@ -76,8 +129,14 @@ impl FlattenedChunk {
         result
     }
 
+    /// The day of the `journal` note date, if any.
+    pub fn journal_date(&self) -> Option<chrono::NaiveDate> {
+        self.meta.journal_date()
+    }
+
     pub fn get_date_string(&self) -> Option<String> {
-        self.date.map(|d| d.format(JOURNAL_DATE_FORMAT).to_string())
+        self.journal_date()
+            .map(|d| d.format(JOURNAL_DATE_FORMAT).to_string())
     }
 }
 
@@ -129,6 +188,7 @@ impl FlattenedChunk {
 ///             text: text.clone()
 ///         }
 ///     ],
+///     ..Default::default()
 /// };
 ///
 /// // Split into chunks targeting 800 chars (~200 tokens), max 1536 chars (~384 tokens)
@@ -240,7 +300,7 @@ pub fn split_chunks_for_rag(
 #[cfg(test)]
 mod test {
     use crate::{
-        document::{KimunDoc, KimunSection},
+        document::{FlattenedChunk, JOURNAL_SOURCE, KimunDoc, KimunSection, NoteDate},
         split_chunks_for_rag,
     };
 
@@ -271,6 +331,7 @@ Second line"#;
                     text: "This is the main content.".to_string(),
                 },
             ],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&doc).expect("Failed to serialize");
@@ -326,6 +387,7 @@ Second line"#;
                     text: "Search, organize, and sync.".to_string(),
                 },
             ],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&original).expect("Failed to serialize");
@@ -347,6 +409,7 @@ Second line"#;
             path: "empty.md".to_string(),
             hash: "empty_hash".to_string(),
             sections: vec![],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&doc).expect("Failed to serialize");
@@ -372,6 +435,7 @@ Second line"#;
                     text: "こんにちは世界 and Ñoño".to_string(),
                 },
             ],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&doc).expect("Failed to serialize");
@@ -399,6 +463,7 @@ Second line"#;
                 title: "Large Chunk".to_string(),
                 text: large_text.clone(),
             }],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&doc).expect("Failed to serialize");
@@ -417,6 +482,7 @@ Second line"#;
                 title: "Title".to_string(),
                 text: "Text".to_string(),
             }],
+            ..Default::default()
         };
 
         let json_pretty = serde_json::to_string_pretty(&doc).expect("Failed to serialize");
@@ -451,6 +517,7 @@ Second line"#;
                 title: "".to_string(),
                 text: "".to_string(),
             }],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&doc).expect("Failed to serialize");
@@ -484,6 +551,7 @@ fn main() {
                 title: "Markdown Section".to_string(),
                 text: markdown_text.to_string(),
             }],
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&doc).expect("Failed to serialize");
@@ -831,5 +899,128 @@ fn main() {
                 &String::from_utf8(chunk.as_bytes().to_vec()).unwrap()
             );
         }
+    }
+
+    fn doc_at(path: &str) -> KimunDoc {
+        KimunDoc {
+            path: path.to_string(),
+            hash: "h".to_string(),
+            sections: vec![KimunSection {
+                title: "T".to_string(),
+                text: "Some text.".to_string(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn flatten_adds_journal_date_from_path() {
+        let chunks =
+            FlattenedChunk::from_chunks_split(&[doc_at("journal/2026-11-20.md")], 100, 200);
+        assert!(!chunks.is_empty());
+        for c in &chunks {
+            assert!(c.meta.dates.contains(&NoteDate {
+                source: JOURNAL_SOURCE.to_string(),
+                day: day(2026, 11, 20),
+            }));
+            assert_eq!(Some(day(2026, 11, 20)), c.journal_date());
+        }
+    }
+
+    #[test]
+    fn flatten_keeps_pushed_dates_and_adds_journal() {
+        let mut doc = doc_at("journal/2026-11-20.md");
+        let due = NoteDate {
+            source: "due".to_string(),
+            day: day(2026, 12, 1),
+        };
+        doc.dates = vec![due.clone()];
+        let chunks = FlattenedChunk::from_chunks_split(&[doc], 100, 200);
+        let dates = &chunks[0].meta.dates;
+        assert_eq!(2, dates.len());
+        assert_eq!(JOURNAL_SOURCE, dates[0].source);
+        assert_eq!(due, dates[1]);
+    }
+
+    #[test]
+    fn flatten_lowercases_tags_and_keeps_link_targets_as_written() {
+        let mut doc = doc_at("notes/a.md");
+        doc.tags = vec!["Work".to_string()];
+        doc.links = vec!["Project X".to_string()];
+        let chunks = FlattenedChunk::from_chunks_split(&[doc], 100, 200);
+        assert_eq!(vec!["work".to_string()], chunks[0].meta.tags);
+        assert_eq!(vec!["Project X".to_string()], chunks[0].meta.links);
+    }
+
+    #[test]
+    fn flatten_ignores_pushed_journal_dates() {
+        let mut doc = doc_at("notes/a.md");
+        doc.dates = vec![
+            NoteDate {
+                source: "Journal".to_string(),
+                day: day(2026, 1, 1),
+            },
+            NoteDate {
+                source: "due".to_string(),
+                day: day(2026, 12, 1),
+            },
+        ];
+        let chunks = FlattenedChunk::from_chunks_split(&[doc], 100, 200);
+        let dates = &chunks[0].meta.dates;
+        assert_eq!(1, dates.len(), "only the due date survives: {dates:?}");
+        assert_eq!("due", dates[0].source);
+        assert_eq!(None, chunks[0].journal_date());
+
+        // A path-derived journal date is not overridden by a pushed one.
+        let mut doc = doc_at("journal/2026-11-20.md");
+        doc.dates = vec![NoteDate {
+            source: JOURNAL_SOURCE.to_string(),
+            day: day(2026, 1, 1),
+        }];
+        let chunks = FlattenedChunk::from_chunks_split(&[doc], 100, 200);
+        assert_eq!(Some(day(2026, 11, 20)), chunks[0].journal_date());
+        assert_eq!(1, chunks[0].meta.dates.len());
+    }
+
+    #[test]
+    fn every_chunk_of_a_multi_section_doc_carries_the_full_meta() {
+        let mut doc = doc_at("journal/2026-11-20.md");
+        doc.sections = vec![
+            KimunSection {
+                title: "One".to_string(),
+                text: "First section.".to_string(),
+            },
+            KimunSection {
+                title: "Two".to_string(),
+                text: "Second section.".to_string(),
+            },
+        ];
+        doc.dates = vec![NoteDate {
+            source: "due".to_string(),
+            day: day(2026, 12, 1),
+        }];
+        doc.tags = vec!["Work".to_string()];
+        doc.links = vec!["Project X".to_string()];
+        let chunks = FlattenedChunk::from_chunks_split(&[doc], 100, 200);
+        assert_eq!(2, chunks.len());
+        for c in &chunks {
+            assert_eq!(chunks[0].meta, c.meta);
+            assert_eq!(2, c.meta.dates.len());
+            assert_eq!(vec!["work".to_string()], c.meta.tags);
+            assert_eq!(vec!["Project X".to_string()], c.meta.links);
+        }
+    }
+
+    #[test]
+    fn old_client_doc_without_metadata_still_deserializes() {
+        let json = r#"{"path":"a.md","hash":"h","sections":[]}"#;
+        let doc: KimunDoc = serde_json::from_str(json).unwrap();
+        assert!(doc.dates.is_empty());
+        assert!(doc.tags.is_empty());
+        assert!(doc.links.is_empty());
     }
 }
