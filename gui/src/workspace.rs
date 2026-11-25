@@ -580,7 +580,7 @@ pub(crate) struct Workspace {
     /// can take them ([`Self::intercept_shell_key`]).
     _shell_keys: Subscription,
     /// The view or group being dragged onto a drop zone, while one is
-    /// ([`Self::live_drag`], [`Self::dragged_group`]).
+    /// ([`Self::live_drag`], `dragged_group`).
     drag: Option<LiveDrag>,
     /// What a drop on each zone would do, worked out while a view or a
     /// group is dragged ([`Self::refresh_drop_outcomes`]), once per drag;
