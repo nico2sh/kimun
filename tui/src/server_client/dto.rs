@@ -16,6 +16,20 @@ pub struct WireDoc {
     pub path: String,
     pub hash: String,
     pub sections: Vec<WireSection>,
+    /// Date-typed frontmatter properties, one per property.
+    pub dates: Vec<WireDate>,
+    /// The note's labels (inline `#hashtags` and frontmatter `tags`).
+    pub tags: Vec<String>,
+    /// As-written targets of the note's links to other notes.
+    pub links: Vec<String>,
+}
+
+/// A date a note carries: the lowercased property key and its day as
+/// `YYYY-MM-DD`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WireDate {
+    pub source: String,
+    pub day: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +61,9 @@ pub struct QueryRequest {
     pub context_size: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<HistoryTurn>,
+    /// The client's local date as `YYYY-MM-DD`; sent on `/api/answer` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub today: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +137,21 @@ pub struct JobStatus {
 pub struct AnswerResult {
     pub answer: String,
     pub sources: Vec<ChunkResult>,
+    /// What the assistant did, step by step. Absent from older servers.
+    #[serde(default)]
+    pub trail: Vec<String>,
+}
+
+/// One event of a streamed answer (`POST /api/answer/stream`). A stream is any
+/// number of `Step`s, then exactly one `Answer` or `Error`.
+#[derive(Debug)]
+pub enum AnswerEvent {
+    /// One trail step, as the assistant takes it.
+    Step(String),
+    /// The finished answer; always the last event of a successful stream.
+    Answer(AnswerResult),
+    /// The answer failed (the server's message, or a broken stream); last.
+    Error(String),
 }
 
 #[cfg(test)]
@@ -133,6 +165,7 @@ mod tests {
             query: "q".into(),
             context_size: None,
             history: vec![],
+            today: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(
@@ -151,9 +184,32 @@ mod tests {
                 question: "q1".into(),
                 answer: "a1".into(),
             }],
+            today: Some("2026-11-25".into()),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""history":[{"question":"q1","answer":"a1"}]"#));
+        assert!(json.contains(r#""today":"2026-11-25""#));
+    }
+
+    #[test]
+    fn query_request_omits_absent_today() {
+        let req = QueryRequest {
+            vault_id: "v".into(),
+            query: "q".into(),
+            context_size: None,
+            history: vec![],
+            today: None,
+        };
+        assert!(!serde_json::to_string(&req).unwrap().contains("today"));
+    }
+
+    #[test]
+    fn answer_result_parses_with_and_without_trail() {
+        let with: AnswerResult =
+            serde_json::from_str(r#"{"answer":"a","sources":[],"trail":["Searched"]}"#).unwrap();
+        assert_eq!(with.trail, vec!["Searched".to_string()]);
+        let without: AnswerResult = serde_json::from_str(r#"{"answer":"a","sources":[]}"#).unwrap();
+        assert!(without.trail.is_empty());
     }
 
     #[test]

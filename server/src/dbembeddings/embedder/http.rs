@@ -210,7 +210,7 @@ mod tests {
             doc_hash: "h".into(),
             title: title.into(),
             text: text.into(),
-            date: None,
+            meta: Default::default(),
         }
     }
 

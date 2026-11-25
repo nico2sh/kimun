@@ -11,11 +11,14 @@
 
 use anyhow::bail;
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, warn};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
+use crate::agent::MODEL_ONLY_LABEL;
 use crate::config::{LlmConfig, OPENROUTER_URL, ReasoningEffort};
 use crate::document::FlattenedChunk;
+use crate::tools::ToolSpec;
 
 #[allow(clippy::double_must_use)]
 #[async_trait]
@@ -26,7 +29,77 @@ pub trait LLMClient: Send + Sync {
         history: &[(String, String)],
         context: &[(usize, (f64, FlattenedChunk))],
     ) -> anyhow::Result<String>;
+
+    /// One turn of a tool-calling exchange: the model reads `system`, the
+    /// transcript and the tools it may call, and either answers or asks for
+    /// tool calls. A client that cannot call tools keeps this default, and the
+    /// caller falls back to [`LLMClient::ask`].
+    async fn chat(
+        &self,
+        _system: &str,
+        _messages: &[ChatMessage],
+        _tools: &[ToolSpec],
+    ) -> anyhow::Result<ModelReply> {
+        Err(ToolsUnsupported.into())
+    }
 }
+
+/// A tool call the model asked for. `args` is the parsed JSON arguments; when
+/// the model sent arguments that are not valid JSON, it is the raw text as a
+/// [`Value::String`], for the caller to treat as a malformed call.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelToolCall {
+    pub id: String,
+    pub name: String,
+    pub args: Value,
+    /// Provider data the wire must send back with this call on the next turn,
+    /// opaque to the caller. Only Gemini sets it: `{"thoughtSignature": "…"}`.
+    pub extra: Option<Value>,
+}
+
+impl ModelToolCall {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, args: Value) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            args,
+            extra: None,
+        }
+    }
+}
+
+/// One message of a tool-calling transcript, independent of the wire.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatMessage {
+    User(String),
+    Assistant {
+        text: Option<String>,
+        calls: Vec<ModelToolCall>,
+    },
+    /// The result of the call whose [`ModelToolCall::id`] is `call_id`.
+    ToolResult {
+        call_id: String,
+        text: String,
+    },
+}
+
+/// What the model answered in one [`LLMClient::chat`] turn.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelReply {
+    /// A final answer, with no tool calls.
+    Text(String),
+    /// At least one tool call, plus any text the model wrote with them.
+    Calls {
+        text: Option<String>,
+        calls: Vec<ModelToolCall>,
+    },
+}
+
+/// The endpoint or model does not accept tools. The caller answers in a single
+/// pass instead. Downcast it from the `anyhow::Error` that `chat` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the model endpoint does not support tool calling")]
+pub struct ToolsUnsupported;
 
 const OPENAI_URL: &str = "https://api.openai.com/v1";
 const MISTRAL_URL: &str = "https://api.mistral.ai/v1";
@@ -91,6 +164,33 @@ impl ChatClient {
     }
 }
 
+impl ChatClient {
+    /// The POST for this wire, with its endpoint and auth, carrying `body`.
+    /// Shared by `ask` and `chat`, so both speak to the same URL the same way.
+    fn post<T: Serialize + ?Sized>(&self, body: &T) -> reqwest::RequestBuilder {
+        match &self.wire {
+            Wire::OpenAiCompat { .. } => self
+                .http
+                .post(format!("{}/chat/completions", self.base_url))
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(body),
+            Wire::Anthropic => self
+                .http
+                .post(format!("{}/v1/messages", self.base_url))
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .json(body),
+            Wire::Gemini => self
+                .http
+                .post(format!(
+                    "{}/v1beta/models/{}:generateContent?key={}",
+                    self.base_url, self.model, self.api_key
+                ))
+                .json(body),
+        }
+    }
+}
+
 #[async_trait]
 impl LLMClient for ChatClient {
     async fn ask(
@@ -102,36 +202,21 @@ impl LLMClient for ChatClient {
         let messages = chat_messages(history, build_prompt(question, history, context));
 
         let request = match &self.wire {
-            Wire::OpenAiCompat { reasoning } => self
-                .http
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&ChatRequest {
-                    model: self.model.clone(),
-                    max_tokens: None,
-                    messages,
-                    reasoning: reasoning.map(|effort| ReasoningRequest { effort }),
-                }),
-            Wire::Anthropic => self
-                .http
-                .post(format!("{}/v1/messages", self.base_url))
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", "2023-06-01")
-                .json(&ChatRequest {
-                    model: self.model.clone(),
-                    max_tokens: Some(4096),
-                    messages,
-                    reasoning: None,
-                }),
-            Wire::Gemini => {
-                let contents = gemini_contents(messages);
-                self.http
-                    .post(format!(
-                        "{}/v1beta/models/{}:generateContent?key={}",
-                        self.base_url, self.model, self.api_key
-                    ))
-                    .json(&GeminiRequest { contents })
-            }
+            Wire::OpenAiCompat { reasoning } => self.post(&ChatRequest {
+                model: self.model.clone(),
+                max_tokens: None,
+                messages,
+                reasoning: reasoning.map(|effort| ReasoningRequest { effort }),
+            }),
+            Wire::Anthropic => self.post(&ChatRequest {
+                model: self.model.clone(),
+                max_tokens: Some(4096),
+                messages,
+                reasoning: None,
+            }),
+            Wire::Gemini => self.post(&GeminiRequest {
+                contents: gemini_contents(messages),
+            }),
         };
 
         let response = request.send().await?;
@@ -139,28 +224,18 @@ impl LLMClient for ChatClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await?;
-            bail!("{} API error: {}\n{}", self.provider, status, body);
+            return Err(api_error(self.provider, status, &body));
         }
 
         let answer = match &self.wire {
             Wire::OpenAiCompat { .. } => {
                 let parsed: ChatResponse = response.json().await?;
-                if let Some(usage) = &parsed.usage {
-                    debug!(
-                        "{} tokens: {} prompt, {} completion",
-                        self.provider, usage.prompt_tokens, usage.completion_tokens
-                    );
-                }
+                parsed.log_usage(self.provider);
                 answer_text(parsed, self.provider)?
             }
             Wire::Anthropic => {
                 let parsed: AnthropicResponse = response.json().await?;
-                if let Some(usage) = &parsed.usage {
-                    debug!(
-                        "{} tokens: {} input, {} output",
-                        self.provider, usage.input_tokens, usage.output_tokens
-                    );
-                }
+                parsed.log_usage(self.provider);
                 parsed
                     .content
                     .into_iter()
@@ -171,17 +246,12 @@ impl LLMClient for ChatClient {
             }
             Wire::Gemini => {
                 let parsed: GeminiResponse = response.json().await?;
-                if let Some(usage) = &parsed.usage_metadata {
-                    debug!(
-                        "{} tokens: {} prompt, {} candidates",
-                        self.provider, usage.prompt_token_count, usage.candidates_token_count
-                    );
-                }
+                parsed.log_usage(self.provider);
                 parsed
                     .candidates
                     .into_iter()
                     .flat_map(|c| c.content.parts)
-                    .map(|p| p.text)
+                    .filter_map(|p| p.text)
                     .collect::<Vec<String>>()
                     .join("\n")
             }
@@ -189,6 +259,429 @@ impl LLMClient for ChatClient {
 
         Ok(answer)
     }
+
+    async fn chat(
+        &self,
+        system: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> anyhow::Result<ModelReply> {
+        let body = match &self.wire {
+            Wire::OpenAiCompat { reasoning } => {
+                openai_chat_body(&self.model, *reasoning, system, messages, tools)
+            }
+            Wire::Anthropic => anthropic_chat_body(&self.model, system, messages, tools),
+            Wire::Gemini => gemini_chat_body(system, messages, tools)?,
+        };
+
+        let response = self.post(&body).send().await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await?;
+            return Err(chat_api_error(self.provider, status, &body));
+        }
+
+        match &self.wire {
+            Wire::OpenAiCompat { .. } => {
+                let parsed: ChatResponse = response.json().await?;
+                parsed.log_usage(self.provider);
+                openai_reply(parsed, self.provider)
+            }
+            Wire::Anthropic => {
+                let parsed: AnthropicResponse = response.json().await?;
+                parsed.log_usage(self.provider);
+                anthropic_reply(parsed, self.provider)
+            }
+            Wire::Gemini => {
+                let parsed: GeminiResponse = response.json().await?;
+                parsed.log_usage(self.provider);
+                gemini_reply(parsed, self.provider)
+            }
+        }
+    }
+}
+
+/// The error for a failed provider call: provider, HTTP status and body.
+fn api_error(provider: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    anyhow::anyhow!("{provider} API error: {status}\n{body}")
+}
+
+/// Most characters of a provider error line that go to the log.
+const ERROR_LINE_CHARS: usize = 200;
+
+/// The first line of `text`, cut to `max` characters. Logs carry this much of
+/// a provider error, never the request content.
+pub(crate) fn first_line(text: &str, max: usize) -> String {
+    text.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(max)
+        .collect()
+}
+
+/// [`api_error`] for a `chat` call, except that a client error whose body
+/// talks about tools or functions means the endpoint or model rejects tool
+/// calling: that becomes [`ToolsUnsupported`], so the caller falls back.
+fn chat_api_error(provider: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    let client_error = matches!(status.as_u16(), 400 | 404 | 422);
+    let lower = body.to_lowercase();
+    // `tool` also covers `tools` and `tool_choice`.
+    if client_error && (lower.contains("tool") || lower.contains("function")) {
+        warn!(
+            "{provider} rejected tools ({status}): {}",
+            first_line(body, ERROR_LINE_CHARS)
+        );
+        return ToolsUnsupported.into();
+    }
+    api_error(provider, status, body)
+}
+
+/// The text of a reply: its non-blank parts joined, or `None` when there are
+/// none.
+fn joined_text(parts: impl IntoIterator<Item = String>) -> Option<String> {
+    let parts: Vec<String> = parts
+        .into_iter()
+        .filter(|text| !text.trim().is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
+/// The reply for the text and calls of one model turn. No calls and no text is
+/// the same "no answer text" error that `ask` raises.
+fn model_reply(
+    text: Option<String>,
+    calls: Vec<ModelToolCall>,
+    provider: &str,
+) -> anyhow::Result<ModelReply> {
+    if !calls.is_empty() {
+        return Ok(ModelReply::Calls { text, calls });
+    }
+    match text {
+        Some(text) => Ok(ModelReply::Text(text)),
+        None => Err(no_answer_error(provider)),
+    }
+}
+
+/// OpenAI-compatible `chat/completions` body: the system prompt as the first
+/// message, assistant calls as `tool_calls` with JSON-string `arguments`, and
+/// results as `role: "tool"` messages.
+fn openai_chat_body(
+    model: &str,
+    reasoning: Option<ReasoningEffort>,
+    system: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+) -> Value {
+    let mut msgs = Vec::with_capacity(messages.len() + 1);
+    if !system.is_empty() {
+        msgs.push(json!({"role": "system", "content": system}));
+    }
+    for message in messages {
+        msgs.push(match message {
+            ChatMessage::User(text) => json!({"role": "user", "content": text}),
+            ChatMessage::Assistant { text, calls } => {
+                let mut m = json!({"role": "assistant", "content": text});
+                if !calls.is_empty() {
+                    m["tool_calls"] = calls
+                        .iter()
+                        .map(|c| {
+                            json!({
+                                "id": c.id,
+                                "type": "function",
+                                "function": {"name": c.name, "arguments": openai_arguments(&c.args)},
+                            })
+                        })
+                        .collect();
+                }
+                m
+            }
+            ChatMessage::ToolResult { call_id, text } => {
+                json!({"role": "tool", "tool_call_id": call_id, "content": text})
+            }
+        });
+    }
+    let mut body = json!({"model": model, "messages": msgs});
+    if !tools.is_empty() {
+        body["tools"] = tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "function": {"name": t.name, "description": t.description, "parameters": t.schema},
+                })
+            })
+            .collect();
+    }
+    if let Some(effort) = reasoning {
+        body["reasoning"] = json!(ReasoningRequest { effort });
+    }
+    body
+}
+
+/// A call's arguments as the JSON string OpenAI expects. A malformed call
+/// (raw text kept as a string) goes back exactly as the model sent it.
+fn openai_arguments(args: &Value) -> String {
+    match args {
+        Value::String(raw) => raw.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Anthropic `messages` body: `system` at the top level, assistant calls as
+/// `tool_use` blocks after the text, and results as `tool_result` blocks in a
+/// `user` message. Consecutive user-side messages merge into one, so every
+/// result of a turn sits in the message right after it.
+fn anthropic_chat_body(
+    model: &str,
+    system: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+) -> Value {
+    let mut msgs: Vec<(&str, Vec<Value>)> = Vec::new();
+    for message in messages {
+        let (role, blocks) = match message {
+            ChatMessage::User(text) => ("user", vec![json!({"type": "text", "text": text})]),
+            ChatMessage::Assistant { text, calls } => {
+                // Anthropic rejects an empty text block.
+                let text_block = text
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| json!({"type": "text", "text": t}));
+                let call_blocks = calls.iter().map(
+                    |c| json!({"type": "tool_use", "id": c.id, "name": c.name, "input": c.args}),
+                );
+                (
+                    "assistant",
+                    text_block.into_iter().chain(call_blocks).collect(),
+                )
+            }
+            ChatMessage::ToolResult { call_id, text } => (
+                "user",
+                vec![json!({"type": "tool_result", "tool_use_id": call_id, "content": text})],
+            ),
+        };
+        match msgs.last_mut() {
+            Some((last_role, last_blocks)) if *last_role == role => last_blocks.extend(blocks),
+            _ => msgs.push((role, blocks)),
+        }
+    }
+    let msgs: Vec<Value> = msgs
+        .into_iter()
+        .map(|(role, content)| json!({"role": role, "content": content}))
+        .collect();
+    let mut body = json!({"model": model, "max_tokens": 4096, "messages": msgs});
+    if !system.is_empty() {
+        body["system"] = json!(system);
+    }
+    if !tools.is_empty() {
+        body["tools"] = tools
+            .iter()
+            .map(
+                |t| json!({"name": t.name, "description": t.description, "input_schema": t.schema}),
+            )
+            .collect();
+    }
+    body
+}
+
+/// Gemini `generateContent` body: `systemInstruction`, calls as `functionCall`
+/// parts, and results as `functionResponse` parts in a `user` content.
+/// Gemini matches a result to its call by function NAME, and its call ids are
+/// synthesized per reply (they repeat across turns), so each result takes the
+/// name from the most recent assistant turn's calls.
+fn gemini_chat_body(
+    system: &str,
+    messages: &[ChatMessage],
+    tools: &[ToolSpec],
+) -> anyhow::Result<Value> {
+    let mut contents: Vec<(&str, Vec<Value>)> = Vec::new();
+    let mut names: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for message in messages {
+        let (role, parts) = match message {
+            ChatMessage::User(text) => ("user", vec![json!({"text": text})]),
+            ChatMessage::Assistant { text, calls } => {
+                names = calls
+                    .iter()
+                    .map(|c| (c.id.as_str(), c.name.as_str()))
+                    .collect();
+                let text_part = text
+                    .as_deref()
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| json!({"text": t}));
+                let call_parts = calls.iter().map(|c| {
+                    let mut part = json!({"functionCall": {"name": c.name, "args": c.args}});
+                    // Round-trip the part's thought signature, if it had one.
+                    if let Some(sig) = c.extra.as_ref().and_then(|e| e.get(GEMINI_SIGNATURE)) {
+                        part[GEMINI_SIGNATURE] = sig.clone();
+                    }
+                    part
+                });
+                ("model", text_part.into_iter().chain(call_parts).collect())
+            }
+            ChatMessage::ToolResult { call_id, text } => {
+                let Some(name) = names.get(call_id.as_str()) else {
+                    bail!("tool result {call_id} has no matching call in the previous turn");
+                };
+                (
+                    "user",
+                    vec![
+                        json!({"functionResponse": {"name": name, "response": {"content": text}}}),
+                    ],
+                )
+            }
+        };
+        match contents.last_mut() {
+            Some((last_role, last_parts)) if *last_role == role => last_parts.extend(parts),
+            _ => contents.push((role, parts)),
+        }
+    }
+    let contents: Vec<Value> = contents
+        .into_iter()
+        .map(|(role, parts)| json!({"role": role, "parts": parts}))
+        .collect();
+    let mut body = json!({"contents": contents});
+    if !system.is_empty() {
+        body["systemInstruction"] = json!({"parts": [{"text": system}]});
+    }
+    if !tools.is_empty() {
+        let declarations: Vec<Value> = tools
+            .iter()
+            .map(|t| {
+                let mut declaration = json!({"name": t.name, "description": t.description});
+                // Gemini has rejected `parameters` with no properties, so a
+                // tool without arguments sends none.
+                let has_properties = t
+                    .schema
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .is_some_and(|p| !p.is_empty());
+                if has_properties {
+                    declaration["parameters"] = gemini_schema(&t.schema);
+                }
+                declaration
+            })
+            .collect();
+        body["tools"] = json!([{"functionDeclarations": declarations}]);
+    }
+    Ok(body)
+}
+
+/// The key of a Gemini thought signature, both on a reply part and in
+/// [`ModelToolCall::extra`].
+const GEMINI_SIGNATURE: &str = "thoughtSignature";
+
+/// JSON-schema keywords Gemini's function declarations reject.
+const GEMINI_REJECTED_KEYWORDS: [&str; 8] = [
+    "additionalProperties",
+    "$schema",
+    "$id",
+    "$ref",
+    "$defs",
+    "$comment",
+    "definitions",
+    "examples",
+];
+
+/// `schema` without the keywords Gemini rejects, at every nesting level.
+/// Only schema positions are walked: the names under `properties` are
+/// property names, never keywords, so a property called `additionalProperties`
+/// stays.
+fn gemini_schema(schema: &Value) -> Value {
+    let Value::Object(map) = schema else {
+        return schema.clone();
+    };
+    let mut out = serde_json::Map::new();
+    for (key, value) in map {
+        if GEMINI_REJECTED_KEYWORDS.contains(&key.as_str()) {
+            continue;
+        }
+        let value = match (key.as_str(), value) {
+            ("properties", Value::Object(props)) => Value::Object(
+                props
+                    .iter()
+                    .map(|(name, s)| (name.clone(), gemini_schema(s)))
+                    .collect(),
+            ),
+            ("items", s) => match s {
+                Value::Array(list) => Value::Array(list.iter().map(gemini_schema).collect()),
+                s => gemini_schema(s),
+            },
+            ("anyOf" | "oneOf" | "allOf", Value::Array(list)) => {
+                Value::Array(list.iter().map(gemini_schema).collect())
+            }
+            (_, v) => v.clone(),
+        };
+        out.insert(key.clone(), value);
+    }
+    Value::Object(out)
+}
+
+/// An OpenAI-style reply. `arguments` is a JSON string per the API; one that
+/// is not valid JSON stays a raw [`Value::String`] for the caller to count as
+/// malformed, and an object (some compatible servers) is taken as is.
+fn openai_reply(response: ChatResponse, provider: &str) -> anyhow::Result<ModelReply> {
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    for choice in response.choices {
+        texts.extend(choice.message.content);
+        for c in choice.message.tool_calls.unwrap_or_default() {
+            let args = match c.function.arguments {
+                Value::String(raw) => serde_json::from_str(&raw).unwrap_or(Value::String(raw)),
+                Value::Null => json!({}),
+                other => other,
+            };
+            let id =
+                c.id.filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| format!("call_{}", calls.len()));
+            calls.push(ModelToolCall::new(id, c.function.name, args));
+        }
+    }
+    model_reply(joined_text(texts), calls, provider)
+}
+
+fn anthropic_reply(response: AnthropicResponse, provider: &str) -> anyhow::Result<ModelReply> {
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    for block in response.content {
+        match block.kind.as_str() {
+            "text" => texts.push(block.text),
+            "tool_use" => calls.push(ModelToolCall::new(block.id, block.name, block.input)),
+            _ => {}
+        }
+    }
+    model_reply(joined_text(texts), calls, provider)
+}
+
+/// A Gemini reply. Gemini gives calls no ids, so they get `call_0`, `call_1`,
+/// … in reply order.
+fn gemini_reply(response: GeminiResponse, provider: &str) -> anyhow::Result<ModelReply> {
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    for part in response
+        .candidates
+        .into_iter()
+        .flat_map(|c| c.content.parts)
+    {
+        texts.extend(part.text);
+        if let Some(fc) = part.function_call {
+            calls.push(ModelToolCall {
+                extra: part
+                    .thought_signature
+                    .map(|sig| json!({ GEMINI_SIGNATURE: sig })),
+                id: format!("call_{}", calls.len()),
+                name: fc.name,
+                args: if fc.args.is_null() {
+                    json!({})
+                } else {
+                    fc.args
+                },
+            });
+        }
+    }
+    model_reply(joined_text(texts), calls, provider)
 }
 
 /// The answer text of an OpenAI-style response: every choice's content,
@@ -203,33 +696,38 @@ fn answer_text(response: ChatResponse, provider: &str) -> anyhow::Result<String>
         .filter(|text| !text.trim().is_empty())
         .collect();
     if parts.is_empty() {
-        // Only OpenRouter has a reasoning setting to point the user at.
-        let hint = if provider == "openrouter" {
-            " A reasoning model can use its whole token budget thinking: set a lower `reasoning` effort or pick another model."
-        } else {
-            ""
-        };
-        bail!("{provider} returned no answer text (empty content).{hint}");
+        return Err(no_answer_error(provider));
     }
     Ok(parts.join("\n"))
+}
+
+/// The error for a reply with no answer text.
+fn no_answer_error(provider: &str) -> anyhow::Error {
+    // Only OpenRouter has a reasoning setting to point the user at.
+    let hint = if provider == "openrouter" {
+        " A reasoning model can use its whole token budget thinking: set a lower `reasoning` effort or pick another model."
+    } else {
+        ""
+    };
+    anyhow::anyhow!("{provider} returned no answer text (empty content).{hint}")
 }
 
 /// History pairs + the final RAG prompt as one chat transcript. Shared by the
 /// OpenAI-compat and Anthropic wires; Gemini maps the same list to `contents`
 /// with the "model" role name.
-fn chat_messages(history: &[(String, String)], prompt: String) -> Vec<ChatMessage> {
+fn chat_messages(history: &[(String, String)], prompt: String) -> Vec<WireMessage> {
     let mut msgs = Vec::with_capacity(history.len() * 2 + 1);
     for (q, a) in history {
-        msgs.push(ChatMessage {
+        msgs.push(WireMessage {
             role: "user".into(),
             content: q.clone(),
         });
-        msgs.push(ChatMessage {
+        msgs.push(WireMessage {
             role: "assistant".into(),
             content: a.clone(),
         });
     }
-    msgs.push(ChatMessage {
+    msgs.push(WireMessage {
         role: "user".into(),
         content: prompt,
     });
@@ -240,7 +738,7 @@ fn chat_messages(history: &[(String, String)], prompt: String) -> Vec<ChatMessag
 /// shape: every `"assistant"` role becomes `"model"`, everything else (only
 /// ever `"user"` in practice) stays `"user"`, and each message's text becomes
 /// its single part.
-fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
+fn gemini_contents(messages: Vec<WireMessage>) -> Vec<GeminiContent> {
     messages
         .into_iter()
         .map(|m| GeminiContent {
@@ -256,8 +754,8 @@ fn gemini_contents(messages: Vec<ChatMessage>) -> Vec<GeminiContent> {
 
 /// The one RAG prompt, shared by every provider: chunks are numbered `[i]` in
 /// sources order, citations are mandatory for note-derived claims, and the
-/// answer may supplement with common knowledge — uncited text IS the signal
-/// that a claim is general knowledge, so the two never blur.
+/// answer may supplement with common knowledge, each such passage starting
+/// with [`MODEL_ONLY_LABEL`] and never cited, so the two never blur.
 ///
 /// When `history` is non-empty the prompt gains two mid-conversation aids: a
 /// follow-up-handling line and a one-line recap of the assistant's last message.
@@ -299,11 +797,11 @@ fn tail_chars(s: &str, max: usize) -> String {
     s[start..].to_string()
 }
 
-fn build_prompt(
-    question: &str,
-    history: &[(String, String)],
-    context: &[(usize, (f64, FlattenedChunk))],
-) -> String {
+/// The numbered context block: one entry per chunk, framed `[n] path — "title"`
+/// with an optional `Date:` line, then the chunk text. Shared by the
+/// single-pass prompt and the answer loop, so the model reads chunks the same
+/// way on both paths.
+pub(crate) fn render_context(context: &[(usize, (f64, FlattenedChunk))]) -> String {
     let mut context_string = String::new();
     // The `[n]` frame is the ordinal ASSIGNED to the pair upstream, never this
     // loop's position — so the number the model cites is exactly the ordinal the
@@ -332,36 +830,49 @@ fn build_prompt(
         };
         context_string.push_str(&format!("{header}\n{date_line}{}\n\n", chunk.text));
     }
+    context_string
+}
 
-    // Only present mid-conversation: a terse reply is meaningless on a first
-    // turn, so the guidance would just be noise there. The line binds a short
-    // reply to the assistant's PREVIOUS message (its closing question/offer),
-    // not to the user's earlier question — the failure this fixes was the model
-    // re-answering that earlier question instead of continuing from its offer.
-    let followup_line = if history.is_empty() {
-        String::new()
-    } else {
-        "If the user's latest message is a short or affirmative reply (e.g. 'yes', 'go on', 'the second one'), it responds to your PREVIOUS message above — usually its closing question or offer. Continue from THAT message: carry out what it proposed, and do NOT re-answer the user's earlier question. Draw on the context below where it fits and the conversation itself otherwise.\n".to_string()
-    };
+/// The follow-up instruction, only present mid-conversation: a terse reply is
+/// meaningless on a first turn, so the guidance would just be noise there. The
+/// line binds a short reply to the assistant's PREVIOUS message (its closing
+/// question/offer), not to the user's earlier question — the failure this
+/// fixes was the model re-answering that earlier question instead of
+/// continuing from its offer.
+pub(crate) const FOLLOWUP_INSTRUCTION: &str = "If the user's latest message is a short or affirmative reply (e.g. 'yes', 'go on', 'the second one'), it responds to your PREVIOUS message above — usually its closing question or offer. Continue from THAT message: carry out what it proposed, and do NOT re-answer the user's earlier question. Draw on the context below where it fits and the conversation itself otherwise.\n";
 
-    // Mid-conversation, quote the tail of the assistant's last message right
-    // before `Question:` so its closing offer sits next to the terse reply
-    // instead of several messages up the transcript. Empty history → no recap,
-    // keeping the first-turn prompt byte-identical to before. Citation markers
-    // are already stripped from history answers by the client.
-    let recap = match history.last() {
+/// Mid-conversation, the tail of the assistant's last message, quoted right
+/// before `Question:` so its closing offer sits next to the terse reply
+/// instead of several messages up the transcript. Empty history → no recap.
+/// Citation markers are already stripped from history answers by the client.
+pub(crate) fn recap_line(history: &[(String, String)]) -> String {
+    match history.last() {
         Some((_, prev_a)) => {
             let tail = tail_chars(prev_a, RECAP_TAIL_CHARS);
             format!("Your previous message ended: \"{tail}\"\n")
         }
         None => String::new(),
+    }
+}
+
+fn build_prompt(
+    question: &str,
+    history: &[(String, String)],
+    context: &[(usize, (f64, FlattenedChunk))],
+) -> String {
+    let context_string = render_context(context);
+    let followup_line = if history.is_empty() {
+        ""
+    } else {
+        FOLLOWUP_INSTRUCTION
     };
+    let recap = recap_line(history);
 
     format!(
         r#"You are an intelligent assistant with access to a personal knowledge base.
 Answer the user's question using the numbered context below first; base the answer primarily on it when it is relevant.
 {followup_line}Every claim drawn from the context MUST carry an inline citation in the form [n], where n is the number of the supporting context entry. A sentence may carry several citations.
-You may supplement with accurate, widely accepted common knowledge when the context falls short — never cite [n] for such claims; leaving them uncited is how they are marked as general knowledge.
+You may supplement with accurate, widely accepted common knowledge when the context falls short. Start each such passage with the label "{MODEL_ONLY_LABEL}" and never cite [n] for it.
 Preserve any [[wikilinks]] and #tags that appear in the context verbatim when you quote or reference them.
 If neither the context nor common knowledge suffices, respond with: 'I don't have enough information to answer.'
 
@@ -384,7 +895,7 @@ struct ChatRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
-    messages: Vec<ChatMessage>,
+    messages: Vec<WireMessage>,
     /// OpenRouter only.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<ReasoningRequest>,
@@ -398,7 +909,7 @@ struct ReasoningRequest {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ChatMessage {
+struct WireMessage {
     role: String,
     content: String,
 }
@@ -417,17 +928,49 @@ struct ChatChoice {
 
 /// A response message. `content` is `null` or absent when a reasoning model
 /// spends its whole budget thinking (OpenRouter surfaces this), so it is
-/// optional here, unlike the request-side [`ChatMessage`].
+/// optional here, unlike the request-side [`WireMessage`].
 #[derive(Deserialize)]
 struct ChatResponseMessage {
     #[serde(default)]
     content: Option<String>,
+    /// Only on a `chat` reply that asks for tool calls.
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiToolCall {
+    /// Some compatible servers leave it out or send `null`; [`openai_reply`]
+    /// then makes one up.
+    #[serde(default)]
+    id: Option<String>,
+    function: OpenAiFunctionCall,
+}
+
+#[derive(Deserialize)]
+struct OpenAiFunctionCall {
+    name: String,
+    /// A JSON-encoded string per the OpenAI API. Some compatible servers send
+    /// a plain object instead, so any JSON value is accepted here.
+    #[serde(default)]
+    arguments: Value,
 }
 
 #[derive(Deserialize)]
 struct ChatUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
+}
+
+impl ChatResponse {
+    fn log_usage(&self, provider: &str) {
+        if let Some(usage) = &self.usage {
+            debug!(
+                "{provider} tokens: {} prompt, {} completion",
+                usage.prompt_tokens, usage.completion_tokens
+            );
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -443,12 +986,30 @@ struct AnthropicContent {
     kind: String,
     #[serde(default)]
     text: String,
+    /// `tool_use` blocks only.
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    input: Value,
 }
 
 #[derive(Deserialize)]
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+}
+
+impl AnthropicResponse {
+    fn log_usage(&self, provider: &str) {
+        if let Some(usage) = &self.usage {
+            debug!(
+                "{provider} tokens: {} input, {} output",
+                usage.input_tokens, usage.output_tokens
+            );
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -482,7 +1043,27 @@ struct GeminiCandidate {
 #[derive(Deserialize)]
 struct GeminiCandidateContent {
     #[serde(default)]
-    parts: Vec<GeminiPart>,
+    parts: Vec<GeminiResponsePart>,
+}
+
+/// A reply part: text, or a function call on a `chat` reply.
+#[derive(Deserialize)]
+struct GeminiResponsePart {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(rename = "functionCall", default)]
+    function_call: Option<GeminiFunctionCall>,
+    /// Gemini thinking models sign a `functionCall` part; the signature must go
+    /// back on that same part in the next request.
+    #[serde(rename = "thoughtSignature", default)]
+    thought_signature: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GeminiFunctionCall {
+    name: String,
+    #[serde(default)]
+    args: Value,
 }
 
 #[derive(Deserialize)]
@@ -491,6 +1072,17 @@ struct GeminiUsage {
     prompt_token_count: u32,
     #[serde(rename = "candidatesTokenCount", default)]
     candidates_token_count: u32,
+}
+
+impl GeminiResponse {
+    fn log_usage(&self, provider: &str) {
+        if let Some(usage) = &self.usage_metadata {
+            debug!(
+                "{provider} tokens: {} prompt, {} candidates",
+                usage.prompt_token_count, usage.candidates_token_count
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -507,7 +1099,7 @@ mod tests {
                 doc_hash: "h".to_string(),
                 title: title.to_string(),
                 text: text.to_string(),
-                date: None,
+                meta: Default::default(),
             },
         )
     }
@@ -580,6 +1172,9 @@ mod tests {
         assert!(p.contains("cite"), "prompt must instruct citing");
         assert!(p.contains("[n]"), "prompt must name the [n] form");
         assert!(p.contains("how do I start?"));
+        // Passages from the model's own knowledge carry the label.
+        assert!(p.contains(MODEL_ONLY_LABEL), "{p}");
+        assert!(!p.contains("leaving them uncited"), "{p}");
     }
 
     #[test]
@@ -1041,5 +1636,611 @@ mod tests {
             );
             assert_eq!(client.model, "m");
         }
+    }
+
+    // ── Tool calling (`chat`) ────────────────────────────────────────────────
+
+    fn spec(name: &'static str, schema: serde_json::Value) -> ToolSpec {
+        ToolSpec {
+            name,
+            description: "a tool",
+            schema,
+        }
+    }
+
+    fn call(id: &str, name: &str, args: serde_json::Value) -> ModelToolCall {
+        ModelToolCall::new(id, name, args)
+    }
+
+    /// A user question, an assistant turn with text and two calls, both
+    /// results, then a follow-up question: every message shape at once.
+    fn transcript() -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::User("what did I plant?".into()),
+            ChatMessage::Assistant {
+                text: Some("Let me look.".into()),
+                calls: vec![
+                    call("c1", "search", json!({"query": "plant"})),
+                    call("c2", "list_date_keys", json!({})),
+                ],
+            },
+            ChatMessage::ToolResult {
+                call_id: "c1".into(),
+                text: "result one".into(),
+            },
+            ChatMessage::ToolResult {
+                call_id: "c2".into(),
+                text: "result two".into(),
+            },
+        ]
+    }
+
+    fn search_schema() -> serde_json::Value {
+        json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]})
+    }
+
+    #[test]
+    fn openai_chat_body_carries_tools_calls_and_tool_results() {
+        let body = openai_chat_body(
+            "m",
+            Some(ReasoningEffort::Low),
+            "SYSTEM",
+            &transcript(),
+            &[spec("search", search_schema())],
+        );
+        assert_eq!(body["model"], "m");
+        assert_eq!(body["reasoning"], json!({"effort": "low"}));
+        assert_eq!(
+            body["tools"],
+            json!([{"type": "function", "function": {
+                "name": "search", "description": "a tool", "parameters": search_schema()
+            }}])
+        );
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0], json!({"role": "system", "content": "SYSTEM"}));
+        assert_eq!(
+            msgs[1],
+            json!({"role": "user", "content": "what did I plant?"})
+        );
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["content"], "Let me look.");
+        assert_eq!(
+            msgs[2]["tool_calls"][0],
+            json!({"id": "c1", "type": "function", "function": {
+                "name": "search", "arguments": "{\"query\":\"plant\"}"
+            }})
+        );
+        assert_eq!(msgs[2]["tool_calls"][1]["function"]["arguments"], "{}");
+        assert_eq!(
+            msgs[3],
+            json!({"role": "tool", "tool_call_id": "c1", "content": "result one"})
+        );
+        assert_eq!(
+            msgs[4],
+            json!({"role": "tool", "tool_call_id": "c2", "content": "result two"})
+        );
+        assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn openai_chat_body_without_reasoning_or_tools_omits_both() {
+        let body = openai_chat_body("m", None, "S", &[ChatMessage::User("q".into())], &[]);
+        assert!(body.get("reasoning").is_none());
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn openai_reply_with_calls_parses_arguments_and_keeps_text() {
+        let response: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {
+                "role": "assistant",
+                "content": "Searching.",
+                "tool_calls": [
+                    {"id": "call_a", "type": "function",
+                     "function": {"name": "search", "arguments": "{\"query\":\"rosemary\"}"}},
+                    {"id": "call_b", "type": "function",
+                     "function": {"name": "list_date_keys", "arguments": "{}"}}
+                ]
+            }}]
+        }))
+        .unwrap();
+        assert_eq!(
+            openai_reply(response, "test").unwrap(),
+            ModelReply::Calls {
+                text: Some("Searching.".into()),
+                calls: vec![
+                    call("call_a", "search", json!({"query": "rosemary"})),
+                    call("call_b", "list_date_keys", json!({})),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn openai_reply_text_only_is_text_and_blank_is_the_no_answer_error() {
+        let text: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"role": "assistant", "content": "the answer"}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            openai_reply(text, "test").unwrap(),
+            ModelReply::Text("the answer".into())
+        );
+        let blank: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"role": "assistant", "content": null}}]
+        }))
+        .unwrap();
+        let err = openai_reply(blank, "test").unwrap_err().to_string();
+        assert!(err.contains("no answer text"), "{err}");
+    }
+
+    #[test]
+    fn openai_reply_with_malformed_arguments_keeps_the_raw_string() {
+        let response: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "x", "type": "function",
+                 "function": {"name": "search", "arguments": "{\"query\": oops"}}
+            ]}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            openai_reply(response, "test").unwrap(),
+            ModelReply::Calls {
+                text: None,
+                calls: vec![call("x", "search", json!("{\"query\": oops"))],
+            }
+        );
+    }
+
+    #[test]
+    fn first_line_keeps_one_line_and_cuts_it() {
+        assert_eq!(
+            first_line("\n  {\"error\": \"no tools\"}\nsecret body", 200),
+            "{\"error\": \"no tools\"}"
+        );
+        assert_eq!(first_line(&"é".repeat(300), 200).chars().count(), 200);
+        assert_eq!(first_line("", 200), "");
+    }
+
+    #[test]
+    fn openai_reply_synthesizes_a_missing_or_null_call_id() {
+        let response: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [
+                {"type": "function", "function": {"name": "search", "arguments": "{}"}},
+                {"id": null, "type": "function", "function": {"name": "list_date_keys", "arguments": "{}"}},
+                {"id": "", "type": "function", "function": {"name": "read_note", "arguments": "{}"}},
+                {"id": "kept", "type": "function", "function": {"name": "related_notes", "arguments": "{}"}}
+            ]}}]
+        }))
+        .unwrap();
+        let ModelReply::Calls { calls, .. } = openai_reply(response, "test").unwrap() else {
+            panic!("calls expected");
+        };
+        let ids: Vec<&str> = calls.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["call_0", "call_1", "call_2", "kept"]);
+    }
+
+    #[test]
+    fn gemini_chat_body_omits_parameters_of_a_tool_without_arguments() {
+        let specs = crate::tools::tool_specs();
+        let body = gemini_chat_body("S", &[ChatMessage::User("q".into())], &specs).unwrap();
+        let decls = body["tools"][0]["functionDeclarations"].as_array().unwrap();
+        let list = decls
+            .iter()
+            .find(|d| d["name"] == "list_date_keys")
+            .unwrap();
+        assert!(list.get("parameters").is_none(), "{list}");
+        let search = decls.iter().find(|d| d["name"] == "search").unwrap();
+        assert_eq!(search["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn openai_chat_body_sends_a_malformed_call_back_as_its_raw_text() {
+        let msgs = vec![ChatMessage::Assistant {
+            text: None,
+            calls: vec![call("x", "search", json!("{\"query\": oops"))],
+        }];
+        let body = openai_chat_body("m", None, "S", &msgs, &[]);
+        assert_eq!(
+            body["messages"][1]["tool_calls"][0]["function"]["arguments"],
+            "{\"query\": oops"
+        );
+        assert_eq!(body["messages"][1]["content"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn anthropic_chat_body_has_input_schema_tool_use_and_tool_result_blocks() {
+        let mut msgs = transcript();
+        msgs.push(ChatMessage::User("and then?".into()));
+        let body = anthropic_chat_body("m", "SYSTEM", &msgs, &[spec("search", search_schema())]);
+        assert_eq!(body["model"], "m");
+        assert_eq!(body["max_tokens"], 4096);
+        assert_eq!(body["system"], "SYSTEM");
+        assert_eq!(
+            body["tools"],
+            json!([{"name": "search", "description": "a tool", "input_schema": search_schema()}])
+        );
+        let m = body["messages"].as_array().unwrap();
+        assert_eq!(
+            m.len(),
+            3,
+            "user, assistant, user(results + follow-up): {m:?}"
+        );
+        assert_eq!(
+            m[0],
+            json!({"role": "user", "content": [{"type": "text", "text": "what did I plant?"}]})
+        );
+        assert_eq!(
+            m[1],
+            json!({"role": "assistant", "content": [
+                {"type": "text", "text": "Let me look."},
+                {"type": "tool_use", "id": "c1", "name": "search", "input": {"query": "plant"}},
+                {"type": "tool_use", "id": "c2", "name": "list_date_keys", "input": {}}
+            ]})
+        );
+        assert_eq!(
+            m[2],
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "c1", "content": "result one"},
+                {"type": "tool_result", "tool_use_id": "c2", "content": "result two"},
+                {"type": "text", "text": "and then?"}
+            ]})
+        );
+    }
+
+    #[test]
+    fn anthropic_reply_parses_tool_use_blocks_and_text() {
+        let response: AnthropicResponse = serde_json::from_value(json!({
+            "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"query": "x"}}
+            ],
+            "stop_reason": "tool_use"
+        }))
+        .unwrap();
+        assert_eq!(
+            anthropic_reply(response, "test").unwrap(),
+            ModelReply::Calls {
+                text: Some("Let me check.".into()),
+                calls: vec![call("toolu_1", "search", json!({"query": "x"}))],
+            }
+        );
+        let text: AnthropicResponse = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            anthropic_reply(text, "test").unwrap(),
+            ModelReply::Text("a\nb".into())
+        );
+        let blank: AnthropicResponse =
+            serde_json::from_value(json!({"content": [{"type": "text", "text": " "}]})).unwrap();
+        let err = anthropic_reply(blank, "test").unwrap_err().to_string();
+        assert!(err.contains("no answer text"), "{err}");
+    }
+
+    #[test]
+    fn gemini_chat_body_has_function_declarations_calls_and_named_responses() {
+        let body =
+            gemini_chat_body("SYSTEM", &transcript(), &[spec("search", search_schema())]).unwrap();
+        assert_eq!(
+            body["systemInstruction"],
+            json!({"parts": [{"text": "SYSTEM"}]})
+        );
+        assert_eq!(
+            body["tools"],
+            json!([{"functionDeclarations": [
+                {"name": "search", "description": "a tool", "parameters": search_schema()}
+            ]}])
+        );
+        let c = body["contents"].as_array().unwrap();
+        assert_eq!(c.len(), 3, "{c:?}");
+        assert_eq!(
+            c[0],
+            json!({"role": "user", "parts": [{"text": "what did I plant?"}]})
+        );
+        assert_eq!(
+            c[1],
+            json!({"role": "model", "parts": [
+                {"text": "Let me look."},
+                {"functionCall": {"name": "search", "args": {"query": "plant"}}},
+                {"functionCall": {"name": "list_date_keys", "args": {}}}
+            ]})
+        );
+        assert_eq!(
+            c[2],
+            json!({"role": "user", "parts": [
+                {"functionResponse": {"name": "search", "response": {"content": "result one"}}},
+                {"functionResponse": {"name": "list_date_keys", "response": {"content": "result two"}}}
+            ]})
+        );
+    }
+
+    #[test]
+    fn gemini_tool_result_names_follow_the_latest_assistant_turn() {
+        // Gemini ids repeat across replies (`call_0` each time), so a result
+        // takes its name from the turn just before it, not an earlier one.
+        let msgs = vec![
+            ChatMessage::User("q".into()),
+            ChatMessage::Assistant {
+                text: None,
+                calls: vec![call("call_0", "search", json!({"query": "a"}))],
+            },
+            ChatMessage::ToolResult {
+                call_id: "call_0".into(),
+                text: "r1".into(),
+            },
+            ChatMessage::Assistant {
+                text: None,
+                calls: vec![call("call_0", "read_note", json!({"path": "a.md"}))],
+            },
+            ChatMessage::ToolResult {
+                call_id: "call_0".into(),
+                text: "r2".into(),
+            },
+        ];
+        let body = gemini_chat_body("S", &msgs, &[]).unwrap();
+        assert_eq!(
+            body["contents"][2]["parts"][0]["functionResponse"]["name"],
+            "search"
+        );
+        assert_eq!(
+            body["contents"][4]["parts"][0]["functionResponse"]["name"],
+            "read_note"
+        );
+        assert!(body.get("tools").is_none());
+    }
+
+    #[test]
+    fn gemini_schema_strips_rejected_keywords_at_every_level() {
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                // A property NAMED like a keyword is a property, not a keyword.
+                "additionalProperties": {"type": "string"},
+                "nested": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {"x": {"type": "string"}}
+                },
+                "tags": {"type": "array", "items": {"type": "object", "additionalProperties": false}}
+            },
+            "required": ["nested"]
+        });
+        assert_eq!(
+            gemini_schema(&schema),
+            json!({
+                "type": "object",
+                "properties": {
+                    "additionalProperties": {"type": "string"},
+                    "nested": {"type": "object", "properties": {"x": {"type": "string"}}},
+                    "tags": {"type": "array", "items": {"type": "object"}}
+                },
+                "required": ["nested"]
+            })
+        );
+        let body = gemini_chat_body("S", &[], &[spec("t", schema)]).unwrap();
+        assert!(
+            !body["tools"][0]["functionDeclarations"][0]["parameters"]
+                .to_string()
+                .contains("\"additionalProperties\":false"),
+            "the body sends the stripped schema"
+        );
+    }
+
+    #[test]
+    fn gemini_reply_synthesizes_call_ids_in_order() {
+        let response: GeminiResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"text": "Looking."},
+                {"functionCall": {"name": "search", "args": {"query": "a"}}},
+                {"functionCall": {"name": "list_date_keys", "args": {}}}
+            ]}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            gemini_reply(response, "test").unwrap(),
+            ModelReply::Calls {
+                text: Some("Looking.".into()),
+                calls: vec![
+                    call("call_0", "search", json!({"query": "a"})),
+                    call("call_1", "list_date_keys", json!({})),
+                ],
+            }
+        );
+        let text: GeminiResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"role": "model", "parts": [{"text": "done"}]}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            gemini_reply(text, "test").unwrap(),
+            ModelReply::Text("done".into())
+        );
+        let blank: GeminiResponse =
+            serde_json::from_value(json!({"candidates": [{"content": {"parts": []}}]})).unwrap();
+        let err = gemini_reply(blank, "test").unwrap_err().to_string();
+        assert!(err.contains("no answer text"), "{err}");
+    }
+
+    #[test]
+    fn http_400_about_tools_maps_to_tools_unsupported() {
+        use reqwest::StatusCode;
+        for (status, body) in [
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"tools is not supported"}"#,
+            ),
+            (
+                StatusCode::NOT_FOUND,
+                "No endpoints found that support tool use",
+            ),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unknown field TOOL_CHOICE",
+            ),
+            (StatusCode::BAD_REQUEST, "Function calling is not enabled"),
+        ] {
+            let err = chat_api_error("test", status, body);
+            assert!(
+                err.downcast_ref::<ToolsUnsupported>().is_some(),
+                "{status} {body} must map: {err}"
+            );
+        }
+        for (status, body) in [
+            (StatusCode::BAD_REQUEST, "context length exceeded"),
+            (StatusCode::UNAUTHORIZED, "invalid tool key"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "tools crashed"),
+        ] {
+            let err = chat_api_error("test", status, body);
+            assert!(
+                err.downcast_ref::<ToolsUnsupported>().is_none(),
+                "{status} {body} must stay ordinary"
+            );
+            let msg = err.to_string();
+            assert!(msg.contains("test API error"), "{msg}");
+            assert!(msg.contains(status.as_str()) && msg.contains(body), "{msg}");
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_over_http_rejecting_tools_is_tools_unsupported() {
+        let app = Router::new().route(
+            "/chat/completions",
+            post(|| async {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    r#"{"error":{"message":"This model does not support tools"}}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let err = client(
+            Wire::OpenAiCompat { reasoning: None },
+            format!("http://{addr}"),
+        )
+        .chat("S", &[ChatMessage::User("q".into())], &[])
+        .await
+        .unwrap_err();
+        assert!(err.is::<ToolsUnsupported>(), "{err}");
+    }
+
+    #[tokio::test]
+    async fn chat_over_http_posts_the_wire_body_and_parses_the_reply() {
+        let captured: Captured = Arc::new(Mutex::new(None));
+        let base = mock_provider(
+            "/v1/messages",
+            json!({"content": [
+                {"type": "tool_use", "id": "t1", "name": "search", "input": {"query": "q"}}
+            ]}),
+            captured.clone(),
+        )
+        .await;
+        let reply = client(Wire::Anthropic, base)
+            .chat(
+                "SYS",
+                &[ChatMessage::User("q".into())],
+                &[spec("search", search_schema())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            reply,
+            ModelReply::Calls {
+                text: None,
+                calls: vec![call("t1", "search", json!({"query": "q"}))],
+            }
+        );
+        let (headers, body) = captured.lock().unwrap().take().unwrap();
+        assert_eq!(headers["x-api-key"], "sk-test");
+        assert_eq!(body["system"], "SYS");
+        assert_eq!(body["tools"][0]["name"], "search");
+    }
+
+    #[tokio::test]
+    async fn default_chat_is_tools_unsupported() {
+        struct AskOnly;
+        #[async_trait]
+        impl LLMClient for AskOnly {
+            async fn ask(
+                &self,
+                _: &str,
+                _: &[(String, String)],
+                _: &[(usize, (f64, FlattenedChunk))],
+            ) -> anyhow::Result<String> {
+                Ok(String::new())
+            }
+        }
+        let err = AskOnly.chat("S", &[], &[]).await.unwrap_err();
+        assert!(err.is::<ToolsUnsupported>());
+    }
+
+    fn signed(id: &str, name: &str, sig: &str) -> ModelToolCall {
+        ModelToolCall {
+            extra: Some(json!({"thoughtSignature": sig})),
+            ..ModelToolCall::new(id, name, json!({}))
+        }
+    }
+
+    #[test]
+    fn gemini_reply_keeps_each_parts_thought_signature_in_extra() {
+        let response: GeminiResponse = serde_json::from_value(json!({
+            "candidates": [{"content": {"role": "model", "parts": [
+                {"functionCall": {"name": "search", "args": {}}, "thoughtSignature": "SIG_A"},
+                {"functionCall": {"name": "list_date_keys", "args": {}}}
+            ]}}]
+        }))
+        .unwrap();
+        assert_eq!(
+            gemini_reply(response, "test").unwrap(),
+            ModelReply::Calls {
+                text: None,
+                calls: vec![
+                    signed("call_0", "search", "SIG_A"),
+                    call("call_1", "list_date_keys", json!({})),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn gemini_chat_body_sends_the_signature_only_on_the_part_that_had_one() {
+        let msgs = vec![
+            ChatMessage::User("q".into()),
+            ChatMessage::Assistant {
+                text: None,
+                calls: vec![
+                    signed("call_0", "search", "SIG_A"),
+                    call("call_1", "list_date_keys", json!({})),
+                ],
+            },
+        ];
+        let body = gemini_chat_body("S", &msgs, &[]).unwrap();
+        assert_eq!(
+            body["contents"][1]["parts"],
+            json!([
+                {"functionCall": {"name": "search", "args": {}}, "thoughtSignature": "SIG_A"},
+                {"functionCall": {"name": "list_date_keys", "args": {}}}
+            ])
+        );
+    }
+
+    #[test]
+    fn openai_and_anthropic_ignore_extra() {
+        let msgs = vec![ChatMessage::Assistant {
+            text: None,
+            calls: vec![signed("c1", "search", "SIG_A")],
+        }];
+        let openai = openai_chat_body("m", None, "S", &msgs, &[]);
+        let anthropic = anthropic_chat_body("m", "S", &msgs, &[]);
+        assert!(!openai.to_string().contains("SIG_A"), "{openai}");
+        assert!(!anthropic.to_string().contains("SIG_A"), "{anthropic}");
+        assert!(!openai.to_string().contains("thoughtSignature"));
+        assert!(!anthropic.to_string().contains("thoughtSignature"));
     }
 }

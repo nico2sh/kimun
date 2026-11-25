@@ -25,6 +25,8 @@ The server never reads your files. Kimün sends it the text of your notes. The s
 
 With an answer selected, press `y` to copy it, `e` to save it as a new note, or `r` to ask again. Ask needs a language model (LLM) that you set up in the server. Without one, you get semantic search only.
 
+Ask can also answer questions about time, such as "what did I write last week?". It uses the dates of your notes. After you upgrade the server, Kimün sends your notes to it again once, so the server can store dates, tags and links. This takes a while on a large vault.
+
 ## Set up
 
 Install the server with the script. The option `--service` starts the server when you log in and restarts it if it stops:

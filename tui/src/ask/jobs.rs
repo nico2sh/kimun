@@ -105,6 +105,7 @@ mod tests {
                 Some((answer, sources)) => Ok(AnswerResult {
                     answer: answer.clone(),
                     sources: sources.clone(),
+                    trail: vec![],
                 }),
                 None => Err(RagError::Protocol("answer job failed".into())),
             }

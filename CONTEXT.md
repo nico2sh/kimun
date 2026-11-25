@@ -490,6 +490,10 @@ _Avoid_: reference (too generic), footnote (citations are inline, not appended),
 The part of the **Ask workspace** that lists the ranked sources of the selected **Turn** — section heading, note path, similarity, snippet. In the GUI it is folded into the ASK view and expands in place under the selected turn; in the TUI it is what the **Drawer** shows while ASK is selected. Selecting a different turn in the **Thread** repopulates it; it never shows a mix of turns. Flips between its list and the **Source reader**.
 _Avoid_: context panel (context is what the LLM saw, this is its per-note presentation), results (collides with search results).
 
+**Trail**:
+The ordered record of what the assistant did to answer one **Turn**: each search it ran and each note it read, in plain words ("Searching journal entries from Nov 17 to Nov 23"). It shows live while the answer is being prepared and stays with the turn afterward, so a wrong reading of the question is visible in one line. Belongs to its own turn, like the sources.
+_Avoid_: log (a diagnostic for the server's operator), history (means prior turns sent to the LLM), steps (names one entry, not the record).
+
 **Source reader**:
 The **Sources view**'s reveal of a source's full note — the retrieved section highlighted and scrolled into view — so evidence can be read *without leaving the answer*; the **Thread** stays put. It *is* the **Preview pane** (the same expand cycle and content surface the **Query panel** uses), anchored by the section's range rather than query needles. Entered from a source row or a **Citation**. Read-only: editing the note is the editor's job. Open-in-editor opens the note in the editor; in the GUI the ASK view stays where it is beside it, in the TUI the editor area leaves the Ask workspace.
 _Avoid_: reader face (the superseded bespoke surface — the reveal is the shared Preview pane now), note viewer.
@@ -674,6 +678,10 @@ _Avoid_: search pipeline (names one slice), RAG orchestrator, KimunRag as a pros
 **Context cut**:
 The **query pipeline**'s one sizing rule for query results, applied to the ranked pool on both surfaces and both reranker paths: **search** shows the notes whose best chunk survives it, **answer** feeds the surviving chunks to the LLM. Selectable by strategy — *fixed* keeps a count (the classic top_k, the only strategy where per-request sizing applies); *score-range* keeps the chunks in the upper reaches of the pool's normalized score range; *largest-drop* cuts just past the biggest relative gap between consecutive note scores (each note's best chunk — a note's extra sections must not mask the elbow) found inside a configurable search window. For the adaptive strategies, flat scores mean no evidence of a relevance boundary, so nothing is cut.
 _Avoid_: truncation (implies always-fixed counts), threshold (one strategy's mechanism, not the concept), top_k strategy (top_k is fixed's knob, not the concept).
+
+**Note date**:
+A date that places a note in time: the date in a journal note's filename, or the value of any date-typed **property** on a note. A note can have several (a journal date, `due`, `created`), and each keeps the name of its source, so "written last week" and "due last week" stay different questions. Notes without either have no note date and never match a date filter.
+_Avoid_: journal date (only one source), modified time (a file fact, not a note date), created date (one property key, not the concept).
 
 **Vector store**:
 The **Kimün server**'s pure-storage seam (`VectorStore`): adapters (SQLite, Qdrant) store, delete, and search pre-embedded chunk rows per **collection** — never embed, split, or rank; that is **query pipeline** policy above the seam. Contract pinned by a conformance suite run against every adapter: collections appear lazily on first store, reads/deletes of a missing collection are empty/no-op (never an error — reconciliation may probe a never-pushed vault), query scores are similarities, best-first.

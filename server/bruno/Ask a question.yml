@@ -10,6 +10,7 @@ http:
     type: json
     data: |-
       {
+        "vault_id": "{{?vault_id}}",
         "query": "{{?question}}",
         "context_size": "large"
       }
