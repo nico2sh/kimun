@@ -554,7 +554,11 @@ fn enter_on_a_missing_path_shows_the_message_and_stays(cx: &mut TestAppContext) 
     .unwrap();
     s.go(&rt, cx);
     let message = s.location_error(cx).expect("a message");
-    assert_ne!(message, "That folder does not exist");
+    // Windows reports a name that long as a missing path, so only the
+    // other systems give a distinct message.
+    if !cfg!(windows) {
+        assert_ne!(message, "That folder does not exist");
+    }
     assert_eq!(s.dir(cx), sys(&root));
     assert_eq!(s.shown(cx), names(&["notes"]));
 }
