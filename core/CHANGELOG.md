@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.9.0...kimun_core-v0.9.1) - 2026-11-25
+
+### Added
+
+- *(core)* location rules for the folder chooser
+- *(core)* the image cache
+- *(core)* find remote image embeds
+- *(core)* image embed detection and closest-file resolution
+
+### Fixed
+
+- home tilde fix
+- *(core)* keep the temporary file of a running save when the image cache is cleared
+- *(gui)* fail a remote image over 64 megapixels before it is saved or decoded
+- *(core)* eviction keeps the temp files of saves in flight
+- small systemtime panic
+- *(core)* name the lock in poisoned-mutex panics
+
+### Other
+
+- *(core)* one line walker for image embeds
+- one AllowedHosts rule for the settings, the store and redirects
+- cheaper bare-name image lookup, test-only reserve setter
+- config and results
+- vault browse and search
+- entry moves and deltes in its own file
+- attachments extracted in core
+- *(core)* move note edits and journal out of lib.rs
+- *(core)* split lib.rs tests, properties, saved searches, pins
+
 ## [0.9.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.8.0...kimun_core-v0.9.0) - 2026-11-23
 
 ### Added
