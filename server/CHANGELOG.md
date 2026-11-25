@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/nico2sh/kimun/compare/kimun_server-v0.6.2...kimun_server-v0.7.0) - 2026-11-25
+
+### Added
+
+- workspace name in server
+- agentic ask
+
+### Fixed
+
+- better prompt and queries
+- proper relative time resolve in prompt
+
 ## [0.6.2](https://github.com/nico2sh/kimun/compare/kimun_server-v0.6.1...kimun_server-v0.6.2) - 2026-11-23
 
 ### Other
