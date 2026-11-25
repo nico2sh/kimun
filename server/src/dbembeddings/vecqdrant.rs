@@ -516,6 +516,16 @@ impl VectorStore for VecQdrant {
             metas.into_iter().map(|(_, m)| m),
         ))
     }
+
+    // Qdrant does not store vault labels. SQLite is the default store; on
+    // Qdrant the web UI shows no label.
+    async fn set_vault_label(&self, _collection: &str, _label: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>> {
+        Ok(HashMap::new())
+    }
 }
 
 /// Conformance against a live Qdrant. `#[ignore]`d because they need a running
@@ -665,6 +675,19 @@ mod tests {
             "filtered search is not supported on the qdrant store",
             err.to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn vault_labels_are_not_stored_and_never_call_the_server() {
+        let s = VecQdrant::new(
+            "http://127.0.0.1:1".to_string(),
+            "unused".to_string(),
+            conformance::DIM,
+        )
+        .await
+        .unwrap();
+        s.set_vault_label("v", "default").await.unwrap();
+        assert!(s.vault_labels().await.unwrap().is_empty());
     }
 
     #[test]

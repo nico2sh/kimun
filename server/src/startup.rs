@@ -10,7 +10,7 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     extract::State,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 
 use crate::KimunRag;
@@ -20,8 +20,8 @@ use crate::dbembeddings::embedder::{Embedder, fastembedder::FastEmbedder, http::
 use crate::dbembeddings::vecqdrant::VecQdrant;
 use crate::dbembeddings::vecsqlite::VecSqlite;
 use crate::handlers::{
-    answer_handler, answer_stream_handler, collection_hashes_handler, get_embeddings_handler,
-    index_delete_handler, index_docs_handler, job_status_handler,
+    answer_handler, answer_stream_handler, collection_hashes_handler, collection_label_handler,
+    get_embeddings_handler, index_delete_handler, index_docs_handler, job_status_handler,
 };
 use crate::llmclients::{ChatClient, LLMClient};
 use crate::server_state::AppState;
@@ -342,6 +342,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/collections/{vault_id}/hashes",
             get(collection_hashes_handler),
+        )
+        .route(
+            "/api/collections/{vault_id}/label",
+            put(collection_label_handler),
         )
         .route("/api/job/{job_id}", get(job_status_handler))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -961,6 +965,90 @@ mod tests {
                 .unwrap()
                 .contains("provider exploded")
         );
+    }
+
+    // ------------------------------------------------------------------
+    // PUT /api/collections/{vault_id}/label
+    // ------------------------------------------------------------------
+
+    async fn put_label(
+        app: Router,
+        vault_id: &str,
+        body: Value,
+        bearer: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let mut req = Request::put(format!("/api/collections/{vault_id}/label"))
+            .header("content-type", "application/json");
+        if let Some(token) = bearer {
+            req = req.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let resp = app
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_good_label_is_stored_and_answered_with_no_content() {
+        let state = Arc::new(AppState::new(Some(fake_rag(false)), config(SEMANTIC_ONLY)));
+        let (status, _) = put_label(
+            router(state.clone()),
+            "vault-1",
+            json!({"label": "kimun-notes"}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let labels = state.rag().unwrap().vault_labels().await.unwrap();
+        assert_eq!(
+            labels.get("vault-1").map(String::as_str),
+            Some("kimun-notes")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_label_or_vault_id_is_a_bad_request() {
+        let state = Arc::new(AppState::new(Some(fake_rag(false)), config(SEMANTIC_ONLY)));
+        let (status, body) = put_label(
+            router(state.clone()),
+            "vault-1",
+            json!({"label": "  "}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].is_string(), "{body}");
+        let (status, _) =
+            put_label(router(state.clone()), "__meta", json!({"label": "x"}), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "bad vault id");
+        assert!(
+            state
+                .rag()
+                .unwrap()
+                .vault_labels()
+                .await
+                .unwrap()
+                .is_empty(),
+            "nothing was stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_label_route_is_behind_the_bearer_gate() {
+        let state = Arc::new(AppState::new(
+            None,
+            config(
+                "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\n[auth]\ntoken = \"secret\"\n",
+            ),
+        ));
+        let (status, _) = put_label(router(state), "vault-1", json!({"label": "x"}), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

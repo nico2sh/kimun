@@ -45,6 +45,12 @@ pub struct DeleteRequest {
     pub paths: Vec<String>,
 }
 
+/// Body of `PUT /api/collections/{vault_id}/label`.
+#[derive(Debug, Serialize)]
+pub struct LabelRequest {
+    pub label: String,
+}
+
 /// One prior Q&A pair sent as conversation history on `/api/answer`.
 #[derive(Debug, Clone, Serialize)]
 pub struct HistoryTurn {

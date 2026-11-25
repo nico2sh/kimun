@@ -517,6 +517,27 @@ pub async fn collection_hashes_handler(
     Ok(Json(state.rag()?.note_hashes(&collection).await?))
 }
 
+/// The body of `PUT /api/collections/{vault_id}/label`.
+#[derive(Debug, Deserialize)]
+pub struct VaultLabelRequest {
+    pub label: String,
+}
+
+/// Records the **vault label** the app registers for a vault, so the web UI
+/// can show which collection is which. Answers 204 No Content.
+pub async fn collection_label_handler(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(vault_id): axum::extract::Path<String>,
+    Json(request): Json<VaultLabelRequest>,
+) -> Result<StatusCode, RagError> {
+    let collection = CollectionKey::parse(&vault_id)?;
+    state
+        .rag()?
+        .set_vault_label(&collection, &request.label)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Job Status - Get status of a job
 pub async fn job_status_handler(
     State(state): State<Arc<AppState>>,

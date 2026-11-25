@@ -725,6 +725,52 @@ impl KimunRag {
         self.check_fingerprint().await?;
         Ok(self.store.collection_names().await?)
     }
+
+    /// Records the **vault label** the app registers for a vault, after
+    /// [`clean_vault_label`] accepts it. Display only: the vault id stays the
+    /// collection key.
+    pub async fn set_vault_label(
+        &self,
+        collection: &CollectionKey,
+        label: &str,
+    ) -> Result<(), RagError> {
+        let label = clean_vault_label(label)?;
+        self.check_fingerprint().await?;
+        self.store
+            .set_vault_label(collection.as_str(), &label)
+            .await?;
+        Ok(())
+    }
+
+    /// `{vault id → vault label}` for every vault that registered a label.
+    pub async fn vault_labels(&self) -> Result<HashMap<String, String>, RagError> {
+        self.check_fingerprint().await?;
+        Ok(self.store.vault_labels().await?)
+    }
+}
+
+/// Longest **vault label** accepted, in characters after trimming.
+const VAULT_LABEL_MAX_CHARS: usize = 100;
+
+/// The **vault label** as the server stores it: trimmed, 1 to 100
+/// characters, with no control characters (newlines
+/// and tabs included). Anything else is a [`RagError::Validation`].
+pub fn clean_vault_label(raw: &str) -> Result<String, RagError> {
+    let label = raw.trim();
+    if label.is_empty() {
+        return Err(RagError::Validation("label must not be empty".to_string()));
+    }
+    if label.chars().count() > VAULT_LABEL_MAX_CHARS {
+        return Err(RagError::Validation(format!(
+            "label must be at most {VAULT_LABEL_MAX_CHARS} characters"
+        )));
+    }
+    if label.chars().any(char::is_control) {
+        return Err(RagError::Validation(
+            "label must not contain control characters or line breaks".to_string(),
+        ));
+    }
+    Ok(label.to_string())
 }
 
 /// Collapse ranked chunks to one row per note — the best (first-seen, so
@@ -1048,6 +1094,8 @@ pub(crate) mod test_support {
         pub refuse_filtered: bool,
         /// Served by `note_links`.
         pub links: HashMap<String, Vec<String>>,
+        /// Vault labels, written by `set_vault_label`.
+        pub labels: Mutex<HashMap<String, String>>,
     }
 
     impl Default for FakeVectorStore {
@@ -1073,6 +1121,7 @@ pub(crate) mod test_support {
                 fingerprint_unavailable: Mutex::new(false),
                 refuse_filtered: false,
                 links: HashMap::new(),
+                labels: Mutex::new(HashMap::new()),
             }
         }
     }
@@ -1153,6 +1202,16 @@ pub(crate) mod test_support {
         async fn date_sources(&self, _: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())
         }
+        async fn set_vault_label(&self, collection: &str, label: &str) -> anyhow::Result<()> {
+            self.labels
+                .lock()
+                .unwrap()
+                .insert(collection.to_string(), label.to_string());
+            Ok(())
+        }
+        async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>> {
+            Ok(self.labels.lock().unwrap().clone())
+        }
     }
 
     /// Deterministic embedder: non-zero vector per text, no model download.
@@ -1225,6 +1284,45 @@ mod tests {
             Arc::new(FakeEmbedder),
             if llm { Some(Arc::new(FakeLlm)) } else { None },
         )
+    }
+
+    #[test]
+    fn clean_vault_label_trims_and_rejects_what_cannot_be_shown() {
+        let ok = |raw: &str| clean_vault_label(raw).unwrap();
+        let rejected = |raw: &str| {
+            assert!(
+                matches!(clean_vault_label(raw), Err(RagError::Validation(_))),
+                "{raw:?} must be rejected"
+            )
+        };
+        assert_eq!(ok("  default \t"), "default");
+        assert_eq!(ok("kimun-notes"), "kimun-notes");
+        assert_eq!(ok("Notizen äöü 日本"), "Notizen äöü 日本");
+        assert_eq!(
+            ok(&"é".repeat(100)),
+            "é".repeat(100),
+            "100 chars, not bytes"
+        );
+        rejected(&"a".repeat(101));
+        rejected("");
+        rejected("   ");
+        rejected("two\nlines");
+        rejected("tab\there");
+        rejected("bell\u{7}");
+    }
+
+    #[tokio::test]
+    async fn vault_labels_go_through_the_store() {
+        let r = rag(FakeVectorStore::default(), false);
+        r.set_vault_label(&key("vault-1"), " default ")
+            .await
+            .unwrap();
+        let labels = r.vault_labels().await.unwrap();
+        assert_eq!(labels.get("vault-1").map(String::as_str), Some("default"));
+        assert!(matches!(
+            r.set_vault_label(&key("vault-1"), " ").await,
+            Err(RagError::Validation(_))
+        ));
     }
 
     #[test]
