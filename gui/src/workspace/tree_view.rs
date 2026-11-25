@@ -1388,7 +1388,7 @@ impl Workspace {
                     .children(self.group_zone_layer(at, group, cx)),
             )
             .when_some(self.target_marker_color(group, cx), |el, color| {
-                el.child(self.render_target_marker(at, group, rem, color, cx))
+                el.child(self.render_target_marker(at, group, rem, color))
             })
             .into_any_element()
     }

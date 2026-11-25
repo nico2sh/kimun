@@ -565,7 +565,7 @@ impl Workspace {
     /// A group's drag does not open it for a lone tab, as it has no other
     /// tab to aim at. The motion spec and the drawing code both ask this,
     /// so they never disagree.
-    pub(super) fn strip_wanted(&self, _cx: &App) -> bool {
+    pub(super) fn strip_wanted(&self) -> bool {
         self.layout.region().tabs().len() >= 2
     }
 
@@ -576,7 +576,7 @@ impl Workspace {
     pub(super) fn render_tab_strip(&self, rem: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
         let region = self.layout.region();
         let tabs = region.tabs();
-        let wanted = self.strip_wanted(cx);
+        let wanted = self.strip_wanted();
         let presence = self.motion.borrow().presence(MotionKey::TabStrip);
         // Still drawn while it closes (ADR-0060), from the tabs that remain.
         if !wanted && presence.frame <= 0.0 {

@@ -497,7 +497,7 @@ impl Workspace {
     /// visible, and its presence catches up over time. Reads the model,
     /// never writes it.
     pub(super) fn motion_frame(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let specs = self.motion_specs(cx);
+        let specs = self.motion_specs();
         let weights = {
             let motion = self.motion.borrow();
             self.weight_specs(|key| motion.holds_cell(key))
@@ -589,8 +589,8 @@ impl Workspace {
 
     /// What each thing is asked to do this frame, in the order it is
     /// sampled: a parent before what comes with it.
-    fn motion_specs(&self, cx: &App) -> Vec<Spec> {
-        let strip = self.strip_wanted(cx);
+    fn motion_specs(&self) -> Vec<Spec> {
+        let strip = self.strip_wanted();
         let mut specs = vec![
             Spec {
                 key: MotionKey::Rail,
