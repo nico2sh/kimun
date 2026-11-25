@@ -430,6 +430,7 @@ impl Workspace {
     }
 
     /// The group being dragged by its header, while its drag lives.
+    #[cfg(test)]
     pub(crate) fn dragged_group(&self, cx: &App) -> Option<GroupId> {
         match self.live_drag(cx)? {
             Dragged::Group(drag) => Some(drag.group),

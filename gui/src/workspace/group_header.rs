@@ -319,7 +319,6 @@ impl Workspace {
         group: GroupId,
         rem: f64,
         color: Rgba,
-        cx: &App,
     ) -> AnyElement {
         let region = self.layout.region();
         let rect = region
@@ -327,7 +326,7 @@ impl Workspace {
             .into_iter()
             .find(|(g, _)| *g == group)
             .map(|(_, rect)| rect);
-        let strip = self.strip_wanted(cx);
+        let strip = self.strip_wanted();
         let (left, right) = rect.map_or((false, false), |rect| marker_corners(rect, strip));
         // The Panel's corner (`rounded_md`) less its border: the curve of
         // the Panel's inner edge.
