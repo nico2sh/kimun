@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use crate::agent::MODEL_ONLY_LABEL;
 use crate::config::{LlmConfig, OPENROUTER_URL, ReasoningEffort};
@@ -106,6 +107,20 @@ const MISTRAL_URL: &str = "https://api.mistral.ai/v1";
 const ANTHROPIC_URL: &str = "https://api.anthropic.com";
 const GEMINI_URL: &str = "https://generativelanguage.googleapis.com";
 
+/// Longest time one model request takes before it fails. Slow CPU-only local
+/// models take minutes on a long context, so the limit is generous.
+pub const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The HTTP client for model requests, with a total timeout per request.
+fn http_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        // Fails only when no TLS backend starts, where `Client::new` panics
+        // too.
+        .expect("the HTTP client for the LLM provider")
+}
+
 /// The provider's wire shape — the only thing that differs between providers.
 enum Wire {
     /// OpenAI chat-completions dialect: `{base}/chat/completions`, bearer auth.
@@ -115,7 +130,8 @@ enum Wire {
     OpenAiCompat { reasoning: Option<ReasoningEffort> },
     /// Anthropic messages API: `{base}/v1/messages`, `x-api-key` header.
     Anthropic,
-    /// Gemini generateContent: model and key live in the URL itself.
+    /// Gemini generateContent: the model lives in the URL, the key in the
+    /// `x-goog-api-key` header.
     Gemini,
 }
 
@@ -154,7 +170,7 @@ impl ChatClient {
             ),
         };
         Self {
-            http: reqwest::Client::new(),
+            http: http_client(LLM_REQUEST_TIMEOUT),
             wire,
             provider: config.provider(),
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -165,6 +181,26 @@ impl ChatClient {
 }
 
 impl ChatClient {
+    /// The same client with another request timeout.
+    #[cfg(test)]
+    fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.http = http_client(timeout);
+        self
+    }
+
+    /// A transport error without its URL on the Gemini wire. The key no
+    /// longer travels in the URL; this keeps any part of a Gemini URL out of
+    /// logs and error events all the same.
+    fn scrub(&self, error: anyhow::Error) -> anyhow::Error {
+        if !matches!(self.wire, Wire::Gemini) {
+            return error;
+        }
+        match error.downcast::<reqwest::Error>() {
+            Ok(e) => e.without_url().into(),
+            Err(other) => other,
+        }
+    }
+
     /// The POST for this wire, with its endpoint and auth, carrying `body`.
     /// Shared by `ask` and `chat`, so both speak to the same URL the same way.
     fn post<T: Serialize + ?Sized>(&self, body: &T) -> reqwest::RequestBuilder {
@@ -183,9 +219,10 @@ impl ChatClient {
             Wire::Gemini => self
                 .http
                 .post(format!(
-                    "{}/v1beta/models/{}:generateContent?key={}",
-                    self.base_url, self.model, self.api_key
+                    "{}/v1beta/models/{}:generateContent",
+                    self.base_url, self.model
                 ))
+                .header("x-goog-api-key", &self.api_key)
                 .json(body),
         }
     }
@@ -194,6 +231,30 @@ impl ChatClient {
 #[async_trait]
 impl LLMClient for ChatClient {
     async fn ask(
+        &self,
+        question: &str,
+        history: &[(String, String)],
+        context: &[(usize, (f64, FlattenedChunk))],
+    ) -> anyhow::Result<String> {
+        self.ask_inner(question, history, context)
+            .await
+            .map_err(|e| self.scrub(e))
+    }
+
+    async fn chat(
+        &self,
+        system: &str,
+        messages: &[ChatMessage],
+        tools: &[ToolSpec],
+    ) -> anyhow::Result<ModelReply> {
+        self.chat_inner(system, messages, tools)
+            .await
+            .map_err(|e| self.scrub(e))
+    }
+}
+
+impl ChatClient {
+    async fn ask_inner(
         &self,
         question: &str,
         history: &[(String, String)],
@@ -260,7 +321,7 @@ impl LLMClient for ChatClient {
         Ok(answer)
     }
 
-    async fn chat(
+    async fn chat_inner(
         &self,
         system: &str,
         messages: &[ChatMessage],
@@ -621,7 +682,9 @@ fn gemini_schema(schema: &Value) -> Value {
 
 /// An OpenAI-style reply. `arguments` is a JSON string per the API; one that
 /// is not valid JSON stays a raw [`Value::String`] for the caller to count as
-/// malformed, and an object (some compatible servers) is taken as is.
+/// malformed, and an object (some compatible servers) is taken as is. A blank
+/// string or `null` is no arguments: local servers send it for a tool that
+/// takes none.
 fn openai_reply(response: ChatResponse, provider: &str) -> anyhow::Result<ModelReply> {
     let mut texts = Vec::new();
     let mut calls = Vec::new();
@@ -629,7 +692,12 @@ fn openai_reply(response: ChatResponse, provider: &str) -> anyhow::Result<ModelR
         texts.extend(choice.message.content);
         for c in choice.message.tool_calls.unwrap_or_default() {
             let args = match c.function.arguments {
-                Value::String(raw) => serde_json::from_str(&raw).unwrap_or(Value::String(raw)),
+                Value::String(raw) if raw.trim().is_empty() => json!({}),
+                Value::String(raw) => match serde_json::from_str(&raw) {
+                    Ok(Value::Null) => json!({}),
+                    Ok(parsed) => parsed,
+                    Err(_) => Value::String(raw),
+                },
                 Value::Null => json!({}),
                 other => other,
             };
@@ -1515,7 +1583,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gemini_wire_puts_key_in_url_and_parses_candidate_parts() {
+    async fn gemini_wire_sends_key_in_header_and_parses_candidate_parts() {
         let captured: Captured = Arc::new(Mutex::new(None));
         let base = mock_provider(
             "/v1beta/models/{model_action}",
@@ -1538,8 +1606,9 @@ mod tests {
         let (headers, body) = captured.lock().unwrap().take().unwrap();
         assert!(
             headers.get("authorization").is_none(),
-            "gemini auth is the url key"
+            "gemini auth is the x-goog-api-key header"
         );
+        assert_eq!(headers.get("x-goog-api-key").unwrap(), "sk-test");
         assert!(
             body["contents"][0]["parts"][0]["text"]
                 .as_str()
@@ -1790,6 +1859,110 @@ mod tests {
                 calls: vec![call("x", "search", json!("{\"query\": oops"))],
             }
         );
+    }
+
+    fn reply_args(arguments: Value) -> Value {
+        let response: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "x", "type": "function",
+                 "function": {"name": "list_date_keys", "arguments": arguments}}
+            ]}}]
+        }))
+        .unwrap();
+        let ModelReply::Calls { calls, .. } = openai_reply(response, "test").unwrap() else {
+            panic!("no calls");
+        };
+        calls[0].args.clone()
+    }
+
+    #[test]
+    fn openai_reply_with_blank_or_null_arguments_has_no_arguments() {
+        assert_eq!(reply_args(json!("")), json!({}));
+        assert_eq!(reply_args(json!("  \n\t ")), json!({}));
+        assert_eq!(reply_args(Value::Null), json!({}));
+        assert_eq!(reply_args(json!("null")), json!({}));
+    }
+
+    #[test]
+    fn openai_reply_with_non_blank_invalid_arguments_stays_raw() {
+        assert_eq!(reply_args(json!(" oops ")), json!(" oops "));
+        assert_eq!(reply_args(json!("{}")), json!({}));
+    }
+
+    #[test]
+    fn gemini_request_carries_the_key_in_a_header_not_the_url() {
+        let mut c = client(Wire::Gemini, "https://example.test".into());
+        c.api_key = "SECRET-KEY-123".into();
+        let request = c.post(&json!({})).build().unwrap();
+        let url = request.url().as_str();
+        assert!(!url.contains("SECRET-KEY-123"), "{url}");
+        assert!(!url.contains("key="), "{url}");
+        assert_eq!(
+            url,
+            "https://example.test/v1beta/models/test-model:generateContent"
+        );
+        assert_eq!(
+            request.headers().get("x-goog-api-key").unwrap(),
+            "SECRET-KEY-123"
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_transport_error_does_not_leak_the_key() {
+        // A port that was free a moment ago: the connection is refused.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut c = client(Wire::Gemini, format!("http://{addr}"));
+        c.api_key = "SECRET-KEY-123".into();
+        let chat = c
+            .chat("system", &[ChatMessage::User("q".into())], &[])
+            .await
+            .expect_err("a closed port fails");
+        let ask = c
+            .ask("q?", &[], &[])
+            .await
+            .expect_err("a closed port fails");
+        for err in [chat, ask] {
+            for text in [format!("{err}"), format!("{err:?}"), format!("{err:#}")] {
+                assert!(!text.contains("SECRET-KEY-123"), "{text}");
+                assert!(!text.contains("key="), "{text}");
+                assert!(!text.contains(&addr.to_string()), "no url: {text}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_provider_fails_at_the_request_timeout() {
+        // Accepts the connection and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let c = client(
+            Wire::OpenAiCompat { reasoning: None },
+            format!("http://{addr}"),
+        )
+        .with_timeout(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            c.chat("system", &[ChatMessage::User("q".into())], &[]),
+        )
+        .await
+        .expect("the request timeout fires before the test's own");
+        let elapsed = started.elapsed();
+        let err = result.expect_err("a stalled call fails");
+        assert!(
+            err.downcast_ref::<reqwest::Error>()
+                .is_some_and(reqwest::Error::is_timeout),
+            "{err:?}"
+        );
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     }
 
     #[test]

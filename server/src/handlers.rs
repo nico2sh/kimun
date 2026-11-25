@@ -426,7 +426,8 @@ pub async fn answer_handler(
 ///
 /// The loop runs in a spawned task and feeds an unbounded channel (the step
 /// callback is sync and must not block). If the client disconnects, the
-/// receiver drops and sends fail silently; the answer finishes unobserved.
+/// receiver drops and the loop is cancelled at its next await: the task ends
+/// without sending anything and makes no more model calls.
 pub async fn answer_stream_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AnswerRequest>,
@@ -454,17 +455,20 @@ pub async fn answer_stream_handler(
             let data = serde_json::json!({ "text": step.text }).to_string();
             let _ = step_tx.send(Event::default().event("step").data(data));
         };
-        let last = match rag
-            .answer(
-                &collection,
-                &request.query,
-                &history,
-                top_k,
-                Some(today),
-                &on_step,
-            )
-            .await
-        {
+        let answered = rag.answer(
+            &collection,
+            &request.query,
+            &history,
+            top_k,
+            Some(today),
+            &on_step,
+        );
+        let result = tokio::select! {
+            result = answered => result,
+            // The client is gone: drop the loop, nobody reads the answer.
+            () = tx.closed() => return,
+        };
+        let last = match result {
             Ok(answer) => Event::default()
                 .event("answer")
                 .data(answer_result_json(answer)),

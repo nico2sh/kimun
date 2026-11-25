@@ -47,6 +47,7 @@ The chosen shape is a bounded tool loop in the server. The alternatives and the 
 1. The client sends the question, the prior turns, and its local date.
 2. The server runs the first `search` on its own, using the conditioned query that exists today (the last turn folded into the search text). The context cut applies to its results as it does now.
 3. The model receives the question, the date, and those results. The model can call tools, for at most 5 tool rounds.
+   - The server runs at most 4 tool calls in one turn. It answers each extra call with an error result that says the call was not run. Extra calls do not count as malformed. The trail records how many calls ran.
 4. When the model stops calling tools, or the cap is reached, it writes the answer.
 5. Sources are the chunks gathered and used, merged and numbered once. `[n]` citations point into that list.
 
@@ -89,6 +90,15 @@ Each search and each read becomes one plain-words step, for example "Searching j
 ### Tool calling and the fallback
 
 The LLM client moves from "prompt in, text out" to a message and tools exchange, written once for each wire: OpenAI-compatible, Anthropic, Gemini. If an endpoint rejects tools, the server answers in a single pass as it does today. If the model returns malformed calls twice in a row, the server also answers in a single pass. The trail records that the loop was skipped.
+
+If the single-pass answer fails after the loop gathered more chunks than the first search, the server tries once more. The retry uses only the first-search chunks, with the same numbers. The trail records the retry. If the retry also fails, the request fails with that error.
+
+### Limits
+
+- One turn runs at most 4 tool calls.
+- One answer has at most 5 tool rounds.
+- One call to the model fails after 10 minutes.
+- A whole answer has no time limit. One answer can make up to 8 model calls. It can therefore take longer than 10 minutes in total. If the app stops waiting, the server cancels a streamed answer. A polled answer keeps running until it finishes.
 
 ## Delivery order
 

@@ -1046,6 +1046,8 @@ pub(crate) mod test_support {
         /// When set, `query` errors on a non-empty filter, like the Qdrant
         /// store does.
         pub refuse_filtered: bool,
+        /// Served by `note_links`.
+        pub links: HashMap<String, Vec<String>>,
     }
 
     impl Default for FakeVectorStore {
@@ -1070,6 +1072,7 @@ pub(crate) mod test_support {
                 dropped_all: Mutex::new(false),
                 fingerprint_unavailable: Mutex::new(false),
                 refuse_filtered: false,
+                links: HashMap::new(),
             }
         }
     }
@@ -1145,7 +1148,7 @@ pub(crate) mod test_support {
             Ok(())
         }
         async fn note_links(&self, _: &str) -> anyhow::Result<HashMap<String, Vec<String>>> {
-            Ok(HashMap::new())
+            Ok(self.links.clone())
         }
         async fn date_sources(&self, _: &str) -> anyhow::Result<Vec<String>> {
             Ok(Vec::new())

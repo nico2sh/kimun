@@ -251,9 +251,12 @@ impl VectorStore for VecSqlite {
         let Some((cid, _)) = Self::collection(&self.pool, collection).await? else {
             return Ok(Vec::new());
         };
+        // Rows go in in document order, so `id` order is a note's section
+        // order. `read_note` shows the sections in this order.
         let sql = format!(
             "SELECT path, hash, title, meta, text, embedding
-             FROM chunks WHERE collection_id = ? AND path IN ({})",
+             FROM chunks WHERE collection_id = ? AND path IN ({})
+             ORDER BY id",
             Self::placeholders(paths.len())
         );
         let mut query = sqlx::query(&sql).bind(cid);
@@ -547,6 +550,12 @@ mod tests {
     async fn conformance_chunks_with_vectors() {
         let (_dir, s) = store().await;
         conformance::chunks_with_vectors_returns_the_notes_rows(&s, "v").await;
+    }
+
+    #[tokio::test]
+    async fn chunks_with_vectors_keeps_document_order() {
+        let (_dir, s) = store().await;
+        conformance::chunks_with_vectors_keeps_document_order(&s, "v").await;
     }
 
     #[tokio::test]
