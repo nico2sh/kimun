@@ -219,6 +219,15 @@ impl EditorView {
                 // never sees it unless the owner hands it back.
                 AppCommand::NotOurs => {}
                 AppCommand::None => {
+                    // macOS Option+letter composes text (dead keys, `ß`):
+                    // the platform's input handler must see it, and the
+                    // editor's own key path would swallow it as an Alt chord.
+                    if self.accepts_text()
+                        && !self.input_blocked
+                        && input::option_composes_text(&event.keystroke, cfg!(target_os = "macos"))
+                    {
+                        return;
+                    }
                     // A consumed key must not also reach the platform's input
                     // handler, or typed text would be inserted twice.
                     if self.editor_key(key, window, cx) {
