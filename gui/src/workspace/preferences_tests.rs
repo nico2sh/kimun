@@ -782,7 +782,14 @@ fn save_persists_and_applies_without_a_reopen(cx: &mut TestAppContext) {
         files.read(cx).model().current_sort()
     });
     assert_eq!(sort, (SortField::Name, SortOrder::Descending));
-    s.pf_press("ctrl-shift-b", cx);
+    // Save rebuilds the keymap for the host (`rebuild_keymap`), so the
+    // leader chord is the host's, not the Linux table the window opened on.
+    let leader = if cfg!(target_os = "macos") {
+        "cmd-shift-b"
+    } else {
+        "ctrl-shift-b"
+    };
+    s.pf_press(leader, cx);
     cx.executor().advance_clock(Duration::from_millis(1));
     cx.run_until_parked();
     assert!(
