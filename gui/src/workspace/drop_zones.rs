@@ -126,6 +126,16 @@ pub(crate) fn group_zone_id(at: usize, zone: Zone) -> SharedString {
     format!("drop-group-{at}-{}", zone_name(zone)).into()
 }
 
+/// The element id of the header zone of the slot showing `view`.
+pub(crate) fn slot_header_zone_id(view: DrawerView) -> SharedString {
+    format!("drop-{}-header", view.id()).into()
+}
+
+/// The element id of the header zone of the group at `at` in the shown tab.
+pub(crate) fn group_header_zone_id(at: usize) -> SharedString {
+    format!("drop-group-{at}-header").into()
+}
+
 /// The element id of the window-edge strip of `side` (`drop-window-left`).
 pub(crate) fn window_strip_id(side: Side) -> SharedString {
     match side {
@@ -193,12 +203,18 @@ impl Render for DragChip {
 pub(crate) enum DropTarget {
     /// A zone of a drawn slot.
     Slot(SlotId, Zone),
+    /// The header of a drawn slot: the same as its centre zone, so a view
+    /// dropped there swaps with the one the slot shows.
+    SlotHeader(SlotId),
     /// The strip at a window edge: that side's first slot, else a new one.
     Window(Side),
     /// A zone of an editor group of the shown tab (the inner layer): its
     /// centre swaps the two groups, an edge puts the dragged group on that
     /// side of it.
     Group(GroupId, Zone),
+    /// The header of an editor group of the shown tab: the same as its
+    /// centre zone, so the dragged group swaps places with it.
+    GroupHeader(GroupId),
     /// A tab's label: the dragged group joins that tab.
     Tab(TabId),
     /// The tab strip's plus button: the dragged group goes to a new tab.
@@ -210,10 +226,15 @@ impl DropTarget {
     /// group's drag.
     pub(crate) fn placement(self) -> Option<Placement> {
         match self {
-            DropTarget::Slot(slot, Zone::Centre) => Some(Placement::Into(slot)),
+            DropTarget::Slot(slot, Zone::Centre) | DropTarget::SlotHeader(slot) => {
+                Some(Placement::Into(slot))
+            }
             DropTarget::Slot(slot, Zone::Edge(dir)) => Some(Placement::Beside(slot, dir)),
             DropTarget::Window(side) => Some(Placement::AtEdge(side)),
-            DropTarget::Group(..) | DropTarget::Tab(_) | DropTarget::NewTab => None,
+            DropTarget::Group(..)
+            | DropTarget::GroupHeader(_)
+            | DropTarget::Tab(_)
+            | DropTarget::NewTab => None,
         }
     }
 
@@ -221,7 +242,10 @@ impl DropTarget {
     fn takes_group(self) -> bool {
         matches!(
             self,
-            DropTarget::Group(..) | DropTarget::Tab(_) | DropTarget::NewTab
+            DropTarget::Group(..)
+                | DropTarget::GroupHeader(_)
+                | DropTarget::Tab(_)
+                | DropTarget::NewTab
         )
     }
 }
@@ -472,8 +496,14 @@ impl Workspace {
             .into_iter()
             .filter(|slot| self.layout.shown(*slot).is_some())
             .flat_map(|slot| Zone::ALL.map(|zone| DropTarget::Slot(slot, zone)));
+        let headers = self
+            .layout
+            .slots()
+            .into_iter()
+            .filter(|slot| self.layout.shown(*slot).is_some())
+            .map(DropTarget::SlotHeader);
         let strips = STRIP_SIDES.map(DropTarget::Window);
-        slot_zones.chain(strips).collect()
+        slot_zones.chain(headers).chain(strips).collect()
     }
 
     /// Where a drop of `view` on `target` places it: a rail drag replaces
@@ -608,6 +638,7 @@ impl Workspace {
         let shown = self.layout.shown(slot)?;
         Some(self.zone_grid(
             |zone| DropTarget::Slot(slot, zone),
+            DropTarget::SlotHeader(slot),
             |zone| zone_id(shown, zone),
             cx,
         ))
@@ -621,6 +652,7 @@ impl Workspace {
     pub(super) fn zone_grid(
         &self,
         target: impl Fn(Zone) -> DropTarget,
+        header: DropTarget,
         id: impl Fn(Zone) -> SharedString,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Div {
@@ -673,8 +705,14 @@ impl Workspace {
             .child(right);
         // The labels lie over every zone, at the centre of the body, so no
         // zone's border crosses one and a narrow zone does not clip it.
-        let tags = Zone::ALL.into_iter().filter_map(|zone| {
-            let chip = self.zone_tag(target(zone), cx)?;
+        // The body's header is one more zone of it (it acts as the centre),
+        // so its label shows here too.
+        let targets = Zone::ALL
+            .into_iter()
+            .map(&target)
+            .chain(std::iter::once(header));
+        let tags = targets.filter_map(|target| {
+            let chip = self.zone_tag(target, cx)?;
             Some(
                 div()
                     .absolute()
@@ -908,6 +946,9 @@ impl Workspace {
             return false;
         }
         match target {
+            DropTarget::SlotHeader(slot) => {
+                self.layout.slots().contains(&slot) && self.layout.shown(slot) != Some(view)
+            }
             DropTarget::Slot(slot, zone) => {
                 if !self.layout.slots().contains(&slot) {
                     return false;
@@ -919,7 +960,10 @@ impl Workspace {
             }
             DropTarget::Window(side) => !self.window_edge_is_view_alone(side, view),
             // A group's targets.
-            DropTarget::Group(..) | DropTarget::Tab(_) | DropTarget::NewTab => false,
+            DropTarget::Group(..)
+            | DropTarget::GroupHeader(_)
+            | DropTarget::Tab(_)
+            | DropTarget::NewTab => false,
         }
     }
 

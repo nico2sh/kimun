@@ -583,6 +583,45 @@ fn dragging_a_header_starts_a_view_drag(cx: &mut TestAppContext) {
     assert!(!cx.update(|cx| cx.has_active_drag()));
 }
 
+/// Released on the header of another slot, the two views swap, as on that
+/// slot's centre; the slot's own header takes no drop.
+#[gpui_kit::test]
+fn header_drop_swaps_with_the_view_shown_in_that_slot(cx: &mut TestAppContext) {
+    let shell = open_shell(
+        cx,
+        1000.,
+        &stacked_left_and_outline_right(),
+        "",
+        false,
+        LayoutStore::Off,
+    );
+    let (files, find) = cx
+        .update_window(shell.handle, |_, _, cx| {
+            (
+                slot_of(&shell, DrawerView::Files, cx),
+                slot_of(&shell, DrawerView::Find, cx),
+            )
+        })
+        .unwrap();
+    let from = point_in(&shell, "slot-find", Some(point(px(20.), px(18.))), cx);
+    press_and_move(&shell, from, 40., cx);
+    assert!(
+        !drawn(
+            &shell,
+            super::drop_zones::slot_header_zone_id(DrawerView::Find),
+            cx
+        ),
+        "a slot's own header takes no drop"
+    );
+    let zone = super::drop_zones::slot_header_zone_id(DrawerView::Files);
+    let target = point_in(&shell, zone, None, cx);
+    move_held(&shell, target, cx);
+    release(&shell, target, cx);
+    let tree = cx.read(|cx| layout(&shell, cx));
+    assert_eq!(tree.shown(files), Some(DrawerView::Find));
+    assert_eq!(tree.shown(find), Some(DrawerView::Files));
+}
+
 /// Pressing a rail cell and moving past the threshold starts a drag of
 /// that view, placed or not.
 #[gpui_kit::test]
@@ -2153,6 +2192,32 @@ mod group_drag {
                 children: vec![(0.3, GroupShape::Group(b)), (0.7, GroupShape::Group(a))],
             }
         );
+        assert_eq!(note_in(&s, a, cx), Some(path("a.md")));
+        assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
+        assert_eq!(r.active_group(), a);
+        assert_in_step(&s, cx);
+    }
+
+    /// Released on the header of another group, the two groups trade
+    /// places, as on its centre; the hover says so.
+    #[gpui_kit::test]
+    fn drop_on_a_group_header_swaps_the_two_notes(cx: &mut TestAppContext) {
+        let rt = runtime();
+        let _guard = rt.enter();
+        let (_v, s) = started(cx, &rt);
+        let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
+        let b = split_with(&s, &rt, "b.md", cx);
+        let shell = shell_of(&s);
+        let from = header(&s, 0, cx);
+        let zone = crate::workspace::drop_zones::group_header_zone_id(1);
+        let at = drag_onto(&shell, from, zone.clone(), cx);
+        assert_eq!(
+            cx.read(|cx| s.workspace.read(cx).hovered_zone),
+            Some(DropTarget::GroupHeader(b))
+        );
+        release(&shell, at, cx);
+        let r = region(&s, cx);
+        assert_eq!(r.groups(r.shown()), vec![b, a]);
         assert_eq!(note_in(&s, a, cx), Some(path("a.md")));
         assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
         assert_eq!(r.active_group(), a);

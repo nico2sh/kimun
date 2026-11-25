@@ -78,7 +78,7 @@ use kimun_notes::logic::layout_tree::{
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::view_registry;
 
-use super::drop_zones::{DragFrom, ViewDrag};
+use super::drop_zones::{DragFrom, DropTarget, ViewDrag};
 use super::group_header::{GROUP_ID, group_element};
 use super::motion::{CellKey, FocusTarget, MotionKey, Siblings};
 use super::motion_box::{Clip, MotionBox as _};
@@ -1970,7 +1970,16 @@ impl Workspace {
         // The button is the strip's sibling, not its child: the strip's id
         // follows the focus, and a press that focuses the slot would
         // otherwise lose the button's half-made click with it.
-        div().relative().w_full().flex_none().child(strip).child(
+        // While a view is dragged, its header zone lies over the strip: a
+        // drop there swaps, as the centre of the body does.
+        let header_zone = self
+            .drop_zone(
+                super::drop_zones::slot_header_zone_id(view),
+                DropTarget::SlotHeader(slot),
+                cx,
+            )
+            .map(|zone| zone.inset_0().test_support().into_any_element());
+        div().relative().w_full().flex_none().child(strip).children(header_zone).child(
             div()
                 .absolute()
                 .top_0()

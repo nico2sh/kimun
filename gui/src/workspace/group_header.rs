@@ -34,7 +34,7 @@ use kimun_notes::logic::actions::ActionShortcuts;
 use kimun_notes::logic::layout_tree::{GroupId, UnitRect};
 
 use super::Workspace;
-use super::drop_zones::GroupDrag;
+use super::drop_zones::{DropTarget, GroupDrag};
 use super::motion::FocusTarget;
 use super::tab_strip::{EMPTY_LABEL, group_name};
 use super::tree_view::{LEAF_BORDER, LEAF_RADIUS_REMS};
@@ -379,6 +379,7 @@ impl Workspace {
             .test_support()
             .role(Role::Group)
             .aria_label(spoken)
+            .relative()
             .flex()
             .flex_row()
             .flex_none()
@@ -436,6 +437,16 @@ impl Workspace {
             .children(facet_button)
             .child(menu)
             .child(close)
+            // While a group is dragged, its header zone lies over the
+            // header: a drop there swaps, as the centre of the body does.
+            .children(
+                self.drop_zone(
+                    super::drop_zones::group_header_zone_id(at),
+                    DropTarget::GroupHeader(group),
+                    cx,
+                )
+                .map(|zone| zone.inset_0().test_support()),
+            )
             .into_any_element()
     }
 }
