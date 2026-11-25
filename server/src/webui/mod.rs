@@ -224,6 +224,50 @@ provider = "gemini"
     }
 
     #[tokio::test]
+    async fn collections_page_shows_the_vault_label_or_a_dash() {
+        let st = state(None, None);
+        let page = || async {
+            let resp = app(st.clone())
+                .oneshot(Request::get("/collections").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            body_text(resp).await
+        };
+        let body = page().await;
+        assert!(body.contains("<th>Vault</th>"), "{body}");
+        assert!(body.contains("<td>—</td>"), "unlabelled vault: {body}");
+
+        let rag = st.rag.as_ref().unwrap();
+        rag.set_vault_label(
+            &crate::CollectionKey::parse("vault-1").unwrap(),
+            "kimun-notes",
+        )
+        .await
+        .unwrap();
+        let body = page().await;
+        assert!(body.contains("<td>kimun-notes</td>"), "{body}");
+        assert!(!body.contains("<td>—</td>"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn collections_page_escapes_the_vault_label() {
+        let st = state(None, None);
+        st.rag
+            .as_ref()
+            .unwrap()
+            .set_vault_label(&crate::CollectionKey::parse("vault-1").unwrap(), "<b>x</b>")
+            .await
+            .unwrap();
+        let resp = app(st)
+            .oneshot(Request::get("/collections").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_text(resp).await;
+        assert!(body.contains("&lt;b&gt;x&lt;/b&gt;"), "{body}");
+        assert!(!body.contains("<b>x</b>"), "{body}");
+    }
+
+    #[tokio::test]
     async fn protected_route_redirects_to_login_without_cookie() {
         let app = app(state(Some("secret"), None));
         let resp = app

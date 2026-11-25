@@ -671,6 +671,10 @@ _Avoid_: index (collides with **NoteIndex**), namespace (the mechanism, not the 
 The stable identifier that ties a **Vault** to its **collection** on the **Kimün server**, generated once and kept in the vault under `.kimun/` so it survives renames and moves and is the same wherever the vault is opened (same rationale as **Saved search** and **Backup**).
 _Avoid_: collection name (that is the server-side view of it), workspace id (the **Workspace** is the config entry, not the vault).
 
+**Vault label**:
+A short name for a vault that the app registers with the **Kimün server**, so the server's web UI can show which **collection** is which. It is taken from the **Workspace**'s name. It is display only: the server identifies a vault by its **Vault ID**. It is never a disk path.
+_Avoid_: vault name (the **Workspace**'s name is where it comes from, and the word collides with the workspace itself), collection name (the collection is keyed by the **Vault ID**).
+
 **Query pipeline**:
 The **Kimün server**'s one door to everything done with a vault's content (`KimunRag`): every surface — the API handlers and the web UI — searches, answers, indexes, and deletes through it, so policy has a single home. It exists only on a configured server — an **unconfigured** server has no pipeline to route to, and rejects before reaching it. Retrieval side: the pool is ranked (reranked when a reranker is active, vector order otherwise), then the **context cut** sizes both surfaces — **search** returns one row per surviving note (a section-heavy note must not crowd out others), **answer** feeds the LLM the surviving chunks (sections, chunk-level); chunk dedup, reranking, the context cut, and the semantic-only rejection live inside (`can_answer` is the capability gate). Index side: the hash-diff against the **vector store**'s records, stale-chunk deletion, section sub-splitting to the embedding window, and embed batching — the pipeline owns the embedder; the store never embeds.
 _Avoid_: search pipeline (names one slice), RAG orchestrator, KimunRag as a prose term (the struct, not the concept).

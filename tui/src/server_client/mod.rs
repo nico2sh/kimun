@@ -25,7 +25,7 @@ pub mod sync;
 use async_trait::async_trait;
 use dto::{
     DeleteRequest, EmbeddingsResponse, Health, HistoryTurn, IndexDocsRequest, JobAccepted,
-    JobStatus, QueryRequest, WireDoc,
+    JobStatus, LabelRequest, QueryRequest, WireDoc,
 };
 
 pub use dto::{AnswerEvent, AnswerResult, ChunkResult, WireSection};
@@ -298,6 +298,27 @@ impl RagClient {
             .await?)
     }
 
+    /// Registers this vault's **vault label** (the workspace name) with the
+    /// server, so its web UI can show which collection is which. An older
+    /// server without the route answers 404 or 405. That counts as done,
+    /// because a retry cannot succeed.
+    ///
+    /// `vault_id` is interpolated into the URL path un-encoded, as in
+    /// [`Self::server_hashes`].
+    pub async fn put_collection_label(&self, label: &str) -> Result<(), RagError> {
+        let (path, body) = label_request(&self.vault_id, label);
+        let resp = self
+            .auth(self.http.put(self.url(&path)).json(&body))
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        if resp.status().is_success() {
+            return Ok(());
+        }
+        let body = resp.text().await.unwrap_or_default();
+        label_status(status, body)
+    }
+
     /// Semantic search: returns the matching chunks (no LLM). `context_size`
     /// omitted uses the server's configured default.
     pub async fn search(
@@ -499,6 +520,26 @@ async fn forward(tx: &tokio::sync::mpsc::Sender<AnswerEvent>, events: Vec<sse::S
     true
 }
 
+/// The path and body of the vault label request.
+fn label_request(vault_id: &str, label: &str) -> (String, LabelRequest) {
+    (
+        format!("/api/collections/{vault_id}/label"),
+        LabelRequest {
+            label: label.to_string(),
+        },
+    )
+}
+
+/// The result of a vault label request with this status. A 2xx is done. A 404
+/// or 405 comes from an older server without the route, and is done too. Every
+/// other status is a [`RagError::Status`].
+fn label_status(status: u16, body: String) -> Result<(), RagError> {
+    match status {
+        200..=299 | 404 | 405 => Ok(()),
+        _ => Err(RagError::Status { status, body }),
+    }
+}
+
 /// The `/api/answer` request body: the question, its history, and the
 /// client's local date so "yesterday" means the user's yesterday.
 fn answer_request(
@@ -535,6 +576,32 @@ mod tests {
         assert_eq!(body.history.len(), 1);
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains(r#""today":"2026-11-25""#), "{json}");
+    }
+
+    #[test]
+    fn label_request_puts_the_label_on_the_vault_path() {
+        let (path, body) = label_request("vault-1", "kimun-notes");
+        assert_eq!(path, "/api/collections/vault-1/label");
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"label":"kimun-notes"}"#
+        );
+    }
+
+    #[test]
+    fn label_status_treats_a_server_without_the_route_as_done() {
+        assert!(label_status(204, String::new()).is_ok());
+        assert!(label_status(200, String::new()).is_ok());
+        assert!(label_status(404, String::new()).is_ok(), "older server");
+        assert!(label_status(405, String::new()).is_ok(), "older server");
+        let auth = label_status(401, "no".into()).unwrap_err();
+        assert!(auth.is_auth(), "{auth}");
+        let err = label_status(500, "boom".into()).unwrap_err();
+        assert!(
+            matches!(err, RagError::Status { status: 500, ref body } if body == "boom"),
+            "{err}"
+        );
+        assert!(label_status(400, String::new()).is_err());
     }
 
     #[test]

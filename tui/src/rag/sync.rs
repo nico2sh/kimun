@@ -170,6 +170,33 @@ impl Cadence {
     }
 }
 
+/// When to register the **vault label** (the workspace name) with the server.
+/// It remembers the last label the server accepted. A label is due only on a
+/// tick whose plan runs a sync, and only when it differs from that one: on the
+/// first such tick, and after a rename. A skipped tick (offline, unconfigured
+/// server, no token) or a waiting tick sends nothing.
+#[derive(Debug, Default)]
+struct LabelRegistration {
+    registered: Option<String>,
+}
+
+impl LabelRegistration {
+    /// The label to send now. `None` when `plan` does not run a sync, when
+    /// there is no workspace name, or when the server already has this label.
+    fn due(&self, plan: &Plan, current: Option<&str>) -> Option<String> {
+        if !matches!(plan, Plan::Run { .. }) {
+            return None;
+        }
+        let current = current?;
+        (self.registered.as_deref() != Some(current)).then(|| current.to_string())
+    }
+
+    /// Records that the server accepted `label`.
+    fn sent(&mut self, label: String) {
+        self.registered = Some(label);
+    }
+}
+
 /// Spawns the background sync loop for `vault` if a RAG server is configured.
 /// Returns the task handle (abort it when the vault is rebuilt), or `None` when
 /// the feature is off. Status is delivered to the UI via [`AppMessage::RagStatus`].
@@ -179,6 +206,7 @@ pub fn spawn_rag_sync(
     tx: AppTx,
 ) -> Option<JoinHandle<()>> {
     let (url, token) = server_config(settings)?;
+    let settings = settings.clone();
 
     Some(tokio::spawn(async move {
         let mut interval = tokio::time::interval(SYNC_INTERVAL);
@@ -193,6 +221,7 @@ pub fn spawn_rag_sync(
         let mut cadence = Cadence::new();
         // Last server-update notice sent, so the event fires only on change.
         let mut server_update: Option<ServerUpdate> = None;
+        let mut label = LabelRegistration::default();
 
         loop {
             interval.tick().await;
@@ -221,8 +250,8 @@ pub fn spawn_rag_sync(
                 let _ = tx.send(AppMessage::ServerUpdate(server_update.clone()));
             }
 
-            let reconcile = match cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready())
-            {
+            let plan = cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready());
+            let reconcile = match plan {
                 Plan::Skip(status) => {
                     let _ = tx.send(AppMessage::RagStatus(status));
                     continue;
@@ -236,6 +265,20 @@ pub fn spawn_rag_sync(
                 Plan::Run { flash, reconcile } => {
                     if let Some(status) = flash {
                         let _ = tx.send(AppMessage::RagStatus(status));
+                    }
+                    // The workspace name can change while the app runs, so
+                    // read it on every tick. A failure does not touch the
+                    // sync status. The label stays due and the next tick
+                    // tries again.
+                    let current = settings
+                        .read()
+                        .ok()
+                        .and_then(|s| s.current_workspace_name());
+                    if let Some(due) = label.due(&plan, current.as_deref()) {
+                        match sync.client().put_collection_label(&due).await {
+                            Ok(()) => label.sent(due),
+                            Err(e) => log::debug!("RAG: cannot register the vault label: {e}"),
+                        }
                     }
                     reconcile
                 }
@@ -428,6 +471,51 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn label_registration_sends_once_per_name() {
+        let run = Plan::Run {
+            flash: None,
+            reconcile: false,
+        };
+        let mut r = LabelRegistration::default();
+        assert_eq!(
+            r.due(&run, None),
+            None,
+            "no workspace name, nothing to send"
+        );
+        assert_eq!(r.due(&run, Some("default")).as_deref(), Some("default"));
+        // A failed attempt records nothing, so the label stays due.
+        assert_eq!(r.due(&run, Some("default")).as_deref(), Some("default"));
+        r.sent("default".to_string());
+        assert_eq!(r.due(&run, Some("default")), None, "already registered");
+        assert_eq!(
+            r.due(&run, Some("kimun-notes")).as_deref(),
+            Some("kimun-notes"),
+            "a rename is due again"
+        );
+        assert_eq!(r.due(&run, None), None);
+    }
+
+    #[test]
+    fn label_registration_waits_for_a_plan_that_runs() {
+        let r = LabelRegistration::default();
+        for plan in [
+            Plan::Skip(RagStatus::Unauthorized),
+            Plan::Skip(RagStatus::NotConfigured),
+            Plan::Skip(RagStatus::Offline),
+            Plan::Wait { flash: None },
+        ] {
+            assert_eq!(r.due(&plan, Some("default")), None, "{plan:?}");
+        }
+        let run = Plan::Run {
+            flash: Some(RagStatus::Syncing {
+                llm_available: true,
+            }),
+            reconcile: true,
+        };
+        assert_eq!(r.due(&run, Some("default")).as_deref(), Some("default"));
     }
 
     #[test]

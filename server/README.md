@@ -233,6 +233,28 @@ The `{ note-path: content-hash }` map the server holds for a vault. The client
 diffs it against its own authoritative set to reconcile — pushing/deleting only
 the differences.
 
+### `PUT /api/collections/{vault_id}/label`
+
+Set the vault label for a vault. The web UI shows the label next to the
+vault id, so you can see which collection is which. The label is display only.
+The server still identifies a vault by its id.
+
+```json
+{ "label": "kimun-notes" }
+```
+
+On success the server answers `204 No Content`. A second call overwrites the
+label. The server answers `400` in these cases:
+
+- The vault id is not valid.
+- The label is empty after trimming, or longer than 100 characters.
+- The label contains a control character, for example a newline or a tab.
+
+When an `[auth]` token is set, the route needs the bearer token. Kimün sends
+the name of the workspace from its configuration. It never sends a disk path.
+Qdrant does not store labels: on Qdrant the call succeeds and the web UI shows
+no label.
+
 ### `POST /api/embeddings`
 
 Semantic search (no LLM). Returns the matching chunks plus `query_time_ms`,
@@ -321,7 +343,8 @@ server-rendered pages, no build step, no external assets. It offers:
   applies them in place: the process drains in-flight requests, re-reads the
   config file, and rebinds — no service manager needed, and a
   bind-address change moves the server to the new address;
-- a **collections** list with per-vault indexed-note counts;
+- a **collections** list with per-vault indexed-note counts. The list shows
+  the vault label of each vault, or a dash when the vault has no label;
 - a **jobs** view (auto-refreshing) for indexing/answer jobs;
 - a **test-query** box that runs a semantic search against a collection.
 

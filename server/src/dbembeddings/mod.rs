@@ -183,6 +183,14 @@ pub trait VectorStore: Send + Sync {
     /// The distinct date sources present in the collection (`journal` included
     /// when any note has a journal date), sorted. Missing collection → empty.
     async fn date_sources(&self, collection: &str) -> anyhow::Result<Vec<String>>;
+
+    /// Records the **vault label** for a collection. Overwrites any previous
+    /// label. The label is display only, and a vault with no chunks yet can
+    /// have one. It is metadata, so `drop_all_collections` keeps it.
+    async fn set_vault_label(&self, collection: &str, label: &str) -> anyhow::Result<()>;
+
+    /// `{vault id → vault label}` for every stored label.
+    async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>>;
 }
 
 /// Folds `(path, meta)` pairs (one per chunk) into the per-note link map

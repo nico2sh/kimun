@@ -31,6 +31,9 @@ use crate::document::FlattenedChunk;
 /// The database file inside the store directory.
 const DB_FILE: &str = "embeddings.db";
 const FINGERPRINT_KEY: &str = "embedder.fingerprint";
+/// Prefix of the `meta` keys that hold vault labels: `label:{vault_id}`. It
+/// cannot collide with [`FINGERPRINT_KEY`].
+const LABEL_KEY_PREFIX: &str = "label:";
 
 pub struct VecSqlite {
     /// Vector width every collection is created at — the embedder's dimension,
@@ -515,6 +518,32 @@ impl VectorStore for VecSqlite {
             serde_json::from_str(&r.get::<String, _>(0)).unwrap_or_default()
         })))
     }
+
+    async fn set_vault_label(&self, collection: &str, label: &str) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO meta (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(format!("{LABEL_KEY_PREFIX}{collection}"))
+        .bind(label)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn vault_labels(&self) -> anyhow::Result<HashMap<String, String>> {
+        let labels = sqlx::query("SELECT key, value FROM meta WHERE key LIKE 'label:%'")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|r| {
+                let key: String = r.get(0);
+                let id = key.strip_prefix(LABEL_KEY_PREFIX)?.to_string();
+                Some((id, r.get::<String, _>(1)))
+            })
+            .collect();
+        Ok(labels)
+    }
 }
 
 #[cfg(test)]
@@ -686,6 +715,29 @@ mod tests {
             .unwrap();
         assert_eq!(results[0].1.doc_path, "a.md");
         assert_eq!(s.read_fingerprint().await.unwrap().as_deref(), Some("fp"));
+    }
+
+    #[tokio::test]
+    async fn vault_labels_round_trip_without_touching_the_fingerprint() {
+        let (_dir, s) = store().await;
+        assert!(s.vault_labels().await.unwrap().is_empty(), "starts empty");
+        s.write_fingerprint("fp").await.unwrap();
+        s.store("va", &[conformance::row("a.md", "h", "x")])
+            .await
+            .unwrap();
+
+        s.set_vault_label("va", "default").await.unwrap();
+        // A vault with no chunks yet keeps its label too.
+        s.set_vault_label("vb", "kimun-notes").await.unwrap();
+        s.set_vault_label("va", "renamed").await.unwrap();
+
+        let labels = s.vault_labels().await.unwrap();
+        assert_eq!(labels.len(), 2, "{labels:?}");
+        assert_eq!(labels["va"], "renamed", "a second write overwrites");
+        assert_eq!(labels["vb"], "kimun-notes", "the other vault keeps its own");
+        assert_eq!(s.read_fingerprint().await.unwrap().as_deref(), Some("fp"));
+        let names = s.collection_names().await.unwrap();
+        assert_eq!(names, vec!["va".to_string()], "a label is not a collection");
     }
 
     #[tokio::test]
