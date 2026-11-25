@@ -14,9 +14,10 @@
 //! The tab commands live here too: a new tab (one empty group, which takes
 //! the keyboard), the next and previous tab (wrapping), and the close.
 //!
-//! While a group header is dragged ([`super::group_drop`]) the strip shows
-//! even with one tab: each other tab's label and the plus button are drop
-//! targets, with the drop zones' look ([`Workspace::drop_zone`]). A
+//! While a group header is dragged ([`super::group_drop`]) the strip, when
+//! it is shown (two tabs or more), takes drops: each other tab's label and
+//! the plus button are drop targets, with the drop zones' look
+//! ([`Workspace::drop_zone`]). The drag never opens the strip. A
 //! close writes the unsaved text of every group of the tab first (all at
 //! once, as the window's close does); when a write fails or cannot start
 //! the tab stays and the flash says why. Closing the last tab leaves one
@@ -560,21 +561,22 @@ impl Workspace {
 
     // ---- Drawing -------------------------------------------------------------
 
-    /// Whether the model wants the strip: the region holds two tabs or more,
-    /// or a group is dragged (ADR-0058). The motion spec and the drawing code
-    /// both ask this, so they never disagree.
-    pub(super) fn strip_wanted(&self, cx: &App) -> bool {
-        self.layout.region().tabs().len() >= 2 || self.dragged_group(cx).is_some()
+    /// Whether the model wants the strip: the region holds two tabs or more.
+    /// A group's drag does not open it for a lone tab, as it has no other
+    /// tab to aim at. The motion spec and the drawing code both ask this,
+    /// so they never disagree.
+    pub(super) fn strip_wanted(&self) -> bool {
+        self.layout.region().tabs().len() >= 2
     }
 
     /// The strip over the shown tab, or `None` while the region holds one
-    /// tab and no group is dragged (ADR-0058). A row of pill buttons that
+    /// tab (ADR-0058). A row of pill buttons that
     /// scrolls sideways, and the round plus button after it, outside the
     /// scroll so it always shows.
     pub(super) fn render_tab_strip(&self, rem: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
         let region = self.layout.region();
         let tabs = region.tabs();
-        let wanted = self.strip_wanted(cx);
+        let wanted = self.strip_wanted();
         let presence = self.motion.borrow().presence(MotionKey::TabStrip);
         // Still drawn while it closes (ADR-0060), from the tabs that remain.
         if !wanted && presence.frame <= 0.0 {
