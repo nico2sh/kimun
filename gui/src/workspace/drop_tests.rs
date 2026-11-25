@@ -2092,12 +2092,12 @@ mod group_drag {
             .collect()
     }
 
-    /// A header drag of a tab's group shows the strip although the region
-    /// holds one tab: the plus button takes the drop, the tab's own label
-    /// does not (the group is in it already). Released off every target,
-    /// the strip goes again.
+    /// A header drag does not open the strip while the region holds one
+    /// tab: there is no other tab to aim at, and the plus button is not
+    /// drawn. With two tabs the strip is there already (a plus drop test
+    /// below).
     #[gpui_kit::test]
-    fn dragging_a_header_shows_the_strip_even_with_one_tab(cx: &mut TestAppContext) {
+    fn dragging_a_header_does_not_open_the_strip_with_one_tab(cx: &mut TestAppContext) {
         let rt = runtime();
         let _guard = rt.enter();
         let (_v, s) = started(cx, &rt);
@@ -2108,23 +2108,11 @@ mod group_drag {
         let at = press_and_move(&shell, from, 40., cx);
         assert!(cx.update(|cx| cx.has_active_drag()), "a drag is live");
         assert!(drawn(&shell, GROUP_DRAG_CHIP_ID, cx), "the ghost follows");
-        assert!(drawn(&shell, TAB_STRIP_ID, cx), "the strip shows");
-        assert!(
-            drawn(&shell, TAB_NEW_DROP_ID, cx),
-            "the plus takes the drop"
-        );
-        assert_eq!(
-            label(&s, TAB_NEW_DROP_ID, cx).as_deref(),
-            Some("Move to a new tab")
-        );
-        assert!(
-            !drawn(&shell, tab_drop_id(0), cx),
-            "its own tab is no target"
-        );
+        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "the strip stays shut");
+        assert!(!drawn(&shell, TAB_NEW_DROP_ID, cx), "no plus to aim at");
         release(&shell, at, cx);
         assert!(!cx.update(|cx| cx.has_active_drag()));
-        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "the strip goes again");
-        assert_eq!(region(&s, cx).tabs().len(), 1);
+        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "still no strip");
     }
 
     /// Released on an edge of another group, the dragged group goes on
@@ -2272,19 +2260,25 @@ mod group_drag {
         let first = region(&s, cx).shown();
         let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
         let b = split_with(&s, &rt, "b.md", cx);
+        // A second tab, so the strip (and its plus) is there to aim at.
+        new_tab_with(&s, &rt, "c.md", cx);
+        show_tab(&s, first, cx);
         let shell = shell_of(&s);
         let from = header(&s, 1, cx);
         let at = drag_onto(&shell, from, TAB_NEW_DROP_ID, cx);
         release(&shell, at, cx);
         let r = region(&s, cx);
-        assert_eq!(r.tabs().len(), 2);
-        let new = r.tabs()[1];
+        assert_eq!(r.tabs().len(), 3);
+        let new = r.tabs()[2];
         assert_eq!(r.groups(first), vec![a]);
         assert_eq!(r.groups(new), vec![b]);
         assert_eq!(r.shown(), first);
         assert_eq!(r.active_group(), a);
         assert_eq!(note_in(&s, b, cx), Some(path("b.md")));
-        assert!(drawn(&shell, TAB_STRIP_ID, cx), "two tabs: the strip stays");
+        assert!(
+            drawn(&shell, TAB_STRIP_ID, cx),
+            "three tabs: the strip stays"
+        );
         assert_in_step(&s, cx);
     }
 
@@ -2388,6 +2382,10 @@ mod group_drag {
         let _guard = rt.enter();
         let (_v, s) = started(cx, &rt);
         split_with(&s, &rt, "b.md", cx);
+        // A second tab, so the strip (and its plus) is drawn for the drag.
+        let first = region(&s, cx).shown();
+        new_tab_with(&s, &rt, "c.md", cx);
+        show_tab(&s, first, cx);
         let shell = shell_of(&s);
         let strips = [Side::Left, Side::Right].map(window_strip_id);
 
@@ -2431,6 +2429,17 @@ mod group_drag {
             TAB_NEW_DROP_ID.into(),
             bounds(&s, TAB_NEW_DROP_ID, cx).unwrap(),
         ));
+        // The other group's header zone lies over its header, clear of the
+        // body's five.
+        targets.push((
+            "header".into(),
+            bounds(
+                &s,
+                crate::workspace::drop_zones::group_header_zone_id(1),
+                cx,
+            )
+            .unwrap(),
+        ));
         for (i, (a, ba)) in targets.iter().enumerate() {
             for (b, bb) in &targets[i + 1..] {
                 let w = (f32::from(ba.right().min(bb.right()))
@@ -2454,7 +2463,10 @@ mod group_drag {
         for id in all_zone_ids(2) {
             assert!(!drawn(&shell, id.clone(), cx), "{id}: no inner zone");
         }
-        assert!(!drawn(&shell, TAB_STRIP_ID, cx), "no strip for a view");
+        assert!(
+            !drawn(&shell, TAB_NEW_DROP_ID, cx),
+            "no strip target for a view"
+        );
         release(&shell, at, cx);
     }
 
@@ -2505,6 +2517,10 @@ mod group_drag {
         let (v, s) = started(cx, &rt);
         let a = cx.read(|cx| s.workspace.read(cx).layout.active_group());
         split_with(&s, &rt, "b.md", cx);
+        let first = region(&s, cx).shown();
+        // A second tab, so the strip (and its plus) is there to aim at.
+        new_tab_with(&s, &rt, "c.md", cx);
+        show_tab(&s, first, cx);
         let editor = cx.read(|cx| s.workspace.read(cx).state(a).unwrap().editor.clone());
         cx.update(|cx| {
             editor.update(cx, |view, cx| {
@@ -2519,7 +2535,7 @@ mod group_drag {
         let at = drag_onto(&shell, from, TAB_NEW_DROP_ID, cx);
         release(&shell, at, cx);
         let r = region(&s, cx);
-        assert_eq!(r.groups(r.tabs()[1]), vec![a], "the group moved");
+        assert_eq!(r.groups(r.tabs()[2]), vec![a], "the group moved");
         assert_eq!(text_in(&s, a, cx), "alpha edited");
         assert!(dirty_in(&s, a, cx), "still unsaved");
         assert_eq!(
