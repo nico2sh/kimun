@@ -767,6 +767,8 @@ impl PreferencesView {
                             .text_sm()
                             .text_color(if listening {
                                 theme::foreground(t)
+                            } else if unbound {
+                                theme::muted(t)
                             } else {
                                 theme::bright(t)
                             })

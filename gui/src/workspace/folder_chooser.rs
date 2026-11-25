@@ -809,6 +809,11 @@ impl FolderChooser {
     pub(crate) const HINTS: &'static str = "Up and Down: select · Enter: open or go to the path \
          · Alt+Up: up · Ctrl+Enter: choose · Ctrl+N: new folder · Esc: clear or back";
 
+    /// [`Self::HINTS`] on Windows: adds how to reach another drive.
+    pub(crate) const HINTS_WINDOWS: &'static str = "Up and Down: select · Enter: open or go to \
+         the path (D:\\ for another drive) · Alt+Up: up · Ctrl+Enter: choose · Ctrl+N: new \
+         folder · Esc: clear or back";
+
     /// [`Self::HINTS`] on macOS.
     pub(crate) const HINTS_MAC: &'static str = "Up and Down: select · Enter: open or go to the \
          path · Cmd+Up: up · Cmd+Enter: choose · Cmd+N: new folder · Esc: clear or back";
@@ -816,6 +821,11 @@ impl FolderChooser {
     /// [`Self::HINTS`] in files mode: no choose, no new folder.
     pub(crate) const FILE_HINTS: &'static str = "Up and Down: select · Enter: open a folder, \
          pick a file or go to the path · Alt+Up: up · Esc: clear or back";
+
+    /// [`Self::FILE_HINTS`] on Windows: adds how to reach another drive.
+    pub(crate) const FILE_HINTS_WINDOWS: &'static str = "Up and Down: select · Enter: open a \
+         folder, pick a file or go to the path (D:\\ for another drive) · Alt+Up: up · Esc: \
+         clear or back";
 
     /// [`Self::FILE_HINTS`] on macOS.
     pub(crate) const FILE_HINTS_MAC: &'static str = "Up and Down: select · Enter: open a folder, \
@@ -825,8 +835,10 @@ impl FolderChooser {
     pub(crate) fn hints(&self, cx: &App) -> &'static str {
         let mac = keymap::platform(cx) == Platform::MacOs;
         match (self.files.is_some(), mac) {
+            (false, false) if cfg!(windows) => Self::HINTS_WINDOWS,
             (false, false) => Self::HINTS,
             (false, true) => Self::HINTS_MAC,
+            (true, false) if cfg!(windows) => Self::FILE_HINTS_WINDOWS,
             (true, false) => Self::FILE_HINTS,
             (true, true) => Self::FILE_HINTS_MAC,
         }
