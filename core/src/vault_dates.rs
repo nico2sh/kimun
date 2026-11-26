@@ -15,7 +15,8 @@ pub const JOURNAL_DATE_SOURCE: &str = "journal";
 /// One day a note carries, and where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteDate {
-    /// `"journal"`, or the lowercase property key.
+    /// `"journal"`, or the property key in search form (lowercase, accents
+    /// stripped), as [`NoteVault::date_keys`] lists it.
     pub source: String,
     /// The day, as written (a date-time keeps its local day).
     pub day: NaiveDate,
@@ -25,8 +26,9 @@ impl NoteVault {
     /// Every date the note carries: its journal date (source `"journal"`)
     /// when it sits directly under the journal directory with a date as file
     /// name, then each date or date-time property in file order. Properties
-    /// use their lowercase key as source. A note with no dates returns an
-    /// empty list.
+    /// use their key in search form as source (lowercase, accents stripped),
+    /// the form [`NoteVault::date_keys`] lists. A note with no dates returns
+    /// an empty list.
     pub async fn note_dates(&self, path: &VaultPath) -> Result<Vec<NoteDate>, VaultError> {
         let mut dates = Vec::new();
         if let Some(day) = self.journal_date(path) {
@@ -40,7 +42,7 @@ impl NoteVault {
     }
 
     /// The note's date and date-time properties in file order, each with its
-    /// lowercase key as source. Never includes the journal date, even for a
+    /// key in search form as source. Never includes the journal date, even for a
     /// property named `journal`. Reads the note from disk.
     pub(crate) async fn property_dates(
         &self,
@@ -54,10 +56,12 @@ impl NoteVault {
                 Some(PropertyValue::DateTime(dt)) => dt.naive_local().date(),
                 _ => continue,
             };
-            dates.push(NoteDate {
-                source: key.to_lowercase(),
-                day,
-            });
+            // The key in search form, as `date_keys` lists it. A key the
+            // index cannot hold is left out.
+            let Some(source) = crate::note::properties::search_key(&key) else {
+                continue;
+            };
+            dates.push(NoteDate { source, day });
         }
         Ok(dates)
     }
@@ -214,6 +218,32 @@ mod tests {
         );
         // date_keys still merges the two.
         assert_eq!(vault.date_keys().await.unwrap(), vec!["due", "journal"]);
+    }
+
+    #[tokio::test]
+    async fn note_dates_use_the_same_key_form_as_date_keys() {
+        let dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(crate::system::sys(dir.path())))
+            .await
+            .unwrap();
+        vault
+            .create_note(
+                &VaultPath::new("task.md"),
+                "---\nÉchéance: 2026-11-25\n---\nx\n",
+            )
+            .await
+            .unwrap();
+        vault.validate_and_init().await.unwrap();
+        let keys = vault.date_keys().await.unwrap();
+        assert_eq!(keys, vec!["echeance"]);
+        let dates = vault.note_dates(&VaultPath::new("task.md")).await.unwrap();
+        assert_eq!(
+            dates,
+            vec![NoteDate {
+                source: "echeance".into(),
+                day: day(2026, 11, 25)
+            }]
+        );
     }
 
     #[tokio::test]

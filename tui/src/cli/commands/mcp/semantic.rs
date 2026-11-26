@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use kimun_core::error::VaultError;
-use kimun_core::note::BREADCRUMB_SEP;
+use kimun_core::note::{BREADCRUMB_SEP, property_search_key};
 use kimun_core::{DateSource, NoteVault};
 use rmcp::model::{CallToolResult, Content};
 
@@ -35,13 +35,17 @@ fn tool_error(msg: impl Into<String>) -> Result<CallToolResult, VaultError> {
     Ok(CallToolResult::error(vec![Content::text(msg.into())]))
 }
 
-/// The date key as the server stores it: `journal`, or the bare lowercase
-/// property key. The server key space cannot tell a journal date from a date
-/// property named journal, so `property:journal` also becomes `journal`.
+/// The date key as the server stores it: `journal`, or the bare property
+/// key in search form (lowercase, accents stripped), the form the push sends.
+/// So `échéance` and `ÉCHÉANCE` both become `echeance`. The server key space
+/// cannot tell a journal date from a date property named journal, so
+/// `property:journal` also becomes `journal`.
 fn server_date_key(key: &str) -> String {
     match parse_date_key(key) {
         DateSource::Journal => "journal".to_string(),
-        DateSource::Property(k) => k.to_lowercase(),
+        DateSource::Property(k) => {
+            property_search_key(&k).unwrap_or_else(|| k.trim().to_lowercase())
+        }
     }
 }
 
@@ -709,6 +713,51 @@ mod tests {
             let r = call(&h, p).await;
             assert_eq!(r.is_error, Some(false), "{}", text_of(&r));
             assert_eq!(embeddings_body(&seen)["date_key"], sent);
+        }
+    }
+
+    #[test]
+    fn server_date_key_sends_a_property_key_in_search_form() {
+        for (given, sent) in [
+            ("échéance", "echeance"),
+            ("ÉCHÉANCE", "echeance"),
+            ("echeance", "echeance"),
+            ("property:Échéance", "echeance"),
+            ("Due", "due"),
+            ("journal", "journal"),
+            ("Journal", "journal"),
+            ("property:journal", "journal"),
+            ("", ""),
+            ("  ", ""),
+        ] {
+            assert_eq!(server_date_key(given), sent, "given {given:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn semantic_accented_date_key_reaches_the_server_in_search_form() {
+        let (url, seen) = server(READY, 200, ONE_HIT, Duration::ZERO);
+        let dir = TempDir::new().unwrap();
+        let h = handler_for(&dir, Some(settings_for(Some(&url)))).await;
+        h.vault
+            .create_note(
+                &VaultPath::new("task.md"),
+                "---\néchéance: 2026-11-25\n---\nx\n",
+            )
+            .await
+            .unwrap();
+        h.vault.validate_and_init().await.unwrap();
+        for given in ["échéance", "ÉCHÉANCE", "echeance"] {
+            let mut p = q("x");
+            p.from = Some("2026-11-01".into());
+            p.date_key = Some(given.into());
+            let r = call(&h, p).await;
+            assert_eq!(r.is_error, Some(false), "{}", text_of(&r));
+            assert_eq!(
+                embeddings_body(&seen)["date_key"],
+                "echeance",
+                "given {given:?}"
+            );
         }
     }
 

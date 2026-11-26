@@ -2347,3 +2347,50 @@ async fn dated_search_property_journal_without_such_property_errors_with_keys() 
         "{msg}"
     );
 }
+
+async fn vault_with_accented_date_key() -> (TempDir, NoteVault) {
+    let dir = TempDir::new().unwrap();
+    let vault = make_vault(dir.path()).await;
+    vault
+        .create_note(
+            &VaultPath::new("task.md"),
+            "---\néchéance: 2026-11-25\n---\npay the rent\n",
+        )
+        .await
+        .unwrap();
+    vault.validate_and_init().await.unwrap();
+    (dir, vault)
+}
+
+#[tokio::test]
+async fn dated_search_finds_an_accented_key_in_every_spelling() {
+    let (_d, vault) = vault_with_accented_date_key().await;
+    assert_eq!(vault.date_keys().await.unwrap(), vec!["echeance"]);
+    for key in ["echeance", "échéance", "ÉCHÉANCE"] {
+        let p = DateFilter {
+            source: DateSource::Property(key.into()),
+            from: nd(2026, 11, 1),
+            to: nd(2026, 11, 30),
+        };
+        for query in ["", "rent"] {
+            let got = names(&vault.search_notes_dated(query, &p).await.unwrap());
+            assert_eq!(got, vec!["/task.md"], "key {key:?}, query {query:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn dated_search_accented_vault_unknown_key_lists_the_search_form() {
+    let (_d, vault) = vault_with_accented_date_key().await;
+    let p = DateFilter {
+        source: DateSource::Property("nope".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    let err = vault.search_notes_dated("", &p).await.unwrap_err();
+    let msg = err.user_message().expect("user error");
+    assert!(
+        msg.contains("Unknown date property 'nope'") && msg.contains("echeance"),
+        "{msg}"
+    );
+}

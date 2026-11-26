@@ -43,12 +43,23 @@ fn max_date() -> NaiveDate {
 }
 
 impl DateFilter {
+    /// The source as [`NoteDate::source`](crate::NoteDate::source) names it.
+    /// A property key is in search form, so `Échéance` and `echeance` are
+    /// one source. A key that cannot be a property gives an empty name,
+    /// which no note carries.
     fn source_name(&self) -> String {
         match &self.source {
             DateSource::Journal => crate::JOURNAL_DATE_SOURCE.to_string(),
-            DateSource::Property(key) => key.to_lowercase(),
+            DateSource::Property(key) => property_source(key).unwrap_or_default(),
         }
     }
+}
+
+/// A property date source in the form the index lists it: trimmed,
+/// case-folded and accent-stripped. `None` for a key that cannot be a
+/// property (blank, multi-line).
+fn property_source(key: &str) -> Option<String> {
+    crate::note::properties::search_key(key)
 }
 
 impl NoteVault {
@@ -142,7 +153,8 @@ impl NoteVault {
 
     /// Checks that `source` is a date source of the vault. The journal source
     /// needs a journal note with a date name. A property needs a property of
-    /// that key (case-insensitive) whose dominant kind is date or date-time,
+    /// that key (matched in search form, so case and accents do not count)
+    /// whose dominant kind is date or date-time,
     /// so `Property("journal")` needs a real property named journal. Fails
     /// with a user error that lists the vault's date sources.
     pub async fn check_date_source(&self, source: &DateSource) -> Result<(), VaultError> {
@@ -153,13 +165,13 @@ impl NoteVault {
                 }
                 "No journal notes with a date name".to_string()
             }
-            DateSource::Property(key) => {
-                let key = key.to_lowercase();
-                if self.date_property_keys().await?.contains(&key) {
+            DateSource::Property(key) => match property_source(key) {
+                Some(found) if self.date_property_keys().await?.contains(&found) => {
                     return Ok(());
                 }
-                format!("Unknown date property '{key}'")
-            }
+                Some(found) => format!("Unknown date property '{found}'"),
+                None => format!("Unknown date property '{}'", key.trim()),
+            },
         };
         let keys = self.date_keys().await?;
         let known = if keys.is_empty() {
