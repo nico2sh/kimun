@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/nico2sh/kimun/compare/kimun_server-v0.7.0...kimun_server-v0.8.0) - 2026-11-26
+
+### Added
+
+- date ranges and semantic search on mcp and skill
+
 ## [0.7.0](https://github.com/nico2sh/kimun/compare/kimun_server-v0.6.2...kimun_server-v0.7.0) - 2026-11-25
 
 ### Added
