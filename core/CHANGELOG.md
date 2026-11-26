@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/nico2sh/kimun/compare/kimun_core-v0.9.1...kimun_core-v0.10.0) - 2026-11-26
+
+### Added
+
+- better skill installer
+- date ranges and semantic search on mcp and skill
+
+### Fixed
+
+- properties with accents
+
 ## [0.9.1](https://github.com/nico2sh/kimun/compare/kimun_core-v0.9.0...kimun_core-v0.9.1) - 2026-11-25
 
 ### Added
