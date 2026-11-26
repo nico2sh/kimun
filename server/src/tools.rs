@@ -136,55 +136,71 @@ fn date_arg(args: &Value, name: &str) -> Result<Option<chrono::NaiveDate>, Strin
         .transpose()
 }
 
+/// Reads the search filter out of `args`: `date_from`, `date_to`, `date_key`,
+/// `folder` and `tags`, all optional. The search tool and `/api/embeddings`
+/// both use it. The dates must come together.
+pub fn parse_filter(args: &Value) -> Result<QueryFilter, String> {
+    let from = date_arg(args, "date_from")?;
+    let to = date_arg(args, "date_to")?;
+    let key = str_arg(args, "date_key")?
+        .map(|k| k.trim().to_lowercase())
+        .filter(|k| !k.is_empty());
+    let dates = match (from, to) {
+        (Some(from), Some(to)) => Some(DateFilter {
+            source: key,
+            from,
+            to,
+        }),
+        (None, None) if key.is_none() => None,
+        (None, None) => {
+            return Err("`date_key` needs `date_from` and `date_to`".to_string());
+        }
+        _ => return Err("`date_from` and `date_to` must be given together".to_string()),
+    };
+    let folder = str_arg(args, "folder")?
+        .map(|f| f.trim().trim_matches('/').to_string())
+        .filter(|f| !f.is_empty());
+    let tags = match args.get("tags") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|t| {
+                t.as_str()
+                    .map(|t| t.trim().trim_start_matches('#').to_lowercase())
+                    .ok_or_else(|| "argument `tags` must be a list of strings".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|t| !t.is_empty())
+            .collect(),
+        Some(_) => return Err("argument `tags` must be a list of strings".to_string()),
+    };
+    Ok(QueryFilter {
+        dates,
+        folder,
+        tags,
+    })
+}
+
+/// The error text for a date range whose start is after its end, else `None`.
+pub fn date_order_error(filter: &QueryFilter) -> Option<String> {
+    let d = filter.dates.as_ref()?;
+    (d.from > d.to).then(|| {
+        format!(
+            "date_from ({}) is after date_to ({}); swap them",
+            d.from, d.to
+        )
+    })
+}
+
 /// Validates a tool call the model made. The message of an `Err` goes back to
 /// the model.
 pub fn parse_call(name: &str, args: &Value) -> Result<ToolCall, String> {
     match name {
         "search" => {
             let query = required_str(args, "query")?;
-            let from = date_arg(args, "date_from")?;
-            let to = date_arg(args, "date_to")?;
-            let key = str_arg(args, "date_key")?
-                .map(|k| k.trim().to_lowercase())
-                .filter(|k| !k.is_empty());
-            let dates = match (from, to) {
-                (Some(from), Some(to)) => Some(DateFilter {
-                    source: key,
-                    from,
-                    to,
-                }),
-                (None, None) if key.is_none() => None,
-                (None, None) => {
-                    return Err("`date_key` needs `date_from` and `date_to`".to_string());
-                }
-                _ => return Err("`date_from` and `date_to` must be given together".to_string()),
-            };
-            let folder = str_arg(args, "folder")?
-                .map(|f| f.trim().trim_matches('/').to_string())
-                .filter(|f| !f.is_empty());
-            let tags = match args.get("tags") {
-                None | Some(Value::Null) => Vec::new(),
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .map(|t| {
-                        t.as_str()
-                            .map(|t| t.trim().trim_start_matches('#').to_lowercase())
-                            .ok_or_else(|| "argument `tags` must be a list of strings".to_string())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .filter(|t| !t.is_empty())
-                    .collect(),
-                Some(_) => return Err("argument `tags` must be a list of strings".to_string()),
-            };
-            Ok(ToolCall::Search {
-                query,
-                filter: QueryFilter {
-                    dates,
-                    folder,
-                    tags,
-                },
-            })
+            let filter = parse_filter(args)?;
+            Ok(ToolCall::Search { query, filter })
         }
         "list_date_keys" => Ok(ToolCall::ListDateKeys),
         "read_note" => Ok(ToolCall::ReadNote {
@@ -271,16 +287,8 @@ impl<'a> ToolRunner<'a> {
 
     async fn search(&self, query: &str, filter: &QueryFilter) -> ToolOutput {
         let trail = trail_for_search(query, filter);
-        if let Some(d) = &filter.dates
-            && d.from > d.to
-        {
-            return error_output(
-                format!(
-                    "date_from ({}) is after date_to ({}); swap them",
-                    d.from, d.to
-                ),
-                trail,
-            );
+        if let Some(msg) = date_order_error(filter) {
+            return error_output(msg, trail);
         }
         let found = match self
             .rag

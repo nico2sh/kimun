@@ -605,6 +605,10 @@ _Avoid_: auto-pair, auto-close (those mean inserting the closing char while typi
 The fixed run of spaces one indent puts at the start of a row — what Tab, `>>`, the visual `>` and a list continuation's dedent all move a row by, read from the **rope buffer** (`indent_width`, 4 by default) so every door agrees. Always spaces, never a tab. On the way back out, a dedent removes up to one step of leading spaces, or one existing leading tab, which counts as a whole step. Not a tab stop: that is how an existing `\t` *draws* (`Metrics::tab_width`), and the two are kept apart the way vim keeps `shiftwidth` from `tabstop`.
 _Avoid_: tab width, tab size (the drawing rule), hard tab (a setting kimün no longer has).
 
+**Agent connector**:
+The ways an outside agent reaches a **Vault**: the MCP server and the skills. The agent runs in a harness that Kimün does not control (Claude Code, Codex, OpenCode, Hermes), and its own model does the thinking. The connector gives that model tools and guidance. The model picks the date range for a time question and decides which note to read next. This is the job that the **Ask workspace** does with the **Kimün server**'s model, done by the agent instead. It works with no **Kimün server**. With a semantic-only or full server it also offers search by meaning. Writes through it are **automated edits**.
+_Avoid_: MCP (one channel of it), plugin, integration, RAG connector (RAG names one technique, and the connector does word search too).
+
 **Automated edit**:
 A note mutation performed through the CLI or the MCP server rather than the TUI editor. Automated edits produce a **backup**; interactive TUI edits do not (the editor carries its own version history).
 _Avoid_: programmatic write, headless edit

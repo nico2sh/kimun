@@ -11,19 +11,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::server_client::{
-    RagClient,
+    RagClient, RagError,
     sync::{RagSync, ServerCapability, ServerProbe, ServerUpdate},
 };
 use kimun_core::NoteVault;
 use tokio::task::JoinHandle;
 
 use super::RagStatus;
-use super::client::server_config;
+use super::client::{rag_client, server_config};
 use crate::logic::message::{AppMessage, AppTx};
 use crate::settings::SharedSettings;
 
 /// How often the background task flushes pending changes and refreshes status.
-const SYNC_INTERVAL: Duration = Duration::from_secs(10);
+pub const SYNC_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Run a full reconcile (index-wide read + full-collection hash fetch) only
 /// every Nth interval — the drain fast path handles the common case, and a
@@ -197,6 +197,20 @@ impl LabelRegistration {
     }
 }
 
+/// What the sync loop reports while it runs. The apps turn each event into an
+/// app message. The MCP process logs the status and ignores server updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyncEvent {
+    /// The connection status changed or was refreshed on this tick.
+    Status(RagStatus),
+    /// The server-update notice changed. `None` clears it.
+    ServerUpdate(Option<ServerUpdate>),
+}
+
+/// Receives the loop's [`SyncEvent`]s. Called from the sync task, so it must
+/// not block.
+pub type SyncReport = Arc<dyn Fn(SyncEvent) + Send + Sync>;
+
 /// Spawns the background sync loop for `vault` if a RAG server is configured.
 /// Returns the task handle (abort it when the vault is rebuilt), or `None` when
 /// the feature is off. Status is delivered to the UI via [`AppMessage::RagStatus`].
@@ -205,11 +219,31 @@ pub fn spawn_rag_sync(
     settings: &SharedSettings,
     tx: AppTx,
 ) -> Option<JoinHandle<()>> {
+    let report: SyncReport = Arc::new(move |event| {
+        let message = match event {
+            SyncEvent::Status(status) => AppMessage::RagStatus(status),
+            SyncEvent::ServerUpdate(update) => AppMessage::ServerUpdate(update),
+        };
+        let _ = tx.send(message);
+    });
+    spawn_rag_sync_with(vault, settings, report, SYNC_INTERVAL)
+}
+
+/// The sync loop without a UI: spawns it for `vault` if a RAG server is
+/// configured and hands every event to `report`. `interval` is the tick
+/// period. Production passes [`SYNC_INTERVAL`] and tests pass a short one.
+/// Returns `None` when no server URL is configured.
+pub fn spawn_rag_sync_with(
+    vault: Arc<NoteVault>,
+    settings: &SharedSettings,
+    report: SyncReport,
+    interval: Duration,
+) -> Option<JoinHandle<()>> {
     let (url, token) = server_config(settings)?;
     let settings = settings.clone();
 
     Some(tokio::spawn(async move {
-        let mut interval = tokio::time::interval(SYNC_INTERVAL);
+        let mut interval = tokio::time::interval(interval);
         // Don't stack missed ticks into a back-to-back burst if a slow tick
         // overruns the interval (large vault / slow server).
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -234,7 +268,7 @@ pub fn spawn_rag_sync(
                     }
                     Err(e) => {
                         log::warn!("RAG: cannot read vault id (will retry): {e}");
-                        let _ = tx.send(AppMessage::RagStatus(RagStatus::Offline));
+                        report(SyncEvent::Status(RagStatus::Offline));
                         continue;
                     }
                 }
@@ -247,24 +281,24 @@ pub fn spawn_rag_sync(
             let update = probe.as_ref().and_then(|p| p.server_update.clone());
             if update != server_update {
                 server_update = update;
-                let _ = tx.send(AppMessage::ServerUpdate(server_update.clone()));
+                report(SyncEvent::ServerUpdate(server_update.clone()));
             }
 
             let plan = cadence.plan(probe.as_ref(), token.is_some(), sync.index_ready());
             let reconcile = match plan {
                 Plan::Skip(status) => {
-                    let _ = tx.send(AppMessage::RagStatus(status));
+                    report(SyncEvent::Status(status));
                     continue;
                 }
                 Plan::Wait { flash } => {
                     if let Some(status) = flash {
-                        let _ = tx.send(AppMessage::RagStatus(status));
+                        report(SyncEvent::Status(status));
                     }
                     continue;
                 }
                 Plan::Run { flash, reconcile } => {
                     if let Some(status) = flash {
-                        let _ = tx.send(AppMessage::RagStatus(status));
+                        report(SyncEvent::Status(status));
                     }
                     // The workspace name can change while the app runs, so
                     // read it on every tick. A failure does not touch the
@@ -302,9 +336,23 @@ pub fn spawn_rag_sync(
                 }
             };
             let status = cadence.settle(outcome);
-            let _ = tx.send(AppMessage::RagStatus(status));
+            report(SyncEvent::Status(status));
         }
     }))
+}
+
+/// One full sync pass outside the loop: a fresh [`RagSync`] for `vault`, then
+/// [`RagSync::tick`], a drain followed by a reconcile. A fresh sync starts with
+/// an empty dirty-set, so the reconcile is the part that pushes what changed.
+/// It is keyed by hash, so notes the server already holds are not sent again.
+/// Returns `None` when no server is configured or the vault id cannot be read.
+pub async fn sync_once(
+    vault: &Arc<NoteVault>,
+    settings: &SharedSettings,
+) -> Option<Result<bool, RagError>> {
+    let client = rag_client(settings, vault).await?;
+    let sync = RagSync::new(vault.clone(), client);
+    Some(sync.tick().await)
 }
 
 #[cfg(test)]

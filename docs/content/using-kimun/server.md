@@ -52,6 +52,19 @@ The footer shows the connection: `rag: online`, `rag: syncing`, `rag: offline`, 
 
 If you share the server with other people, or open it to the network, read the security notes in the server README first. The server uses plain HTTP, so it is meant for a trusted network.
 
+## Filter a search
+
+A program can call the server's `POST /api/embeddings` search with filters. A request with no filter works as before. These fields are optional:
+
+- `date_from` and `date_to`: a range of days, written `YYYY-MM-DD`. Give both or neither. The start must not be after the end.
+- `date_key`: which date to use, such as `journal` for journal notes. It needs `date_from` and `date_to`.
+- `folder`: only notes inside this folder.
+- `tags`: only notes that have all of these tags.
+
+The server reports `search_filters: true` on its `/health` page when it accepts these fields. An older server does not report it.
+
+If the server uses Qdrant as its store, it refuses any filter and returns an error. The default SQLite store supports all filters.
+
 ## Update the server
 
 When a new server version exists, the desktop app tells you. What happens next depends on how you installed the server.

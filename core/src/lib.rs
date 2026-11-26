@@ -60,6 +60,7 @@ pub mod system;
 mod vault_attachments;
 mod vault_browse;
 mod vault_config;
+mod vault_dates;
 mod vault_entries;
 mod vault_journal;
 mod vault_links;
@@ -87,10 +88,12 @@ pub use vault_browse::{NotesValidation, VaultBrowseOptions, VaultBrowseOptionsBu
 pub use vault_config::{
     VaultConfig, DEFAULT_ASSETS_PATH, DEFAULT_INBOX_PATH, DEFAULT_JOURNAL_PATH,
 };
+pub use vault_dates::{NoteDate, JOURNAL_DATE_SOURCE};
 pub use vault_results::{
     AttachmentContent, AttachmentDetails, DirectoryDetails, LinkResolution, ReplacePreview,
     ResultType, SearchResult,
 };
+pub use vault_search::{DateFilter, DateSource};
 
 use std::{
     collections::HashMap,

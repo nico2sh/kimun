@@ -70,6 +70,57 @@ pub struct QueryRequest {
     /// The client's local date as `YYYY-MM-DD`; sent on `/api/answer` only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub today: Option<String>,
+    /// Search filters; sent on `/api/embeddings` only, and only when set, so
+    /// an unfiltered request is byte-identical to one from an older client.
+    #[serde(flatten)]
+    pub filter: SearchFilter,
+}
+
+/// Narrows a search to notes with a date in a range, in a folder, or with all
+/// the given tags. Every part is optional; an empty filter changes nothing.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SearchFilter {
+    /// First day of the range. The server needs it together with `date_to`.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt_day")]
+    pub date_from: Option<chrono::NaiveDate>,
+    /// Last day of the range, inclusive.
+    #[serde(skip_serializing_if = "Option::is_none", with = "opt_day")]
+    pub date_to: Option<chrono::NaiveDate>,
+    /// Which date property the range applies to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_key: Option<String>,
+    /// Only notes under this folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// Only notes carrying all of these tags.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl SearchFilter {
+    /// True when no part is set.
+    pub fn is_empty(&self) -> bool {
+        self.date_from.is_none()
+            && self.date_to.is_none()
+            && self.date_key.is_none()
+            && self.folder.is_none()
+            && self.tags.is_empty()
+    }
+}
+
+/// Serializes an optional day as `YYYY-MM-DD`.
+mod opt_day {
+    use serde::Serializer;
+
+    pub fn serialize<S: Serializer>(
+        day: &Option<chrono::NaiveDate>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match day {
+            Some(d) => s.serialize_str(&d.format("%Y-%m-%d").to_string()),
+            None => s.serialize_none(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,6 +173,9 @@ pub struct Health {
     /// one; `None` otherwise (and on servers too old to report it).
     #[serde(default)]
     pub latest_version: Option<String>,
+    /// Whether the server accepts search filters. Absent on older servers.
+    #[serde(default)]
+    pub search_filters: bool,
 }
 
 /// Response to any job-creating endpoint.
@@ -172,6 +226,7 @@ mod tests {
             context_size: None,
             history: vec![],
             today: None,
+            filter: SearchFilter::default(),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(
@@ -191,6 +246,7 @@ mod tests {
                 answer: "a1".into(),
             }],
             today: Some("2026-11-25".into()),
+            filter: SearchFilter::default(),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains(r#""history":[{"question":"q1","answer":"a1"}]"#));
@@ -205,6 +261,7 @@ mod tests {
             context_size: None,
             history: vec![],
             today: None,
+            filter: SearchFilter::default(),
         };
         assert!(!serde_json::to_string(&req).unwrap().contains("today"));
     }
