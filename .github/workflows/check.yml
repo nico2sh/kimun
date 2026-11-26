@@ -209,6 +209,12 @@ jobs:
         if: matrix.lint
         run: python3 .github/scripts/check-host-fs.py
 
+      # The kimun-ask skill and the MCP server instructions carry the text in
+      # tui/src/cli/commands/mcp/guidance.md. Its tests run in the next step.
+      - name: Agent guidance copies match
+        if: matrix.lint
+        run: python3 .github/scripts/check-agent-guidance.py
+
       # The release-notes tooling (release-notes/README.md).
       - name: Release notes script tests
         if: matrix.lint

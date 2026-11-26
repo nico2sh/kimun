@@ -2,7 +2,11 @@
 //
 // MCP server handler for kimun — exposes vault operations as MCP tools.
 
+mod info;
 pub mod prompts;
+mod results;
+mod semantic;
+mod sync;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,9 +52,36 @@ pub struct ShowNoteParams {
     pub path: String,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct SearchNotesParams {
-    pub query: String,
+    /// Search query. Optional when a date range is given.
+    pub query: Option<String>,
+    /// First day in range, YYYY-MM-DD (requires date_key)
+    pub from: Option<String>,
+    /// Last day in range, YYYY-MM-DD (requires date_key)
+    pub to: Option<String>,
+    /// Which date the range tests: `journal` (the date in a journal note's name) or a date property key. Use `property:journal` for a property literally named journal.
+    pub date_key: Option<String>,
+    /// Most hits to return (default 20, max 100)
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct SemanticSearchParams {
+    /// What the notes should be about, in natural language. Required. For a date range with no query, use search_notes.
+    pub query: Option<String>,
+    /// First day in range, YYYY-MM-DD (requires date_key)
+    pub from: Option<String>,
+    /// Last day in range, YYYY-MM-DD (requires date_key)
+    pub to: Option<String>,
+    /// Which date the range tests: `journal` or a date property key.
+    pub date_key: Option<String>,
+    /// Only notes under this folder
+    pub folder: Option<String>,
+    /// Only notes carrying all of these tags
+    pub tags: Option<Vec<String>>,
+    /// Most hits to return (default 10, max 40)
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -197,6 +228,9 @@ fn property_input(value: &serde_json::Value, kind: Option<&str>) -> Result<Prope
 #[derive(Clone)]
 pub struct KimunHandler {
     vault: Arc<NoteVault>,
+    /// Settings that tell `vault_info` about the server. Without them the
+    /// semantic search state is `none`.
+    settings: Option<crate::settings::SharedSettings>,
     // Read at runtime by the `#[tool_handler]` / `#[prompt_handler]` generated
     // impls (see below); clippy can't see through the macro expansion, so it
     // flags these as unread despite being the live tool/prompt dispatch tables.
@@ -225,10 +259,54 @@ fn vault_err(e: kimun_core::error::VaultError) -> Result<CallToolResult, McpErro
 #[tool_router]
 impl KimunHandler {
     pub fn new(vault: NoteVault) -> Self {
+        Self::from_shared(Arc::new(vault))
+    }
+
+    /// A handler over a vault that another task also uses, such as the sync
+    /// loop in [`run`].
+    pub fn from_shared(vault: Arc<NoteVault>) -> Self {
         Self {
-            vault: Arc::new(vault),
+            vault,
+            settings: None,
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
+        }
+    }
+
+    /// Gives the handler the settings that `vault_info` reads the server from.
+    pub fn with_settings(mut self, settings: crate::settings::SharedSettings) -> Self {
+        self.settings = Some(settings);
+        self
+    }
+
+    #[tool(
+        description = "Report today's date (local), the date keys the search tools accept as date_key, and whether semantic_search is available. Call it before a dated search."
+    )]
+    async fn vault_info(&self) -> Result<CallToolResult, McpError> {
+        match info::render(&self.vault, self.settings.as_ref()).await {
+            Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "Search notes by meaning, using the Kimun server's embeddings. Needs a configured server (see vault_info). Use it for questions about meaning or topic, when you do not know the exact words. For exact words, names, tags, links and properties, use search_notes. A query is required. For a date range with no query, use search_notes, which lists every note in the range newest first. Optional filters: from and/or to (YYYY-MM-DD, inclusive) with date_key (`journal` or a date property key), folder, and tags (a note must carry all of them). limit sets the most hits (default 10, max 40). Each hit shows `path — title`, then date, score, rank and the best matching chunk of text."
+    )]
+    async fn semantic_search(
+        &self,
+        Parameters(p): Parameters<SemanticSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match semantic::run(
+            &self.vault,
+            self.settings.as_ref(),
+            p,
+            semantic::TIMEOUT,
+            semantic::PROBE_TIMEOUT,
+        )
+        .await
+        {
+            Ok(r) => Ok(r),
+            Err(e) => vault_err(e),
         }
     }
 
@@ -443,29 +521,66 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Search notes by query. Supports =name (or name:name) to match by note name, @heading (or in:heading), /path prefix, #label (or lb:label) for hashtag-derived labels, <note (or lk:note) for notes that link to the given note (its backlinks), >note (or fwd:note) for the notes the given note links to (its forward links), %key<op>value (or prop:key<op>value) for frontmatter properties with op one of = != < <= > >= (e.g. %status=done, %priority>=2, %due<2024-04-01; numbers compare numerically, dates chronologically, on a list = means contains; quote values or keys with spaces: %status=\"in progress\", %\"due date\"<2024-04-01; * is a wildcard with = and !=: %status=d*) or a bare %key for notes that have the property at all, ^%key (or or:prop:key; ^%\"due date\" for a key with spaces) to sort by a property (-^%key descending; notes without it last), and - prefix for exclusion (e.g. -term, -#label, -lb:label, -=name, -@heading, -/path, -<note, -lk:note, ->note, -fwd:note, -%key, -%key=value). The link filters match by note name (the .md extension is optional, case-insensitive); a bare name matches a linked note in any folder, a path like <dir/note disambiguates, and * wildcards are allowed (<proj*). Labels (#label) come from hashtags in note body text and from the frontmatter `tags` property (a list, or one string) — hashtags written inside frontmatter, fenced code blocks, inline code, HTML, markdown link bodies, and [[wikilinks]] are not indexed. Inline label names are ASCII [A-Za-z0-9_]+; all labels are matched case-insensitively. Long queries are truncated at 8 KB."
+        description = "Search notes by query. Supports =name (or name:name) to match by note name, @heading (or in:heading), /path prefix, #label (or lb:label) for hashtag-derived labels, <note (or lk:note) for notes that link to the given note (its backlinks), >note (or fwd:note) for the notes the given note links to (its forward links), %key<op>value (or prop:key<op>value) for frontmatter properties with op one of = != < <= > >= (e.g. %status=done, %priority>=2, %due<2024-04-01; numbers compare numerically, dates chronologically, on a list = means contains; quote values or keys with spaces: %status=\"in progress\", %\"due date\"<2024-04-01; * is a wildcard with = and !=: %status=d*) or a bare %key for notes that have the property at all, ^%key (or or:prop:key; ^%\"due date\" for a key with spaces) to sort by a property (-^%key descending; notes without it last), and - prefix for exclusion (e.g. -term, -#label, -lb:label, -=name, -@heading, -/path, -<note, -lk:note, ->note, -fwd:note, -%key, -%key=value). The link filters match by note name (the .md extension is optional, case-insensitive); a bare name matches a linked note in any folder, a path like <dir/note disambiguates, and * wildcards are allowed (<proj*). Labels (#label) come from hashtags in note body text and from the frontmatter `tags` property (a list, or one string) — hashtags written inside frontmatter, fenced code blocks, inline code, HTML, markdown link bodies, and [[wikilinks]] are not indexed. Inline label names are ASCII [A-Za-z0-9_]+; all labels are matched case-insensitively. Long queries are truncated at 8 KB. Optional date range: from and/or to (YYYY-MM-DD, inclusive) with date_key (`journal` for the date in a journal note's name, or a date property key; `property:journal` for a property literally named journal). With a range and no query, notes in range are listed newest first; with a query, in relevance order. Give a query, a range, or both. limit sets the most hits returned (default 20, max 100). Each hit shows `path — title`, then its dates, tags, link counts and a snippet. For questions about meaning or topic, try semantic_search first when a Kimun server is available."
     )]
     async fn search_notes(
         &self,
         Parameters(p): Parameters<SearchNotesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let results = self
-            .vault
-            .search_notes(&p.query)
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let tool_error = |msg: String| Ok(CallToolResult::error(vec![Content::text(msg)]));
+        let query = p.query.as_deref().map(str::trim).unwrap_or("");
+        let range = match results::resolve_range(
+            &self.vault,
+            p.from.as_deref(),
+            p.to.as_deref(),
+            p.date_key.as_deref(),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(results::RangeError::Tool(m)) => return tool_error(m),
+            Err(results::RangeError::Vault(e)) => return vault_err(e),
+        };
+        if query.is_empty() && range.is_none() {
+            return tool_error(
+                "Give a query, or a date range with date_key. Listing the whole vault is not supported; use list_notes for that."
+                    .to_string(),
+            );
+        }
+        let results = if let Some(range) = range {
+            let filter = kimun_core::DateFilter {
+                source: results::parse_date_key(&range.key),
+                from: range.from,
+                to: range.to,
+            };
+            self.vault.search_notes_dated(query, &filter).await
+        } else {
+            self.vault.search_notes(query).await
+        };
+        let results = match results {
+            Ok(r) => r,
+            Err(e) => return vault_err(e),
+        };
         if results.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No results found.",
             )]));
         }
-        let lines: Vec<String> = results
-            .iter()
-            .map(|(entry, content)| format!("{} — {}", entry.path, content.title))
-            .collect();
-        Ok(CallToolResult::success(vec![Content::text(
-            lines.join("\n"),
-        )]))
+        let cap = (p.limit.map(|l| l as usize).unwrap_or(results::DEFAULT_HITS))
+            .clamp(1, results::MAX_HITS);
+        let total = results.len();
+        let mut hits = Vec::new();
+        for (entry, content) in results.iter().take(cap) {
+            match results::build_hit(&self.vault, &entry.path, &content.title).await {
+                Ok(hit) => hits.push(results::render_hit(&hit)),
+                Err(e) => return vault_err(e),
+            }
+        }
+        let mut text = hits.join("\n");
+        if total > cap {
+            text.push_str(&format!("\n(showing {cap} of {total} results)"));
+        }
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(description = "List all notes in the vault, optionally filtered by path prefix.")]
@@ -723,19 +838,12 @@ impl KimunHandler {
 // ServerHandler implementation
 // ---------------------------------------------------------------------------
 
-#[tool_handler]
-#[prompt_handler]
-impl ServerHandler for KimunHandler {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_prompts()
-                .build(),
-        )
-        .with_instructions(
-            "Kimun notes MCP server — read and write vault notes via tools. \
+/// The answering method, shared with `skills/kimun-ask/SKILL.md`. CI checks
+/// that the skill carries the same text (`.github/scripts/check-agent-guidance.py`).
+const GUIDANCE: &str = include_str!("guidance.md");
+
+/// Notes about the index and version errors, appended to the guidance.
+const INDEX_NOTES: &str = "Kimun notes MCP server — read and write vault notes via tools. \
              Search, listing, backlinks, and labels are served from an index that \
              these tools keep in sync automatically. If vault files are modified \
              outside Kimün (e.g. edited directly with sed, another editor, or a sync \
@@ -748,8 +856,37 @@ impl ServerHandler for KimunHandler {
              available, `kimun update` installs it; a Homebrew or cargo install uses its \
              own upgrade command, which `kimun update` prints), then reconnect to this \
              server. An index from an older version needs no action: Kimün rebuilds it \
-             on its own.",
+             on its own.";
+
+/// The block of `guidance` between the `short:start` and `short:end` markers,
+/// trimmed. Empty when the markers are missing.
+fn short_guidance(guidance: &str) -> &str {
+    const START: &str = "<!-- short:start -->";
+    const END: &str = "<!-- short:end -->";
+    let Some(from) = guidance.find(START).map(|i| i + START.len()) else {
+        return "";
+    };
+    match guidance[from..].find(END) {
+        Some(len) => guidance[from..from + len].trim(),
+        None => "",
+    }
+}
+
+#[tool_handler]
+#[prompt_handler]
+impl ServerHandler for KimunHandler {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
         )
+        .with_instructions(format!(
+            "{short_guidance}\n\n{INDEX_NOTES}",
+            short_guidance = short_guidance(GUIDANCE)
+        ))
     }
 
     async fn list_resources(
@@ -842,11 +979,23 @@ impl ServerHandler for KimunHandler {
 // ---------------------------------------------------------------------------
 
 pub async fn run(config_path: Option<PathBuf>) -> Result<()> {
-    use crate::cli::helpers::create_and_init_vault;
-    let (vault, _) = create_and_init_vault(config_path).await?;
-    let handler = KimunHandler::new(vault);
+    use crate::cli::helpers::create_and_init_vault_with_settings;
+    let (vault, settings, _) = create_and_init_vault_with_settings(config_path).await?;
+    let vault = Arc::new(vault);
+    let settings: crate::settings::SharedSettings = Arc::new(std::sync::RwLock::new(settings));
+
+    // Notes written through the tools reach the Kimun server, when one is
+    // configured, the same way they do from the apps.
+    let sync_task = sync::spawn(vault.clone(), &settings);
+    let handler = KimunHandler::from_shared(vault.clone()).with_settings(settings.clone());
     let service = handler.serve(stdio()).await.map_err(|e| eyre!("{e}"))?;
-    service.waiting().await.map_err(|e| eyre!("{e}"))?;
+    let served = service.waiting().await;
+
+    if let Some(task) = sync_task {
+        task.abort();
+    }
+    sync::flush_once(&vault, &settings).await;
+    served.map_err(|e| eyre!("{e}"))?;
     Ok(())
 }
 
@@ -859,6 +1008,29 @@ mod tests {
     use super::*;
     use kimun_core::{NoteVault, VaultConfig};
     use tempfile::TempDir;
+
+    #[test]
+    fn short_guidance_takes_only_the_marked_block() {
+        let full = "intro\n<!-- short:start -->\nline one\nline two\n<!-- short:end -->\nrest";
+        assert_eq!(short_guidance(full), "line one\nline two");
+        assert_eq!(short_guidance("no markers"), "");
+    }
+
+    #[test]
+    fn real_guidance_has_a_short_block() {
+        let short = short_guidance(GUIDANCE);
+        assert!(short.contains("vault_info"));
+        assert!(!short.contains("research_topic"));
+    }
+
+    #[tokio::test]
+    async fn instructions_contain_short_guidance() {
+        let (handler, _dir) = make_handler().await;
+        let text = handler.get_info().instructions.unwrap();
+        assert!(text.contains(short_guidance(GUIDANCE)));
+        assert!(text.contains("the index goes stale"));
+        assert!(text.contains("was made by a newer version"));
+    }
 
     async fn make_handler() -> (KimunHandler, TempDir) {
         let dir = TempDir::new().unwrap();
@@ -902,6 +1074,21 @@ mod tests {
             other => panic!("expected text content, got {other:?}"),
         };
         serde_json::from_str(&text).unwrap()
+    }
+
+    #[tokio::test]
+    async fn search_tool_descriptions_point_at_each_other() {
+        let (handler, _dir) = make_handler().await;
+        let tools = handler.tool_router.list_all();
+        let desc = |name: &str| -> String {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .and_then(|t| t.description.as_ref().map(|d| d.to_string()))
+                .unwrap_or_else(|| panic!("no tool {name}"))
+        };
+        assert!(desc("semantic_search").contains("search_notes"));
+        assert!(desc("search_notes").contains("semantic_search"));
     }
 
     #[test]
@@ -1302,7 +1489,8 @@ mod tests {
             .unwrap();
         let result = handler
             .search_notes(Parameters(SearchNotesParams {
-                query: "unique_keyword_xyz".to_string(),
+                query: Some("unique_keyword_xyz".to_string()),
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -1323,11 +1511,230 @@ mod tests {
         let (handler, _dir) = make_handler().await;
         let result = handler
             .search_notes(Parameters(SearchNotesParams {
-                query: "nonexistent_zzz_123".to_string(),
+                query: Some("nonexistent_zzz_123".to_string()),
+                ..Default::default()
             }))
             .await
             .unwrap();
         assert!(is_success(&result));
+    }
+
+    async fn make_dated_handler() -> (KimunHandler, TempDir) {
+        let (handler, dir) = make_handler().await;
+        for (path, content) in [
+            ("journal/2026-11-10", "# Ten\n\nfirst day"),
+            ("journal/2026-11-20", "# Twenty\n\nsecond day #tagged"),
+            ("journal/2026-12-01", "# December\n\nthird day"),
+        ] {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: path.to_string(),
+                    content: content.to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+        (handler, dir)
+    }
+
+    async fn search(handler: &KimunHandler, p: SearchNotesParams) -> CallToolResult {
+        handler.search_notes(Parameters(p)).await.unwrap()
+    }
+
+    fn range(from: Option<&str>, to: Option<&str>, key: Option<&str>) -> SearchNotesParams {
+        SearchNotesParams {
+            from: from.map(str::to_string),
+            to: to.map(str::to_string),
+            date_key: key.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    fn plain_text(result: &CallToolResult) -> String {
+        match &result.content[0].raw {
+            RawContent::Text(t) => t.text.clone(),
+            other => panic!("expected text content, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn search_with_range_and_no_query_lists_newest_first() {
+        let (handler, _dir) = make_dated_handler().await;
+        let result = search(
+            &handler,
+            range(Some("2026-11-01"), Some("2026-12-31"), Some("journal")),
+        )
+        .await;
+        assert!(is_success(&result), "{}", result_text(&result));
+        let text = plain_text(&result);
+        let dec = text.find("2026-12-01.md —").expect(&text);
+        let twenty = text.find("2026-11-20.md —").expect(&text);
+        let ten = text.find("2026-11-10.md —").expect(&text);
+        assert!(dec < twenty && twenty < ten, "{text}");
+        assert!(text.contains("  dates: journal 2026-11-20"), "{text}");
+        assert!(text.contains("  snippet: second day"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn search_from_alone_and_to_alone_fill_the_open_end() {
+        let (handler, _dir) = make_dated_handler().await;
+        let from =
+            plain_text(&search(&handler, range(Some("2026-11-20"), None, Some("journal"))).await);
+        assert!(
+            from.contains("2026-12-01.md —") && from.contains("2026-11-20.md —"),
+            "{from}"
+        );
+        assert!(!from.contains("2026-11-10.md —"), "{from}");
+        let to =
+            plain_text(&search(&handler, range(None, Some("2026-11-20"), Some("journal"))).await);
+        assert!(
+            to.contains("2026-11-10.md —") && to.contains("2026-11-20.md —"),
+            "{to}"
+        );
+        assert!(!to.contains("2026-12-01.md —"), "{to}");
+    }
+
+    #[tokio::test]
+    async fn search_accepts_property_journal_form() {
+        let (handler, _dir) = make_dated_handler().await;
+        // No property named journal exists, so the prefix picked the property
+        // source and the call fails with the keys of the vault.
+        let result = search(
+            &handler,
+            range(Some("2026-11-01"), None, Some("property:journal")),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        let text = plain_text(&result);
+        assert!(text.contains("Unknown date property 'journal'"), "{text}");
+        assert!(
+            text.contains("Date sources in this vault: journal"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_property_key_with_from_alone_lists_the_later_notes() {
+        let (handler, _dir) = make_dated_handler().await;
+        for (path, due) in [("early", "2026-11-05"), ("late", "2026-11-25")] {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: path.to_string(),
+                    content: format!("---\ndue: {due}\n---\n# {path}\n\nbody"),
+                }))
+                .await
+                .unwrap();
+        }
+        let result = search(&handler, range(Some("2026-11-11"), None, Some("due"))).await;
+        assert!(is_success(&result), "{}", plain_text(&result));
+        let text = plain_text(&result);
+        assert!(text.contains("/late.md — "), "{text}");
+        assert!(!text.contains("/early.md — "), "{text}");
+    }
+
+    #[tokio::test]
+    async fn search_lists_the_other_hits_when_an_indexed_file_was_deleted() {
+        let (handler, dir) = make_dated_handler().await;
+        std::fs::remove_file(dir.path().join("journal").join("2026-11-20.md")).unwrap();
+        let result = search(
+            &handler,
+            SearchNotesParams {
+                query: Some("day".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(is_success(&result), "{}", plain_text(&result));
+        let text = plain_text(&result);
+        assert!(text.contains("/journal/2026-11-10.md — Ten"), "{text}");
+        assert!(text.contains("/journal/2026-12-01.md — December"), "{text}");
+        // The stale entry is a bare `path — title` line.
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("/journal/2026-11-20.md — "))
+            .expect(&text);
+        assert_eq!(lines[at], "/journal/2026-11-20.md — Twenty");
+        assert!(
+            lines.get(at + 1).is_none_or(|l| !l.starts_with("  ")),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_range_without_date_key_errors_listing_keys() {
+        let (handler, _dir) = make_dated_handler().await;
+        let result = search(&handler, range(Some("2026-11-01"), None, None)).await;
+        assert_eq!(result.is_error, Some(true));
+        let text = plain_text(&result);
+        assert!(text.contains("date_key"), "{text}");
+        assert!(text.contains("journal"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn search_with_neither_query_nor_range_errors() {
+        let (handler, _dir) = make_dated_handler().await;
+        let result = search(&handler, SearchNotesParams::default()).await;
+        assert_eq!(result.is_error, Some(true));
+        let blank = search(
+            &handler,
+            SearchNotesParams {
+                query: Some("  ".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(blank.is_error, Some(true));
+    }
+
+    #[tokio::test]
+    async fn search_invalid_date_names_the_format() {
+        let (handler, _dir) = make_dated_handler().await;
+        let result = search(&handler, range(Some("11/20/2026"), None, Some("journal"))).await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(plain_text(&result).contains("YYYY-MM-DD"));
+    }
+
+    #[tokio::test]
+    async fn search_from_after_to_gives_the_core_error() {
+        let (handler, _dir) = make_dated_handler().await;
+        let result = search(
+            &handler,
+            range(Some("2026-12-01"), Some("2026-11-01"), Some("journal")),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(plain_text(&result).contains("is after"));
+    }
+
+    #[tokio::test]
+    async fn search_caps_hits_at_limit() {
+        let (handler, _dir) = make_dated_handler().await;
+        let mut p = range(Some("2026-01-01"), None, Some("journal"));
+        p.limit = Some(2);
+        let text = plain_text(&search(&handler, p).await);
+        assert_eq!(text.matches(".md — ").count(), 2, "{text}");
+        assert!(text.ends_with("(showing 2 of 3 results)"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn search_query_hit_has_first_line_path_dash_title() {
+        let (handler, _dir) = make_dated_handler().await;
+        let text = plain_text(
+            &search(
+                &handler,
+                SearchNotesParams {
+                    query: Some("second".into()),
+                    ..Default::default()
+                },
+            )
+            .await,
+        );
+        assert!(
+            text.starts_with("/journal/2026-11-20.md — Twenty"),
+            "{text}"
+        );
+        assert!(text.contains("  tags: tagged"), "{text}");
     }
 
     #[tokio::test]
