@@ -361,9 +361,12 @@ mod tests {
         let mut e = env(None, None);
         // An install with a systemd service on port 1, where nothing listens.
         std::fs::write(
-            e.config_dir
-                .join(crate::server_manage::marker::MARKER_FILE),
-            "installer = \"install-server.sh\"\ninstall_dir = '/opt/kimun'\nservice = \"systemd\"\n",
+            e.config_dir.join(crate::server_manage::marker::MARKER_FILE),
+            // The folder must be absolute on every system, so it comes from the temp folder.
+            format!(
+                "installer = \"install-server.sh\"\ninstall_dir = '{}'\nservice = \"systemd\"\n",
+                std::env::temp_dir().join("kimun-bin").display()
+            ),
         )
         .unwrap();
         std::fs::write(e.config_dir.join("server.toml"), "[server]\nport = 1\n").unwrap();
