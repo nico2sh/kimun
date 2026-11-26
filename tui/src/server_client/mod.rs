@@ -28,7 +28,7 @@ use dto::{
     JobStatus, LabelRequest, QueryRequest, WireDoc,
 };
 
-pub use dto::{AnswerEvent, AnswerResult, ChunkResult, WireSection};
+pub use dto::{AnswerEvent, AnswerResult, ChunkResult, SearchFilter, WireSection};
 pub use observer::{DirtyOp, DirtySet, RagObserver};
 pub use reconcile::{ReconcilePlan, diff as reconcile_diff};
 
@@ -326,8 +326,32 @@ impl RagClient {
         query: &str,
         context_size: Option<ContextSize>,
     ) -> Result<Vec<ChunkResult>, RagError> {
+        self.search_filtered(query, &SearchFilter::default(), context_size)
+            .await
+    }
+
+    /// Semantic search narrowed by `filter`. A non-empty filter first probes
+    /// `GET /health` and refuses, without sending the search, when the server
+    /// does not report `search_filters`. An empty filter sends the same
+    /// request as an older client.
+    pub async fn search_filtered(
+        &self,
+        query: &str,
+        filter: &SearchFilter,
+        context_size: Option<ContextSize>,
+    ) -> Result<Vec<ChunkResult>, RagError> {
         if let Some(stub) = &self.stub {
+            if !filter.is_empty() {
+                return Err(RagError::Protocol(
+                    "This search stand-in cannot filter a search.".into(),
+                ));
+            }
             return stub.search(query, context_size).await;
+        }
+        if !filter.is_empty() && !self.health().await?.search_filters {
+            return Err(RagError::Protocol(
+                "This server is too old to filter a search. Update the server.".into(),
+            ));
         }
         let body = QueryRequest {
             vault_id: self.vault_id.clone(),
@@ -335,6 +359,7 @@ impl RagClient {
             context_size: context_size.map(|c| c.as_str().to_string()),
             history: vec![],
             today: None,
+            filter: filter.clone(),
         };
         let resp = self
             .auth(self.http.post(self.url("/api/embeddings")).json(&body))
@@ -561,6 +586,7 @@ fn answer_request(
             })
             .collect(),
         today: Some(today.format("%Y-%m-%d").to_string()),
+        filter: SearchFilter::default(),
     }
 }
 
@@ -615,5 +641,131 @@ mod tests {
         assert!(!status(500).is_auth());
         assert!(!status(404).is_auth());
         assert!(!RagError::Protocol("boom".into()).is_auth());
+    }
+
+    /// A one-thread HTTP server for the client tests. It answers `GET /health`
+    /// with `health` and `POST /api/embeddings` with no chunks, and records
+    /// each request as `"<METHOD> <path> <body>"`.
+    fn fake_server(
+        health: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let len = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= len || n == 0 {
+                            break;
+                        }
+                    } else if n == 0 {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+                let mut first = head.lines().next().unwrap_or("").split(' ');
+                let method = first.next().unwrap_or("");
+                let path = first.next().unwrap_or("");
+                log.lock().unwrap().push(format!("{method} {path} {body}"));
+                let reply = if path == "/health" {
+                    health
+                } else {
+                    r#"{"chunks":[]}"#
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    reply.len(),
+                    reply
+                );
+            }
+        });
+        (url, seen)
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[tokio::test]
+    async fn search_filtered_sends_fields() {
+        let (url, seen) = fake_server(r#"{"status":"ok","search_filters":true}"#);
+        let client = RagClient::new(url, None, "v");
+        let filter = SearchFilter {
+            date_from: Some(day(2026, 11, 1)),
+            date_to: Some(day(2026, 11, 30)),
+            date_key: Some("due".into()),
+            folder: Some("work".into()),
+            tags: vec!["a".into(), "b".into()],
+        };
+        client.search_filtered("q", &filter, None).await.unwrap();
+        let log = seen.lock().unwrap();
+        assert!(log[0].starts_with("GET /health"), "{log:?}");
+        let post = log
+            .iter()
+            .find(|l| l.starts_with("POST /api/embeddings"))
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(post.strip_prefix("POST /api/embeddings ").unwrap()).unwrap();
+        assert_eq!(body["date_from"], "2026-11-01");
+        assert_eq!(body["date_to"], "2026-11-30");
+        assert_eq!(body["date_key"], "due");
+        assert_eq!(body["folder"], "work");
+        assert_eq!(body["tags"], serde_json::json!(["a", "b"]));
+        assert_eq!(body["query"], "q");
+    }
+
+    #[tokio::test]
+    async fn search_filtered_refuses_on_old_server() {
+        let (url, seen) = fake_server(r#"{"status":"ok"}"#);
+        let client = RagClient::new(url, None, "v");
+        let filter = SearchFilter {
+            folder: Some("work".into()),
+            ..Default::default()
+        };
+        let err = client
+            .search_filtered("q", &filter, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "This server is too old to filter a search. Update the server."
+        );
+        let log = seen.lock().unwrap();
+        assert!(
+            log.iter().all(|l| !l.starts_with("POST")),
+            "the search must not be sent: {log:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_with_empty_filter_sends_no_filter_fields() {
+        let (url, seen) = fake_server(r#"{"status":"ok"}"#);
+        let client = RagClient::new(url, None, "v");
+        client.search("q", None).await.unwrap();
+        let log = seen.lock().unwrap();
+        assert_eq!(log.len(), 1, "no health probe for an empty filter: {log:?}");
+        let body = log[0].strip_prefix("POST /api/embeddings ").unwrap();
+        for field in ["date_from", "date_to", "date_key", "folder", "tags"] {
+            assert!(!body.contains(field), "{field} leaked: {body}");
+        }
     }
 }

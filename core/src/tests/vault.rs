@@ -2041,3 +2041,356 @@ async fn child_note_counts_is_case_insensitive() {
     assert_eq!(counts.len(), 1);
     assert_eq!(counts.get(&VaultPath::new("/work/sub")), Some(&1));
 }
+
+// ---- dated search ----
+
+async fn dated_vault() -> (TempDir, NoteVault) {
+    let dir = TempDir::new().unwrap();
+    let vault = make_vault(dir.path()).await;
+    for day in ["2026-11-18", "2026-11-19", "2026-11-20", "2026-11-21"] {
+        vault
+            .create_note(
+                &VaultPath::new(format!("/journal/{day}.md")),
+                &format!("# day\nmeeting on {day}\n"),
+            )
+            .await
+            .unwrap();
+    }
+    vault
+        .create_note(
+            &VaultPath::new("a.md"),
+            "---\ndue: 2026-11-10\n---\nreport alpha\n",
+        )
+        .await
+        .unwrap();
+    vault
+        .create_note(
+            &VaultPath::new("b.md"),
+            "---\ndue: 2026-11-12\n---\nreport report report\n",
+        )
+        .await
+        .unwrap();
+    vault
+        .create_note(
+            &VaultPath::new("c.md"),
+            "---\ndue: 2026-12-01\n---\nreport gamma\n",
+        )
+        .await
+        .unwrap();
+    vault
+        .create_note(&VaultPath::new("none.md"), "report with no date\n")
+        .await
+        .unwrap();
+    vault.validate_and_init().await.unwrap();
+    (dir, vault)
+}
+
+fn nd(y: i32, m: u32, d: u32) -> NaiveDate {
+    NaiveDate::from_ymd_opt(y, m, d).unwrap()
+}
+
+fn names(r: &[(NoteEntryData, NoteContentData)]) -> Vec<String> {
+    r.iter().map(|(e, _)| e.path.to_string()).collect()
+}
+
+#[tokio::test]
+async fn dated_search_journal_range_is_inclusive() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 19),
+        to: nd(2026, 11, 20),
+    };
+    let mut got = names(&vault.search_notes_dated("", &f).await.unwrap());
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["/journal/2026-11-19.md", "/journal/2026-11-20.md"]
+    );
+}
+
+#[tokio::test]
+async fn dated_search_property_range_excludes_notes_without_it() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Property("due".into()),
+        from: nd(2026, 11, 10),
+        to: nd(2026, 11, 30),
+    };
+    let mut got = names(&vault.search_notes_dated("", &f).await.unwrap());
+    got.sort();
+    assert_eq!(got, vec!["/a.md", "/b.md"]);
+}
+
+#[tokio::test]
+async fn dated_search_empty_query_orders_newest_first() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    let got = names(&vault.search_notes_dated("", &f).await.unwrap());
+    assert_eq!(
+        got,
+        vec![
+            "/journal/2026-11-21.md",
+            "/journal/2026-11-20.md",
+            "/journal/2026-11-19.md",
+            "/journal/2026-11-18.md"
+        ]
+    );
+    let p = DateFilter {
+        source: DateSource::Property("due".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 12, 31),
+    };
+    assert_eq!(
+        names(&vault.search_notes_dated("", &p).await.unwrap()),
+        vec!["/c.md", "/b.md", "/a.md"]
+    );
+}
+
+#[tokio::test]
+async fn dated_search_with_query_keeps_relevance_order() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Property("due".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 12, 31),
+    };
+    let expected: Vec<String> = names(&vault.search_notes("report").await.unwrap())
+        .into_iter()
+        .filter(|p| p != "/none.md")
+        .collect();
+    let got = names(&vault.search_notes_dated("report", &f).await.unwrap());
+    assert_eq!(got.len(), 3);
+    assert_eq!(got, expected);
+    let j = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 19),
+        to: nd(2026, 11, 20),
+    };
+    let mut got = names(&vault.search_notes_dated("meeting", &j).await.unwrap());
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["/journal/2026-11-19.md", "/journal/2026-11-20.md"]
+    );
+}
+
+#[tokio::test]
+async fn dated_search_rejects_from_after_to() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 20),
+        to: nd(2026, 11, 19),
+    };
+    let err = vault.search_notes_dated("", &f).await.unwrap_err();
+    let msg = err.user_message().expect("user error");
+    assert!(
+        msg.contains("2026-11-20") && msg.contains("2026-11-19"),
+        "{msg}"
+    );
+}
+
+#[tokio::test]
+async fn dated_search_unknown_property_key_errors_with_keys() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Property("nope".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    let err = vault.search_notes_dated("", &f).await.unwrap_err();
+    let msg = err.user_message().expect("user error");
+    assert!(
+        msg.contains("nope") && msg.contains("due") && msg.contains("journal"),
+        "{msg}"
+    );
+}
+
+#[tokio::test]
+async fn dated_search_journal_errors_when_no_journal_notes_with_keys_listed() {
+    let dir = TempDir::new().unwrap();
+    let vault = make_vault(dir.path()).await;
+    vault
+        .create_note(&VaultPath::new("a.md"), "---\ndue: 2026-11-10\n---\nx\n")
+        .await
+        .unwrap();
+    vault.validate_and_init().await.unwrap();
+    let f = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    let err = vault.search_notes_dated("", &f).await.unwrap_err();
+    let msg = err.user_message().expect("user error");
+    assert!(msg.contains("journal") && msg.contains("due"), "{msg}");
+}
+
+#[tokio::test]
+async fn dated_search_property_from_alone_matches_through_the_max_date() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Property("due".into()),
+        from: nd(2026, 11, 11),
+        to: nd(9999, 12, 31),
+    };
+    let mut got = names(&vault.search_notes_dated("", &f).await.unwrap());
+    got.sort();
+    assert_eq!(got, vec!["/b.md", "/c.md"]);
+    let mut got = names(&vault.search_notes_dated("report", &f).await.unwrap());
+    got.sort();
+    assert_eq!(got, vec!["/b.md", "/c.md"]);
+}
+
+#[tokio::test]
+async fn dated_search_property_to_alone_matches_from_the_min_date() {
+    let (_d, vault) = dated_vault().await;
+    let f = DateFilter {
+        source: DateSource::Property("due".into()),
+        from: nd(1, 1, 1),
+        to: nd(2026, 11, 11),
+    };
+    assert_eq!(
+        names(&vault.search_notes_dated("", &f).await.unwrap()),
+        vec!["/a.md"]
+    );
+}
+
+#[tokio::test]
+async fn dated_search_skips_a_note_deleted_outside_kimun() {
+    let (dir, vault) = dated_vault().await;
+    std::fs::remove_file(dir.path().join("b.md")).unwrap();
+    std::fs::remove_file(dir.path().join("journal").join("2026-11-19.md")).unwrap();
+    let p = DateFilter {
+        source: DateSource::Property("due".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 12, 31),
+    };
+    for query in ["", "report"] {
+        let mut got = names(&vault.search_notes_dated(query, &p).await.unwrap());
+        got.sort();
+        assert_eq!(got, vec!["/a.md", "/c.md"], "query {query:?}");
+    }
+    let j = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    for query in ["", "meeting"] {
+        let got = names(&vault.search_notes_dated(query, &j).await.unwrap());
+        assert_eq!(got.len(), 4, "index still lists the journal note: {got:?}");
+    }
+}
+
+async fn vault_with_journal_property() -> (TempDir, NoteVault) {
+    let (dir, vault) = dated_vault().await;
+    vault
+        .create_note(
+            &VaultPath::new("odd.md"),
+            "---\njournal: 2026-11-19\n---\nmeeting notes\n",
+        )
+        .await
+        .unwrap();
+    vault.validate_and_init().await.unwrap();
+    (dir, vault)
+}
+
+#[tokio::test]
+async fn dated_search_journal_ignores_a_property_named_journal() {
+    let (_d, vault) = vault_with_journal_property().await;
+    let j = DateFilter {
+        source: DateSource::Journal,
+        from: nd(2026, 11, 19),
+        to: nd(2026, 11, 20),
+    };
+    for query in ["", "meeting"] {
+        let mut got = names(&vault.search_notes_dated(query, &j).await.unwrap());
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["/journal/2026-11-19.md", "/journal/2026-11-20.md"],
+            "query {query:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn dated_search_property_journal_matches_only_the_property() {
+    let (_d, vault) = vault_with_journal_property().await;
+    let p = DateFilter {
+        source: DateSource::Property("journal".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    for query in ["", "meeting"] {
+        let got = names(&vault.search_notes_dated(query, &p).await.unwrap());
+        assert_eq!(got, vec!["/odd.md"], "query {query:?}");
+    }
+}
+
+#[tokio::test]
+async fn dated_search_property_journal_without_such_property_errors_with_keys() {
+    let (_d, vault) = dated_vault().await;
+    let p = DateFilter {
+        source: DateSource::Property("journal".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    let err = vault.search_notes_dated("", &p).await.unwrap_err();
+    let msg = err.user_message().expect("user error");
+    assert!(
+        msg.contains("Unknown date property 'journal'") && msg.contains("due"),
+        "{msg}"
+    );
+}
+
+async fn vault_with_accented_date_key() -> (TempDir, NoteVault) {
+    let dir = TempDir::new().unwrap();
+    let vault = make_vault(dir.path()).await;
+    vault
+        .create_note(
+            &VaultPath::new("task.md"),
+            "---\néchéance: 2026-11-25\n---\npay the rent\n",
+        )
+        .await
+        .unwrap();
+    vault.validate_and_init().await.unwrap();
+    (dir, vault)
+}
+
+#[tokio::test]
+async fn dated_search_finds_an_accented_key_in_every_spelling() {
+    let (_d, vault) = vault_with_accented_date_key().await;
+    assert_eq!(vault.date_keys().await.unwrap(), vec!["echeance"]);
+    for key in ["echeance", "échéance", "ÉCHÉANCE"] {
+        let p = DateFilter {
+            source: DateSource::Property(key.into()),
+            from: nd(2026, 11, 1),
+            to: nd(2026, 11, 30),
+        };
+        for query in ["", "rent"] {
+            let got = names(&vault.search_notes_dated(query, &p).await.unwrap());
+            assert_eq!(got, vec!["/task.md"], "key {key:?}, query {query:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn dated_search_accented_vault_unknown_key_lists_the_search_form() {
+    let (_d, vault) = vault_with_accented_date_key().await;
+    let p = DateFilter {
+        source: DateSource::Property("nope".into()),
+        from: nd(2026, 11, 1),
+        to: nd(2026, 11, 30),
+    };
+    let err = vault.search_notes_dated("", &p).await.unwrap_err();
+    let msg = err.user_message().expect("user error");
+    assert!(
+        msg.contains("Unknown date property 'nope'") && msg.contains("echeance"),
+        "{msg}"
+    );
+}

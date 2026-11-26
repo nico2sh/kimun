@@ -345,7 +345,25 @@ impl KimunRag {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<ScoredChunk>, RagError> {
-        Ok(self.search_impl(collection, query, top_k, false).await?.0)
+        Ok(self
+            .search_impl(collection, query, top_k, false, &QueryFilter::default())
+            .await?
+            .0)
+    }
+
+    /// [`Self::search`] restricted to chunks matching `filter`. An empty
+    /// filter is exactly `search`.
+    pub async fn search_filtered(
+        &self,
+        collection: &CollectionKey,
+        query: &str,
+        top_k: usize,
+        filter: &QueryFilter,
+    ) -> Result<Vec<ScoredChunk>, RagError> {
+        Ok(self
+            .search_impl(collection, query, top_k, false, filter)
+            .await?
+            .0)
     }
 
     /// [`Self::search`] plus a [`CutPreview`] of where the **context cut**
@@ -357,7 +375,8 @@ impl KimunRag {
         query: &str,
         top_k: usize,
     ) -> Result<(Vec<ScoredChunk>, Option<CutPreview>), RagError> {
-        self.search_impl(collection, query, top_k, true).await
+        self.search_impl(collection, query, top_k, true, &QueryFilter::default())
+            .await
     }
 
     async fn search_impl(
@@ -366,8 +385,9 @@ impl KimunRag {
         query: &str,
         top_k: usize,
         want_preview: bool,
+        filter: &QueryFilter,
     ) -> Result<(Vec<ScoredChunk>, Option<CutPreview>), RagError> {
-        let raw = self.retrieve(collection, query).await?;
+        let raw = self.retrieve_filtered(collection, query, filter).await?;
         let ranked = self.rank(query, raw).await;
         let pool_chunks = ranked.len();
         let cut = self.cut_len(&ranked, top_k);

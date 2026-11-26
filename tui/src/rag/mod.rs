@@ -4,10 +4,13 @@
 //! the rest of the TUI only consumes these helpers and renders status.
 
 mod client;
+pub mod state;
 mod sync;
 
-pub use client::{rag_client, rag_configured};
-pub use sync::spawn_rag_sync;
+pub use client::{rag_client, rag_configured, server_config};
+pub use sync::{
+    SYNC_INTERVAL, SyncEvent, SyncReport, spawn_rag_sync, spawn_rag_sync_with, sync_once,
+};
 
 /// RAG connection status surfaced in the footer. `Disabled` (no server
 /// configured) is never sent — the loop simply doesn't start — so the footer

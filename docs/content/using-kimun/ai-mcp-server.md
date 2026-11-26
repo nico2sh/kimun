@@ -9,7 +9,19 @@ MCP (Model Context Protocol) is a standard way to connect an AI app to other too
 
 ## Set up
 
-Add Kimün to the MCP settings of your AI app:
+For Claude Code, run this command:
+
+```sh
+claude mcp add kimun -- kimun mcp
+```
+
+For another app, run this command:
+
+```sh
+kimun mcp --print-config
+```
+
+It prints the settings to add to your AI app. The JSON block goes to standard output. Copy it into the settings of the app. The `claude mcp add` line goes to standard error, so you can send standard output straight into a settings file. The output names the program as `kimun`. If `kimun` on your path is a different program, or is not on your path, the output shows the full path instead.
 
 ```json
 {
@@ -22,25 +34,50 @@ Add Kimün to the MCP settings of your AI app:
 }
 ```
 
-For Claude Code, run this command:
-
-```sh
-claude mcp add kimun -- kimun mcp
-```
-
 Then restart your AI app.
 
-## What the AI can do
+## Tools
 
-- Search and read your notes.
-- Create notes, add text to notes, and change text in notes.
-- Delete notes.
-- Read and set the properties of a note.
-- See which notes link to a note, and which notes it links to.
-- Rename or move a note. Kimün updates the links in your other notes.
-- Add to your journal, and save quick notes to your inbox.
+These tools work without a Kimün server:
 
-The server also offers ready-made requests, such as a journal review, a search for links between notes, brainstorming, and sorting your inbox.
+- `search_notes` searches by words, labels, properties, and links. It also filters by date, with `date_from`, `date_to`, and `date_key`.
+- `get_chunks` reads one section of a note. `show_note` reads a whole note.
+- `list_notes` lists the notes in a folder.
+- `get_backlinks` and `get_outlinks` show which notes link to a note, and which notes it links to.
+- `get_properties`, `set_property`, and `remove_property` read and change the properties of a note.
+- `create_note`, `append_note`, `replace_in_note`, `overwrite_note`, and `delete_note` write notes.
+- `rename_note` and `move_note` rename or move a note. Kimün updates the links in your other notes.
+- `journal` adds to your journal. `quick_note` saves a note to your inbox.
+- `vault_info` gives today's date, the date keys, and the state of the Kimün server.
+
+This tool needs a Kimün server:
+
+- `semantic_search` finds notes by meaning. It needs a server with an embedder. It does not need an LLM key.
+
+Tell the AI app dates as `YYYY-MM-DD`. The AI app works out phrases such as "last week" itself. Both ends of a date range count.
+
+## Server state
+
+The tool `vault_info` reports the state of the Kimün server and a hint for the next step. The state is one of these:
+
+| State | Meaning |
+| --- | --- |
+| `none` | No server address is saved. |
+| `stopped` | The install script put the server on this computer, and it does not answer. |
+| `unreachable` | An address is saved and nothing answers. |
+| `unconfigured` | The server answers but has no embedder. |
+| `semantic-only` | The server has an embedder and no LLM. `semantic_search` works. |
+| `full` | The server has an embedder and an LLM. `semantic_search` works. |
+
+When `semantic_search` cannot run, it gives the same hint. The hint tells the AI app to pass the next step to you, for example `kimun server use http://localhost:7573`. The tools never start the server and never change your computer. You run the step yourself. Then restart your AI app. See [the server page](@/using-kimun/server.md).
+
+## Guidance for the AI
+
+The MCP server sends your AI app a short method for answering questions about your notes. The `kimun-ask` [skill](@/using-kimun/ai-skills.md) holds the full method, with recipes.
+
+## Prompts
+
+The server also offers ready-made requests for a journal review, a weekly review, and sorting your inbox.
 
 Your AI app can ask you before it changes or deletes anything. Kimün also saves a backup of the old text first. See [Backups](@/using-kimun/cli.md#backups).
 

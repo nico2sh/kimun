@@ -174,18 +174,27 @@ fn mcp_smoke_prompts_list() {
     }
     let _ = child.wait();
 
-    let expected_prompts = [
-        "daily_review",
-        "find_connections",
-        "research_note",
-        "brainstorm",
-        "weekly_review",
-        "link_suggestions",
-    ];
+    let expected_prompts = ["daily_review", "weekly_review", "triage_inbox"];
     for prompt in &expected_prompts {
         assert!(
             combined.contains(prompt),
             "prompt '{}' not found in prompts/list response:\n{}",
+            prompt,
+            combined
+        );
+    }
+    // The retrieval prompts were removed. The skill carries their recipes.
+    let removed_prompts = [
+        "find_connections",
+        "research_note",
+        "research_topic",
+        "brainstorm",
+        "link_suggestions",
+    ];
+    for prompt in &removed_prompts {
+        assert!(
+            !combined.contains(prompt),
+            "removed prompt '{}' is still in the prompts/list response:\n{}",
             prompt,
             combined
         );

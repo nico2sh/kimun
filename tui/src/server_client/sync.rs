@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use kimun_core::note::{LinkType, PropertyValue};
+use kimun_core::note::LinkType;
 use kimun_core::{IndexObserver, NoteVault, error::VaultError, nfs::VaultPath};
 
 use crate::server_client::dto::{WireDate, WireDoc, WireSection};
@@ -199,21 +199,15 @@ pub async fn build_doc(
     if sections.is_empty() {
         return Ok(None);
     }
+    // Properties only: the server derives the journal date itself.
     let dates = vault
-        .get_properties(path)
+        .note_dates(path)
         .await?
         .into_iter()
-        .filter_map(|(key, value)| {
-            // A date-time keeps the day as written, with no zone conversion.
-            let day = match value? {
-                PropertyValue::Date(d) => d,
-                PropertyValue::DateTime(dt) => dt.naive_local().date(),
-                _ => return None,
-            };
-            Some(WireDate {
-                source: key.to_lowercase(),
-                day: day.format("%Y-%m-%d").to_string(),
-            })
+        .filter(|d| d.source != kimun_core::JOURNAL_DATE_SOURCE)
+        .map(|d| WireDate {
+            source: d.source,
+            day: d.day.format("%Y-%m-%d").to_string(),
         })
         .collect();
     let tags = vault.get_tags(path).await?;
@@ -378,6 +372,7 @@ mod tests {
             auth_required: false,
             version: version.map(str::to_string),
             latest_version: latest.map(str::to_string),
+            search_filters: false,
         };
         assert_eq!(ServerUpdate::from_health(&h(Some("0.4.4"), None)), None);
         assert_eq!(
@@ -406,6 +401,7 @@ mod tests {
             auth_required: false,
             version: Some("0.4.4".into()),
             latest_version: None,
+            search_filters: false,
         };
         assert_eq!(
             ServerCapability::from_health(&h(None, None)),

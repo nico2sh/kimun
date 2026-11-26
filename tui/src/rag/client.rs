@@ -8,7 +8,7 @@ use crate::settings::SharedSettings;
 
 /// The configured server endpoint: `(url, token)`, or `None` when no server
 /// URL is set. All RAG surfaces derive their client from this one read.
-pub(super) fn server_config(settings: &SharedSettings) -> Option<(String, Option<String>)> {
+pub fn server_config(settings: &SharedSettings) -> Option<(String, Option<String>)> {
     let settings = settings.read().ok()?;
     let global = &settings.workspace_config.as_ref()?.global;
     Some((

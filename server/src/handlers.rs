@@ -42,6 +42,19 @@ pub struct QueryRequest {
     /// score shape on both surfaces and ignore it.
     #[serde(default)]
     pub context_size: Option<ContextSize>,
+    /// Optional filters, same meaning as the answer loop's `search` tool.
+    /// `date_from` and `date_to` come together. A server on Qdrant refuses
+    /// any filter.
+    #[serde(default)]
+    pub date_from: Option<String>,
+    #[serde(default)]
+    pub date_to: Option<String>,
+    #[serde(default)]
+    pub date_key: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Result count: the per-request `context_size` override, or the server default.
@@ -279,11 +292,26 @@ pub async fn get_embeddings_handler(
     let collection = CollectionKey::parse(&request.vault_id)?;
     let top_k = resolve_top_k(request.context_size, state.config.reranker.top_k);
 
+    let filter = crate::tools::parse_filter(&serde_json::json!({
+        "date_from": request.date_from,
+        "date_to": request.date_to,
+        "date_key": request.date_key,
+        "folder": request.folder,
+        "tags": request.tags,
+    }))
+    .map_err(RagError::Validation)?;
+    if let Some(msg) = crate::tools::date_order_error(&filter) {
+        return Err(RagError::Validation(msg));
+    }
+
     let started = std::time::Instant::now();
-    let results = state
-        .rag()?
-        .search(&collection, &request.query, top_k)
-        .await?;
+    let rag = state.rag()?;
+    let results = if filter.is_empty() {
+        rag.search(&collection, &request.query, top_k).await?
+    } else {
+        rag.search_filtered(&collection, &request.query, top_k, &filter)
+            .await?
+    };
     let query_time_ms = started.elapsed().as_millis() as u64;
 
     // Search ordinal = 1-based rank position (best hit first).
@@ -616,6 +644,166 @@ mod tests {
         assert_eq!(json[2]["ordinal"], 2);
     }
 
+    // ---- /api/embeddings filters ----
+
+    async fn filter_state(dir: &std::path::Path, docs: &[KimunDoc]) -> Arc<AppState> {
+        use crate::dbembeddings::vecsqlite::VecSqlite;
+        use crate::test_support::FakeEmbedder;
+        let store = VecSqlite::new(dir, 8).await.unwrap();
+        let rag = crate::KimunRag::new(Arc::new(store), Arc::new(FakeEmbedder), None);
+        rag.index(&CollectionKey::parse("v").unwrap(), docs)
+            .await
+            .unwrap();
+        let config: crate::config::RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\nenabled = false\n",
+        )
+        .unwrap();
+        Arc::new(AppState::new(Some(rag), config))
+    }
+
+    fn fdoc(path: &str, tags: &[&str]) -> KimunDoc {
+        use crate::document::KimunSection;
+        KimunDoc {
+            path: path.to_string(),
+            hash: format!("h-{path}"),
+            sections: vec![KimunSection {
+                title: "T".to_string(),
+                text: "standup notes".to_string(),
+            }],
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    async fn embed(
+        state: &Arc<AppState>,
+        body: serde_json::Value,
+    ) -> Result<Vec<String>, RagError> {
+        let request: QueryRequest = serde_json::from_value(body).unwrap();
+        let Json(resp) = get_embeddings_handler(State(state.clone()), Json(request)).await?;
+        Ok(resp.chunks.into_iter().map(|c| c.path).collect())
+    }
+
+    #[tokio::test]
+    async fn embeddings_without_filters_behaves_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = filter_state(
+            dir.path(),
+            &[fdoc("journal/2026-11-10.md", &[]), fdoc("work/a.md", &[])],
+        )
+        .await;
+        let paths = embed(
+            &state,
+            serde_json::json!({"vault_id": "v", "query": "standup"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(paths.len(), 2, "{paths:?}");
+    }
+
+    #[tokio::test]
+    async fn embeddings_filters_by_date_range_and_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = filter_state(
+            dir.path(),
+            &[
+                fdoc("journal/2026-11-10.md", &[]),
+                fdoc("journal/2026-11-18.md", &[]),
+                fdoc("journal/2026-12-01.md", &[]),
+            ],
+        )
+        .await;
+        let paths = embed(
+            &state,
+            serde_json::json!({"vault_id": "v", "query": "standup",
+                "date_from": "2026-11-17", "date_to": "2026-11-23", "date_key": "journal"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(paths, vec!["journal/2026-11-18.md".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn embeddings_filters_by_folder_and_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = filter_state(
+            dir.path(),
+            &[
+                fdoc("work/a.md", &["plan"]),
+                fdoc("work/b.md", &["other"]),
+                fdoc("home/c.md", &["plan"]),
+            ],
+        )
+        .await;
+        let paths = embed(
+            &state,
+            serde_json::json!({"vault_id": "v", "query": "standup",
+                "folder": "work", "tags": ["#Plan"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(paths, vec!["work/a.md".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn embeddings_rejects_from_after_to_with_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = filter_state(dir.path(), &[fdoc("journal/2026-11-18.md", &[])]).await;
+        let err = embed(
+            &state,
+            serde_json::json!({"vault_id": "v", "query": "standup",
+                "date_from": "2026-11-23", "date_to": "2026-11-17"}),
+        )
+        .await
+        .expect_err("reversed range must fail");
+        assert!(matches!(err, RagError::Validation(_)), "{err}");
+        assert!(err.to_string().contains("is after date_to"), "{err}");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn embeddings_rejects_a_lone_date_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = filter_state(dir.path(), &[fdoc("a.md", &[])]).await;
+        let err = embed(
+            &state,
+            serde_json::json!({"vault_id": "v", "query": "q", "date_from": "2026-11-17"}),
+        )
+        .await
+        .expect_err("lone bound must fail");
+        assert!(matches!(err, RagError::Validation(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn embeddings_on_qdrant_refuses_filters_with_clear_error() {
+        use crate::test_support::{FakeEmbedder, FakeVectorStore};
+        let store = FakeVectorStore {
+            refuse_filtered: true,
+            ..Default::default()
+        };
+        let rag = crate::KimunRag::new(Arc::new(store), Arc::new(FakeEmbedder), None);
+        let config: crate::config::RagConfig = toml::from_str(
+            "[server]\n[vector_db]\ntype = \"sqlite\"\n[reranker]\nenabled = false\n",
+        )
+        .unwrap();
+        let state = Arc::new(AppState::new(Some(rag), config));
+        // Unfiltered still works.
+        embed(&state, serde_json::json!({"vault_id": "v", "query": "q"}))
+            .await
+            .unwrap();
+        let err = embed(
+            &state,
+            serde_json::json!({"vault_id": "v", "query": "q", "folder": "work"}),
+        )
+        .await
+        .expect_err("qdrant must refuse filters");
+        assert!(
+            err.to_string()
+                .contains("filtered search is not supported on the qdrant store"),
+            "{err}"
+        );
+    }
+
     #[test]
     fn answer_request_parses_without_history() {
         let r: AnswerRequest = serde_json::from_str(r#"{"vault_id":"v1","query":"q"}"#).unwrap();
@@ -752,6 +940,11 @@ mod tests {
                 vault_id: "vault-1".into(),
                 query: "q".into(),
                 context_size: None,
+                date_from: None,
+                date_to: None,
+                date_key: None,
+                folder: None,
+                tags: vec![],
             }),
         )
         .await
