@@ -10,8 +10,9 @@ use rmcp::model::{CallToolResult, Content};
 
 use super::SemanticSearchParams;
 pub(super) use super::info::PROBE_TIMEOUT;
-use super::info::{SemanticState, probe_state};
+use super::info::{ServerEnv, server_report};
 use super::results::{RangeError, cap_chars, parse_date_key, present, resolve_range};
+use crate::rag::state::{HintContext, HostOs, InstallEvidence, ServerState, hint};
 use crate::server_client::dto::{ChunkResult, SearchFilter};
 use crate::server_client::{ContextSize, RagError};
 use crate::settings::SharedSettings;
@@ -52,19 +53,28 @@ fn context_size(limit: usize) -> ContextSize {
     }
 }
 
+/// The hint for a server that does not answer. A failed request says nothing about the
+/// install, so the text does not depend on the machine.
+fn unreachable_text() -> String {
+    let ctx = HintContext {
+        os: HostOs::current(),
+        evidence: InstallEvidence::None,
+        address_set: true,
+        service_port: None,
+    };
+    hint(ServerState::Unreachable, &ctx).unwrap_or_default()
+}
+
 /// The tool error text for a failed request.
 fn failure_text(e: &RagError) -> String {
     match e {
         RagError::Status { status: 401 | 403, .. } => {
-            "The server rejected the token. Set kimun_server_token in the kimun configuration to a valid token.".to_string()
+            "The Kimun server rejected the token. To set a valid token, the user must run `kimun server use <your address> --token <token>`. Restart your agent app so the MCP server picks up the change. Tell the user. Do not run it yourself.".to_string()
         }
         RagError::Status { body, .. } if body.contains(QDRANT_REFUSAL) => {
             "The server stores its vectors in Qdrant, which cannot filter a search. Search again without from, to, date_key, folder or tags, or use search_notes for those filters.".to_string()
         }
-        RagError::Http(_) => SemanticState::Unreachable
-            .hint()
-            .unwrap_or_default()
-            .to_string(),
+        RagError::Http(_) => unreachable_text(),
         RagError::Protocol(msg) if msg.contains("too old to filter") => msg.clone(),
         other => format!("Semantic search failed: {other}"),
     }
@@ -91,13 +101,15 @@ fn render_hit(hit: &ChunkResult, position: usize) -> String {
 }
 
 /// Runs the tool. `timeout` bounds the search request and `probe_timeout`
-/// bounds the health probe before it.
+/// bounds the health probe before it. `env` is the config folder and system the probe reads,
+/// or `None` for the real ones.
 pub(super) async fn run(
     vault: &NoteVault,
     settings: Option<&SharedSettings>,
     p: SemanticSearchParams,
     timeout: Duration,
     probe_timeout: Duration,
+    env: Option<&ServerEnv>,
 ) -> Result<CallToolResult, VaultError> {
     let Some(query) = present(p.query.as_deref()) else {
         // The server ranks by similarity to the query, so it cannot list a
@@ -116,19 +128,16 @@ pub(super) async fn run(
         Err(RangeError::Tool(m)) => return tool_error(m),
         Err(RangeError::Vault(e)) => return Err(e),
     };
-    let state = match settings {
-        Some(s) => probe_state(s, vault, probe_timeout).await,
-        None => SemanticState::None,
-    };
-    if let Some(hint) = state.hint() {
-        return tool_error(hint);
+    // The hint exists for exactly the states where a search cannot work.
+    if let Some(hint) = server_report(settings, env, probe_timeout).await.hint {
+        return tool_error(hint.to_string());
     }
     let client = match settings {
         Some(s) => crate::rag::rag_client(s, vault).await,
         None => None,
     };
     let Some(client) = client else {
-        return tool_error(SemanticState::None.hint().unwrap_or_default());
+        return tool_error("Semantic search is not available: the vault id could not be read.");
     };
     let limit = p
         .limit
@@ -262,12 +271,20 @@ mod tests {
         Arc::new(RwLock::new(settings))
     }
 
+    /// An env with no marker and no `server.toml`: the folder does not exist.
+    fn no_install_env() -> ServerEnv {
+        ServerEnv {
+            config_dir: std::env::temp_dir().join("kimun-mcp-test-no-config-dir"),
+            os: HostOs::Linux,
+        }
+    }
+
     async fn handler_for(dir: &TempDir, settings: Option<SharedSettings>) -> KimunHandler {
         let vault = NoteVault::new(VaultConfig::new(crate::test_support::sys(dir.path())))
             .await
             .unwrap();
         vault.validate_and_init().await.unwrap();
-        let handler = KimunHandler::new(vault);
+        let handler = KimunHandler::new(vault).with_server_env(no_install_env());
         match settings {
             Some(s) => handler.with_settings(s),
             None => handler,
@@ -416,7 +433,11 @@ mod tests {
             let h = handler_for(&dir, settings).await;
             let r = call(&h, q("x")).await;
             assert_eq!(r.is_error, Some(true));
-            assert!(text_of(&r).contains("kimun_server_url"), "{}", text_of(&r));
+            assert!(
+                text_of(&r).contains(crate::rag::state::INSTALL_LINE),
+                "{}",
+                text_of(&r)
+            );
         }
     }
 
@@ -430,6 +451,59 @@ mod tests {
         let r = call(&h, q("x")).await;
         assert_eq!(r.is_error, Some(true));
         assert!(text_of(&r).contains("does not answer"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn semantic_search_error_for_none_contains_the_install_line() {
+        let dir = TempDir::new().unwrap();
+        let h = handler_for(&dir, Some(settings_for(None))).await;
+        let r = call(&h, q("x")).await;
+        assert_eq!(r.is_error, Some(true));
+        let text = text_of(&r);
+        assert!(text.contains(crate::rag::state::INSTALL_LINE), "{text}");
+        assert!(text.contains("Tell the user"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn semantic_search_error_for_stopped_names_the_command() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let config = TempDir::new().unwrap();
+        let marker = format!(
+            "installer = \"install-server.sh\"\ninstall_dir = '{}'\nservice = \"systemd\"\n",
+            std::env::temp_dir().join("kimun-bin").display()
+        );
+        kimun_core::system::replace_atomically(
+            &config
+                .path()
+                .join(crate::server_manage::marker::MARKER_FILE),
+            marker.as_bytes(),
+        )
+        .unwrap();
+        kimun_core::system::replace_atomically(
+            &config.path().join("server.toml"),
+            format!("[server]\nport = {port}\n").as_bytes(),
+        )
+        .unwrap();
+        let env = ServerEnv {
+            config_dir: config.path().to_path_buf(),
+            os: HostOs::Linux,
+        };
+        let dir = TempDir::new().unwrap();
+        let url = format!("http://127.0.0.1:{port}");
+        let h = handler_for(&dir, Some(settings_for(Some(&url))))
+            .await
+            .with_server_env(env);
+        let r = call(&h, q("x")).await;
+        assert_eq!(r.is_error, Some(true));
+        let text = text_of(&r);
+        assert!(
+            text.contains("systemctl --user start kimun-server.service"),
+            "{text}"
+        );
+        assert!(text.contains("Do not run it yourself"), "{text}");
     }
 
     #[tokio::test]
@@ -456,11 +530,15 @@ mod tests {
             let h = handler_for(&dir, Some(settings_for(Some(&url)))).await;
             let r = call(&h, q("x")).await;
             assert_eq!(r.is_error, Some(true));
-            assert!(
-                text_of(&r).contains("kimun_server_token"),
-                "{}",
-                text_of(&r)
-            );
+            let text = text_of(&r);
+            for part in [
+                "kimun server use <your address> --token <token>",
+                "Tell the user. Do not run it yourself.",
+                "Restart your agent app",
+            ] {
+                assert!(text.contains(part), "missing {part:?} in {text}");
+            }
+            assert!(!text.contains("kimun_server_token"), "{text}");
         }
     }
 
@@ -527,6 +605,7 @@ mod tests {
             q("x"),
             Duration::from_millis(100),
             PROBE_TIMEOUT,
+            h.server_env.as_ref(),
         )
         .await
         .unwrap();
@@ -749,6 +828,7 @@ mod tests {
             q("x"),
             Duration::from_secs(20),
             Duration::from_millis(50),
+            h.server_env.as_ref(),
         )
         .await
         .unwrap();

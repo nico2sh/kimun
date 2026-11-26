@@ -667,6 +667,10 @@ _Avoid_: RAG server (names one technique; the server is also plain search and a 
 The **Kimün server** state when no embedder is configured — the default on first run. The server boots and serves its web UI and health probe, but every data operation (indexing, search, question-answering) is rejected until an embedder is chosen; the vector store is not even opened, since its shape depends on the embedder. Distinct from *semantic-only* (embedder present, LLM absent) and from offline (unreachable). Clients detect it from the health probe and skip pushing and **reconciliation** entirely.
 _Avoid_: setup mode (implies a different runtime mode; it is the same server with a capability absent), broken/degraded (it is a deliberate, healthy state).
 
+**Stopped**:
+The **Kimün server** state in which a **Server install marker** shows that the install script put the server on this machine, the configured address points at this machine, and the server does not answer. A marker that records no service still counts, because it still proves the install. It tells the user that the server is installed and only needs to be started. Distinct from *unreachable*, where nothing shows that a server is installed here (a remote server, Docker, a Cargo install, or no marker), so the client can say only that nothing answers. The **Agent connector** reports *stopped* and names the start command. It never starts the server itself, because a start is a change to the user's machine that the user must choose.
+_Avoid_: down, crashed (nothing shows why it is not running), offline (the client's word for any unreachable server).
+
 **Collection**:
 The **Kimün server**'s per-vault namespace for embeddings, keyed by **Vault ID**. One vault ↔ one collection; the server holds many, each isolating its vault's vectors, hashes, and **reconciliation** from every other's.
 _Avoid_: index (collides with **NoteIndex**), namespace (the mechanism, not the thing).

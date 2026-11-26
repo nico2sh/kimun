@@ -70,15 +70,47 @@ impl std::fmt::Display for MarkerProblem {
 /// Read and check the marker in `config_dir`. This checks only the marker's own text. The
 /// binary and the service file are checked by [`super::check`], because they change over time.
 pub fn load(config_dir: &Path) -> Result<ServerInstall, MarkerProblem> {
+    load_recorded(config_dir).and_then(require_service)
+}
+
+/// What a valid marker records, including a marker with no service. The update needs a
+/// service and uses [`load`]. A status report only needs to know that the script installed the
+/// server here, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedInstall {
+    /// The folder that holds the `kimun-server` binary.
+    pub install_dir: PathBuf,
+    /// The service that runs the binary, or `None` when the script set up no service.
+    pub service: Option<ServiceKind>,
+}
+
+/// Read the marker in `config_dir` like [`load`], but accept a marker with no service.
+pub(crate) fn load_recorded(config_dir: &Path) -> Result<RecordedInstall, MarkerProblem> {
     let raw = match std::fs::read_to_string(config_dir.join(MARKER_FILE)) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(MarkerProblem::Missing),
         Err(e) => return Err(MarkerProblem::Unreadable(e.to_string())),
     };
-    parse(&raw)
+    parse_recorded(&raw)
 }
 
+/// [`load`] on a marker's text, for the tests.
+#[cfg(test)]
 fn parse(raw: &str) -> Result<ServerInstall, MarkerProblem> {
+    parse_recorded(raw).and_then(require_service)
+}
+
+/// An install the update can use: one with a service.
+fn require_service(recorded: RecordedInstall) -> Result<ServerInstall, MarkerProblem> {
+    let service = recorded.service.ok_or(MarkerProblem::NoService)?;
+    Ok(ServerInstall {
+        install_dir: recorded.install_dir,
+        service,
+    })
+}
+
+/// Check a marker's text. A marker with no service is valid here.
+fn parse_recorded(raw: &str) -> Result<RecordedInstall, MarkerProblem> {
     let marker: Raw = toml::from_str(raw).map_err(|e| MarkerProblem::Unreadable(e.to_string()))?;
     if marker.installer.as_deref() != Some("install-server.sh") {
         return Err(MarkerProblem::Unreadable(
@@ -96,9 +128,9 @@ fn parse(raw: &str) -> Result<ServerInstall, MarkerProblem> {
         ));
     }
     let service = match marker.service.as_deref() {
-        Some("systemd") => ServiceKind::Systemd,
-        Some("launchd") => ServiceKind::Launchd,
-        Some("none") => return Err(MarkerProblem::NoService),
+        Some("systemd") => Some(ServiceKind::Systemd),
+        Some("launchd") => Some(ServiceKind::Launchd),
+        Some("none") => None,
         Some(other) => {
             return Err(MarkerProblem::Unreadable(format!(
                 "unknown service {other:?}"
@@ -106,7 +138,7 @@ fn parse(raw: &str) -> Result<ServerInstall, MarkerProblem> {
         }
         None => return Err(MarkerProblem::Unreadable("no service".into())),
     };
-    Ok(ServerInstall {
+    Ok(RecordedInstall {
         install_dir,
         service,
     })

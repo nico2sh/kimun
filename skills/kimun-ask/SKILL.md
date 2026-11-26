@@ -42,6 +42,18 @@ Use this method to answer questions about the notes in a Kimün vault. It works 
 
 Search results come from an index. If someone edited a note outside Kimün, the index can be stale. When a result looks wrong or old, tell the user. Ask the user to run `kimun workspace reindex`.
 
+## When the server is missing
+
+Once per session, tell the user about the server. Do this in one sentence. Do it only when it matters: you tried `semantic_search`, or the question is about meaning. Say what the tool reported. Give the command from the hint.
+
+Never delay the answer for this. Never change the answer for this. Answer with `search_notes` and tell the user in the same reply.
+
+For questions about exact words, tags, links or dates, say nothing about the server.
+
+Never run the command yourself. Tell the user to run it.
+
+If `vault_info` or `semantic_search` does not exist, this Kimün build is older than this method. Tell the user to update Kimün. Use `search_notes` with the query syntax meanwhile.
+
 ## Recipes
 
 Each recipe has a task and a tool sequence.

@@ -9,18 +9,30 @@ SCRIPT = Path(__file__).parent / "check-agent-guidance.py"
 GUIDANCE = "<!-- short:start -->\nShort text.\n<!-- short:end -->\n\n# Full\n\nMore.\n"
 FRONTMATTER = "---\nname: kimun-ask\ndescription: x\n---\n\n"
 SERVER = 'fn x() { include_str!("guidance.md"); }\n'
+CLI = "---\nname: kimun-cli\n---\n\n# CLI\n"
 
 
 class CheckAgentGuidance(unittest.TestCase):
-    def run_check(self, guidance=GUIDANCE, skill=None, server=SERVER):
+    def run_check(
+        self,
+        guidance=GUIDANCE,
+        skill=None,
+        server=SERVER,
+        cli_skill=CLI,
+        cli_embedded=CLI,
+        ask_frontmatter=FRONTMATTER,
+    ):
         d = Path(tempfile.mkdtemp())
         files = {
             "guidance.md": guidance,
             "SKILL.md": FRONTMATTER + GUIDANCE if skill is None else skill,
             "mod.rs": server,
+            "cli-SKILL.md": cli_skill,
+            "kimun-cli.md": cli_embedded,
+            "kimun-ask.frontmatter.md": ask_frontmatter,
         }
         for name, text in files.items():
-            (d / name).write_text(text)
+            (d / name).write_bytes(text.encode())
         return subprocess.run(
             [sys.executable, "-I", str(SCRIPT)] + [str(d / n) for n in files],
             capture_output=True,
@@ -44,6 +56,24 @@ class CheckAgentGuidance(unittest.TestCase):
         self.assertEqual(
             self.run_check(server='const S: &str = "Short text.";\n').returncode, 0
         )
+
+    def test_a_matching_embedded_cli_skill_passes(self):
+        self.assertEqual(self.run_check(cli_skill=CLI, cli_embedded=CLI).returncode, 0)
+
+    def test_an_embedded_cli_skill_that_differs_fails(self):
+        r = self.run_check(cli_embedded=CLI + "Old line.\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("kimun-cli", r.stdout)
+
+    def test_a_matching_ask_frontmatter_passes(self):
+        r = self.run_check(skill=FRONTMATTER + GUIDANCE, ask_frontmatter=FRONTMATTER)
+        self.assertEqual(r.returncode, 0)
+
+    def test_an_ask_frontmatter_that_differs_fails(self):
+        # The body still matches, so only the new byte comparison catches it.
+        r = self.run_check(ask_frontmatter="---\nname: kimun-ask\ndescription: old\n---\n\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("kimun-ask.frontmatter.md", r.stdout)
 
     def test_the_real_files_match(self):
         root = Path(__file__).resolve().parents[2]

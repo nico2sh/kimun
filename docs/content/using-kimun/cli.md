@@ -72,6 +72,29 @@ kimun workspace use work
 
 See [Workspaces](@/getting-started/workspaces.md).
 
+## Kimün server
+
+```sh
+kimun server use http://localhost:7573    # save the address
+kimun server use <url> --token SECRET     # save the address and a token
+kimun server use --off                    # remove the address and the token
+kimun server status                       # show the state and the next step
+```
+
+Without `--token`, a changed address clears the saved token. See [Semantic search and Ask](@/using-kimun/server.md).
+
+## AI assistants
+
+```sh
+kimun mcp --print-config                  # JSON settings for an AI app
+kimun skill install                       # copy the skills to Claude Code and Codex
+kimun skill install --only ask            # install one skill: ask or cli
+kimun skill install --dir ~/my-skills     # write into another folder
+kimun skill install --force               # replace a folder that differs
+```
+
+`kimun mcp --print-config` writes the JSON block to standard output. Copy it into the settings of the app. The `claude mcp add` line goes to standard error. `kimun skill install` never writes through a symbolic link. See [Skills](@/using-kimun/ai-skills.md) and [MCP server](@/using-kimun/ai-mcp-server.md).
+
 ## Check your keys
 
 ```sh

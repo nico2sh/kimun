@@ -1,90 +1,70 @@
 //! The `vault_info` tool: three facts an agent needs before it searches. Today's
 //! date, the date keys the search tools accept, and the state of semantic search.
 
-use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use kimun_core::NoteVault;
 use kimun_core::error::VaultError;
 
-use crate::server_client::sync::ServerCapability;
+use crate::rag::server_config;
+use crate::rag::state::{HostOs, ServerReport, report, report_for};
 use crate::settings::SharedSettings;
 
-/// What the agent can expect from `semantic_search`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SemanticState {
-    /// No settings or no server URL configured.
-    None,
-    /// A server is configured but the health probe failed.
-    Unreachable,
-    /// The server answers but has no embedder.
-    Unconfigured,
-    /// The server has an embedder and no LLM.
-    SemanticOnly,
-    /// The server has an embedder and an LLM.
-    Full,
+/// How long a health probe may take. A server that does not answer in time
+/// counts as unreachable, below the client's own request timeout.
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The config folder and the system a server report reads. Production code leaves it out and
+/// gets the real config folder and the running system. Tests give a temp folder and a chosen
+/// system, so they never touch the real home folder.
+#[derive(Debug, Clone)]
+pub(super) struct ServerEnv {
+    pub(super) config_dir: PathBuf,
+    pub(super) os: HostOs,
 }
 
-impl fmt::Display for SemanticState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            SemanticState::None => "none",
-            SemanticState::Unreachable => "unreachable",
-            SemanticState::Unconfigured => "unconfigured",
-            SemanticState::SemanticOnly => "semantic-only",
-            SemanticState::Full => "full",
-        })
-    }
-}
-
-impl SemanticState {
-    /// One line naming the fix, for a state where semantic search is not ready.
-    pub(super) fn hint(&self) -> Option<&'static str> {
-        match self {
-            SemanticState::None => {
-                Some("Set kimun_server_url in the kimun configuration to enable semantic_search.")
-            }
-            SemanticState::Unreachable => Some(
-                "The Kimun server does not answer. Start it, or check kimun_server_url in the kimun configuration.",
-            ),
-            SemanticState::Unconfigured => Some(
-                "The Kimun server has no embedder. Configure an embedder on the server to enable semantic_search.",
-            ),
-            SemanticState::SemanticOnly | SemanticState::Full => None,
+impl ServerEnv {
+    /// The real config folder and the running system. A missing config folder gives an empty
+    /// path, which holds no marker.
+    fn production() -> Self {
+        Self {
+            config_dir: crate::settings::config_dir().unwrap_or_default(),
+            os: HostOs::current(),
         }
     }
 }
 
-/// How long a health probe may take. A server that does not answer in time
-/// counts as unreachable, below the client's own request timeout.
-pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// [`semantic_state`], bounded by `timeout`. On timeout the state is
-/// [`SemanticState::Unreachable`].
-pub(super) async fn probe_state(
-    settings: &SharedSettings,
-    vault: &NoteVault,
+/// The state of the server and its hint, with one probe bounded by `timeout`. With no `env` it
+/// reads the real config folder.
+pub(super) async fn server_report(
+    settings: Option<&SharedSettings>,
+    env: Option<&ServerEnv>,
     timeout: Duration,
-) -> SemanticState {
-    tokio::time::timeout(timeout, semantic_state(settings, vault))
-        .await
-        .unwrap_or(SemanticState::Unreachable)
-}
-
-/// Probes the configured server once. Uses the same health mapping as the sync
-/// code, [`ServerCapability::from_health`].
-pub(super) async fn semantic_state(settings: &SharedSettings, vault: &NoteVault) -> SemanticState {
-    let Some(client) = crate::rag::rag_client(settings, vault).await else {
-        return SemanticState::None;
-    };
-    match client.health().await {
-        Err(_) => SemanticState::Unreachable,
-        Ok(health) => match ServerCapability::from_health(&health) {
-            ServerCapability::Unconfigured => SemanticState::Unconfigured,
-            ServerCapability::SemanticOnly => SemanticState::SemanticOnly,
-            ServerCapability::Full => SemanticState::Full,
-        },
+) -> ServerReport {
+    if let (Some(settings), None) = (settings, env) {
+        return report(settings, timeout).await;
     }
+    let (address, token) = match settings.and_then(server_config) {
+        Some((address, token)) => (Some(address), token),
+        None => (None, None),
+    };
+    let production;
+    let env = match env {
+        Some(env) => env,
+        None => {
+            production = ServerEnv::production();
+            &production
+        }
+    };
+    report_for(
+        address.as_deref(),
+        token.as_deref(),
+        &env.config_dir,
+        env.os,
+        timeout,
+    )
+    .await
 }
 
 /// The date keys exactly as the search tools accept them: `journal` for the
@@ -106,26 +86,27 @@ pub(super) async fn searchable_date_keys(vault: &NoteVault) -> Result<Vec<String
 }
 
 /// The tool's text, one fact per line, with a hint line after a state that is
-/// not ready.
+/// not ready. The hint stays on one line.
 pub(super) async fn render(
     vault: &NoteVault,
     settings: Option<&SharedSettings>,
+    env: Option<&ServerEnv>,
 ) -> Result<String, VaultError> {
     let today = chrono::Local::now().format("%Y-%m-%d");
     let keys = searchable_date_keys(vault).await?;
-    let state = match settings {
-        Some(settings) => probe_state(settings, vault, PROBE_TIMEOUT).await,
-        None => SemanticState::None,
-    };
+    let report = server_report(settings, env, PROBE_TIMEOUT).await;
     let keys = if keys.is_empty() {
         "(none)".to_string()
     } else {
         keys.join(", ")
     };
-    let mut out = format!("today: {today}\ndate keys: {keys}\nsemantic search: {state}");
-    if let Some(hint) = state.hint() {
-        out.push('\n');
-        out.push_str(hint);
+    let mut out = format!(
+        "today: {today}\ndate keys: {keys}\nsemantic search: {}",
+        report.state
+    );
+    if let Some(hint) = report.hint {
+        out.push_str("\nhint: ");
+        out.push_str(&hint.to_string().replace(['\r', '\n'], " "));
     }
     Ok(out)
 }
@@ -134,6 +115,8 @@ pub(super) async fn render(
 mod tests {
     use super::*;
     use crate::cli::commands::mcp::KimunHandler;
+    use crate::rag::state::{INSTALL_LINE, ServerState};
+    use crate::server_manage::marker::MARKER_FILE;
     use crate::settings::AppSettings;
     use crate::settings::workspace_config::WorkspaceConfig;
     use kimun_core::VaultConfig;
@@ -184,49 +167,95 @@ mod tests {
         vault
     }
 
-    async fn state_for(settings: Option<SharedSettings>) -> SemanticState {
-        let dir = TempDir::new().unwrap();
-        let vault = open_vault(&dir).await;
-        match settings {
-            Some(s) => semantic_state(&s, &vault).await,
-            None => SemanticState::None,
+    /// An env with no marker and no `server.toml`: the folder does not exist.
+    fn no_install_env() -> ServerEnv {
+        ServerEnv {
+            config_dir: std::env::temp_dir().join("kimun-mcp-test-no-config-dir"),
+            os: HostOs::Linux,
         }
+    }
+
+    /// A config folder with a systemd marker and `server.toml` naming `port` as the service port.
+    fn installed_env(port: u16) -> (TempDir, ServerEnv) {
+        let config = TempDir::new().unwrap();
+        std::fs::write(
+            config.path().join(MARKER_FILE),
+            format!(
+                "installer = \"install-server.sh\"\ninstall_dir = '{}'\nservice = \"systemd\"\n",
+                std::env::temp_dir().join("kimun-bin").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            config.path().join("server.toml"),
+            format!("[server]\nport = {port}\n"),
+        )
+        .unwrap();
+        let env = ServerEnv {
+            config_dir: config.path().to_path_buf(),
+            os: HostOs::Linux,
+        };
+        (config, env)
+    }
+
+    /// A port nothing listens on.
+    fn closed_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    async fn state_for(settings: Option<SharedSettings>) -> ServerState {
+        server_report(settings.as_ref(), Some(&no_install_env()), PROBE_TIMEOUT)
+            .await
+            .state
     }
 
     #[tokio::test]
     async fn state_is_none_without_settings_or_url() {
-        assert_eq!(state_for(None).await, SemanticState::None);
-        assert_eq!(
-            state_for(Some(settings_for(None))).await,
-            SemanticState::None
-        );
+        assert_eq!(state_for(None).await, ServerState::None);
+        assert_eq!(state_for(Some(settings_for(None))).await, ServerState::None);
     }
 
     #[tokio::test]
     async fn state_is_unreachable_when_the_probe_fails() {
         let s = settings_for(Some(&down_url()));
-        assert_eq!(state_for(Some(s)).await, SemanticState::Unreachable);
+        assert_eq!(state_for(Some(s)).await, ServerState::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn a_hung_server_is_unreachable_in_vault_info() {
+        // Bound and never accepted: the connection opens, no reply ever comes.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let report = server_report(
+            Some(&settings_for(Some(&url))),
+            Some(&no_install_env()),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert_eq!(report.state, ServerState::Unreachable);
+        drop(listener);
     }
 
     #[tokio::test]
     async fn state_is_unconfigured_without_an_embedder() {
         let url = health_server(r#"{"status":"ok","embedder":null,"llm_provider":null}"#);
         let state = state_for(Some(settings_for(Some(&url)))).await;
-        assert_eq!(state, SemanticState::Unconfigured);
+        assert_eq!(state, ServerState::Unconfigured);
     }
 
     #[tokio::test]
     async fn state_is_semantic_only_without_an_llm() {
         let url = health_server(r#"{"status":"ok","embedder":"fake","llm_provider":null}"#);
         let state = state_for(Some(settings_for(Some(&url)))).await;
-        assert_eq!(state, SemanticState::SemanticOnly);
+        assert_eq!(state, ServerState::SemanticOnly);
     }
 
     #[tokio::test]
     async fn state_is_full_with_embedder_and_llm() {
         let url = health_server(r#"{"status":"ok","embedder":"fake","llm_provider":"x"}"#);
         let state = state_for(Some(settings_for(Some(&url)))).await;
-        assert_eq!(state, SemanticState::Full);
+        assert_eq!(state, ServerState::Full);
         assert_eq!(state.to_string(), "full");
     }
 
@@ -241,14 +270,88 @@ mod tests {
     #[tokio::test]
     async fn vault_info_without_settings_reports_none_with_a_hint() {
         let dir = TempDir::new().unwrap();
-        let handler = KimunHandler::new(open_vault(&dir).await);
+        let handler = KimunHandler::new(open_vault(&dir).await).with_server_env(no_install_env());
         let text = info_text(&handler).await;
         let lines: Vec<&str> = text.lines().collect();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         assert_eq!(lines[0], format!("today: {today}"));
         assert_eq!(lines[1], "date keys: (none)");
         assert_eq!(lines[2], "semantic search: none");
-        assert!(lines[3].contains("kimun_server_url"), "{text}");
+        assert!(lines[3].starts_with("hint: "), "{text}");
+        assert_eq!(lines.len(), 4, "{text}");
+    }
+
+    #[tokio::test]
+    async fn vault_info_none_names_the_install_line_without_a_marker() {
+        let dir = TempDir::new().unwrap();
+        let handler = KimunHandler::new(open_vault(&dir).await)
+            .with_settings(settings_for(None))
+            .with_server_env(no_install_env());
+        let text = info_text(&handler).await;
+        assert!(
+            text.lines().nth(3).unwrap().contains(INSTALL_LINE),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_info_none_names_server_use_with_a_marker() {
+        let dir = TempDir::new().unwrap();
+        let (_config, env) = installed_env(7573);
+        let handler = KimunHandler::new(open_vault(&dir).await)
+            .with_settings(settings_for(None))
+            .with_server_env(env);
+        let text = info_text(&handler).await;
+        let hint = text.lines().nth(3).unwrap();
+        assert!(
+            hint.contains("kimun server use http://localhost:7573"),
+            "{text}"
+        );
+        assert!(!hint.contains(INSTALL_LINE), "{text}");
+    }
+
+    #[tokio::test]
+    async fn vault_info_reports_stopped_with_the_start_command() {
+        let dir = TempDir::new().unwrap();
+        let port = closed_port();
+        let (_config, env) = installed_env(port);
+        let url = format!("http://127.0.0.1:{port}");
+        let handler = KimunHandler::new(open_vault(&dir).await)
+            .with_settings(settings_for(Some(&url)))
+            .with_server_env(env);
+        let text = info_text(&handler).await;
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[2], "semantic search: stopped");
+        assert!(
+            lines[3].contains("systemctl --user start kimun-server.service"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_info_hints_say_not_to_run_the_command() {
+        let dir = TempDir::new().unwrap();
+        let port = closed_port();
+        let (_config, installed) = installed_env(port);
+        let url = format!("http://127.0.0.1:{port}");
+        let cases = [
+            (None, no_install_env()),
+            (Some(url.clone()), installed),
+            (Some(down_url()), no_install_env()),
+        ];
+        for (url, env) in cases {
+            let handler = KimunHandler::new(open_vault(&dir).await)
+                .with_settings(settings_for(url.as_deref()))
+                .with_server_env(env);
+            let text = info_text(&handler).await;
+            let hint = text.lines().nth(3).unwrap_or_default();
+            assert!(hint.contains("Tell the user"), "{text}");
+            assert!(
+                hint.contains("not run") || hint.contains("Do not run"),
+                "{text}"
+            );
+            assert_eq!(text.lines().count(), 4, "the hint is one line: {text}");
+        }
     }
 
     #[tokio::test]
@@ -268,7 +371,9 @@ mod tests {
             .unwrap();
         vault.validate_and_init().await.unwrap();
         let url = health_server(r#"{"status":"ok","embedder":"fake","llm_provider":"x"}"#);
-        let handler = KimunHandler::new(vault).with_settings(settings_for(Some(&url)));
+        let handler = KimunHandler::new(vault)
+            .with_settings(settings_for(Some(&url)))
+            .with_server_env(no_install_env());
         let text = info_text(&handler).await;
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "date keys: journal, due, property:journal");

@@ -46,6 +46,28 @@ Intel Macs have no prebuilt server. Use Docker there. The server README also des
 
 Then tell Kimün where the server is. Open Preferences, go to Server, and enter the address. The default local address is `http://localhost:7573`. To turn the feature off, leave the address empty.
 
+You can also set the address from a terminal:
+
+```sh
+kimun server use http://localhost:7573
+kimun server use https://kimun.example.com --token SECRET
+kimun server use --off
+kimun server status
+```
+
+- `kimun server use` saves the address. Give `--token` for a server that needs one.
+- When you change the address and give no `--token`, Kimün clears the saved token. It keeps the token only for the same address.
+- `kimun server use --off` removes the address and the token.
+- `kimun server status` shows the state of the server and the next step. It checks the address and not the token. A wrong token shows up only in a failed search, with a message that the server rejected the token.
+
+The command only writes the settings file. It does not install or start the server.
+
+Restart your AI app after you change the address. The MCP server reads the address at its start.
+
+### What the AI tools do with the server
+
+The tool `semantic_search` uses the server. The tool `vault_info` reports its state: `none`, `stopped`, `unreachable`, `unconfigured`, `semantic-only`, or `full`. The state `stopped` means that the install script put the server on this computer and it does not answer. When the server is not ready, the tools tell the AI app the next step, and the AI app passes it to you. The tools never start the server. See [MCP server](@/using-kimun/ai-mcp-server.md#server-state).
+
 To change the server's own settings, such as the model, click `Open server settings` in the same place. It opens the server's page in your browser.
 
 The footer shows the connection: `rag: online`, `rag: syncing`, `rag: offline`, or `rag: not configured`.
