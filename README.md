@@ -110,11 +110,13 @@ To add the MCP server to Claude Code, run this command one time:
 claude mcp add kimun -- kimun mcp
 ```
 
-To use the skill instead, copy it to the skills folder of your tool:
+To add the skills, run this command:
 
 ```bash
-cp -r skills/kimun-cli ~/.claude/skills
+npx skills add nico2sh/kimun
 ```
+
+Without Node, run `kimun skill install` instead.
 
 The [documentation](https://nico2sh.github.io/kimun/using-kimun/ai-mcp-server/) has setup steps for other tools.
 

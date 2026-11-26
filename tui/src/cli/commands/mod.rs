@@ -7,6 +7,8 @@ pub mod note_ops;
 pub mod notes;
 pub mod properties;
 pub mod search;
+pub mod server;
+pub mod skill;
 pub mod update;
 pub mod workspace;
 

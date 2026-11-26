@@ -12,7 +12,16 @@ follow it:
             copy of the text passes only when the short block appears in it
             unchanged.
 
-Run from the repo root, or pass the three paths: guidance skill server.
+The terminal app embeds both skills for `kimun skill install`. Two more
+checks keep the embedded files equal to the repository skills, byte for byte:
+
+  cli     — skills/kimun-cli/SKILL.md equals tui/src/cli/commands/skill/kimun-cli.md.
+  ask     — skills/kimun-ask/SKILL.md equals
+            tui/src/cli/commands/skill/kimun-ask.frontmatter.md followed by
+            guidance.md.
+
+Run from the repo root, or pass the six paths: guidance skill server
+cli-skill cli-embedded ask-frontmatter.
 Exits 1 and says what differs.
 """
 
@@ -24,6 +33,10 @@ from pathlib import Path
 GUIDANCE = "tui/src/cli/commands/mcp/guidance.md"
 SKILL = "skills/kimun-ask/SKILL.md"
 SERVER = "tui/src/cli/commands/mcp/mod.rs"
+CLI_SKILL = "skills/kimun-cli/SKILL.md"
+CLI_EMBEDDED = "tui/src/cli/commands/skill/kimun-cli.md"
+ASK_FRONTMATTER = "tui/src/cli/commands/skill/kimun-ask.frontmatter.md"
+PATHS = [GUIDANCE, SKILL, SERVER, CLI_SKILL, CLI_EMBEDDED, ASK_FRONTMATTER]
 
 SHORT = re.compile(r"<!-- short:start -->\n?(.*?)\n?<!-- short:end -->", re.S)
 INCLUDE = 'include_str!("guidance.md")'
@@ -35,7 +48,14 @@ def skill_body(text: str) -> str:
     return text[m.end():] if m else text
 
 
-def problems(guidance: str, skill: str, server: str) -> list[str]:
+def problems(
+    guidance: str,
+    skill: str,
+    server: str,
+    cli_skill: str,
+    cli_embedded: str,
+    ask_frontmatter: str,
+) -> list[str]:
     found = []
     short = SHORT.search(guidance)
     if short is None:
@@ -47,14 +67,22 @@ def problems(guidance: str, skill: str, server: str) -> list[str]:
             "the server instructions neither include guidance.md "
             "nor hold the short block text"
         )
+    if cli_skill != cli_embedded:
+        found.append("skills/kimun-cli/SKILL.md differs from the embedded kimun-cli.md")
+    if skill != ask_frontmatter + guidance:
+        found.append(
+            "skills/kimun-ask/SKILL.md differs from "
+            "kimun-ask.frontmatter.md followed by guidance.md"
+        )
     return found
 
 
 def main(argv: list[str]) -> int:
-    paths = argv[1:4] if len(argv) >= 4 else [GUIDANCE, SKILL, SERVER]
+    paths = argv[1:7] if len(argv) >= 7 else PATHS
     try:
-        texts = [Path(p).read_text() for p in paths]
-    except OSError as e:
+        # Bytes, decoded without newline translation, so the copies compare exactly.
+        texts = [Path(p).read_bytes().decode("utf-8") for p in paths]
+    except (OSError, UnicodeDecodeError) as e:
         print(f"check-agent-guidance: {e}")
         return 1
     found = problems(*texts)

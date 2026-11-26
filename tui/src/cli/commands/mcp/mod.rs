@@ -2,11 +2,15 @@
 //
 // MCP server handler for kimun — exposes vault operations as MCP tools.
 
+pub mod config_print;
 mod info;
 pub mod prompts;
 mod results;
 mod semantic;
 mod sync;
+
+/// How long a health probe may take, shared with `kimun server`.
+pub(crate) use info::PROBE_TIMEOUT;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -231,6 +235,8 @@ pub struct KimunHandler {
     /// Settings that tell `vault_info` about the server. Without them the
     /// semantic search state is `none`.
     settings: Option<crate::settings::SharedSettings>,
+    /// The config folder and system the server report reads. `None` means the real ones.
+    server_env: Option<info::ServerEnv>,
     // Read at runtime by the `#[tool_handler]` / `#[prompt_handler]` generated
     // impls (see below); clippy can't see through the macro expansion, so it
     // flags these as unread despite being the live tool/prompt dispatch tables.
@@ -268,6 +274,7 @@ impl KimunHandler {
         Self {
             vault,
             settings: None,
+            server_env: None,
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
@@ -279,11 +286,25 @@ impl KimunHandler {
         self
     }
 
+    /// Gives the handler a config folder and system for the server report, so a test does not
+    /// read the real home folder.
+    #[cfg(test)]
+    fn with_server_env(mut self, env: info::ServerEnv) -> Self {
+        self.server_env = Some(env);
+        self
+    }
+
     #[tool(
         description = "Report today's date (local), the date keys the search tools accept as date_key, and whether semantic_search is available. Call it before a dated search."
     )]
     async fn vault_info(&self) -> Result<CallToolResult, McpError> {
-        match info::render(&self.vault, self.settings.as_ref()).await {
+        match info::render(
+            &self.vault,
+            self.settings.as_ref(),
+            self.server_env.as_ref(),
+        )
+        .await
+        {
             Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
             Err(e) => vault_err(e),
         }
@@ -302,6 +323,7 @@ impl KimunHandler {
             p,
             semantic::TIMEOUT,
             semantic::PROBE_TIMEOUT,
+            self.server_env.as_ref(),
         )
         .await
         {
@@ -840,7 +862,7 @@ impl KimunHandler {
 
 /// The answering method, shared with `skills/kimun-ask/SKILL.md`. CI checks
 /// that the skill carries the same text (`.github/scripts/check-agent-guidance.py`).
-const GUIDANCE: &str = include_str!("guidance.md");
+pub(crate) const GUIDANCE: &str = include_str!("guidance.md");
 
 /// Notes about the index and version errors, appended to the guidance.
 const INDEX_NOTES: &str = "Kimun notes MCP server — read and write vault notes via tools. \
@@ -1021,6 +1043,30 @@ mod tests {
         let short = short_guidance(GUIDANCE);
         assert!(short.contains("vault_info"));
         assert!(!short.contains("Research a topic"));
+    }
+
+    #[test]
+    fn full_guidance_has_the_server_rule_and_the_older_binary_line() {
+        assert!(GUIDANCE.contains("## When the server is missing"));
+        assert!(GUIDANCE.contains("Once per session"));
+        assert!(GUIDANCE.contains("Never run the command yourself"));
+        assert!(GUIDANCE.contains("search_notes"));
+        let line = GUIDANCE
+            .lines()
+            .find(|l| l.contains("older than this method"))
+            .expect("older-binary line");
+        assert!(line.contains("vault_info"));
+        assert!(line.contains("semantic_search"));
+        assert!(line.contains("update Kimün"));
+    }
+
+    #[test]
+    fn short_block_does_not_mention_the_server_rule() {
+        let short = short_guidance(GUIDANCE);
+        assert!(!short.contains("## When the server is missing"));
+        assert!(!short.contains("Once per session"));
+        assert!(!short.contains("older than this method"));
+        assert!(!short.contains("Never run the command yourself"));
     }
 
     #[tokio::test]
