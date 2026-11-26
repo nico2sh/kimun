@@ -107,6 +107,14 @@ jobs:
         with:
           path: docs/public/
 
+      # The artifact list can lag a second or two behind the upload, so the deploy
+      # step sometimes finds no artifact and fails. A re-run of that job then
+      # uploads a second artifact with the same name, which the deploy step
+      # refuses. A short wait avoids the first failure. After a failure, start a
+      # new run (workflow_dispatch) instead of re-running the job.
+      - name: Wait for the artifact to be listed
+        run: sleep 15
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
