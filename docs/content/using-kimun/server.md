@@ -56,6 +56,7 @@ kimun server status
 ```
 
 - `kimun server use` saves the address. Give `--token` for a server that needs one.
+- A token that you type on the command line stays in your shell history. Preferences has no token field. If you share the computer or your shell keeps its history, start the command with a space (when your shell is set to ignore such commands), or remove the line from the history afterwards.
 - When you change the address and give no `--token`, Kimün clears the saved token. It keeps the token only for the same address.
 - `kimun server use --off` removes the address and the token.
 - `kimun server status` shows the state of the server and the next step. It checks the address and not the token. A wrong token shows up only in a failed search, with a message that the server rejected the token.

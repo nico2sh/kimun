@@ -93,7 +93,7 @@ kimun skill install --dir ~/my-skills     # write into another folder
 kimun skill install --force               # replace a folder that differs
 ```
 
-`kimun mcp --print-config` writes the JSON block to standard output. Copy it into the settings of the app. The `claude mcp add` line goes to standard error. `kimun skill install` never writes through a symbolic link. See [Skills](@/using-kimun/ai-skills.md) and [MCP server](@/using-kimun/ai-mcp-server.md).
+`kimun mcp --print-config` writes the JSON block to standard output. Copy it into the settings of the app. The `claude mcp add` line goes to standard error. `kimun skill install` refuses a skill folder that is itself a symbolic link, and it does not follow such a link to replace the folder. A skills folder that is a link is used as it is. See [Skills](@/using-kimun/ai-skills.md) and [MCP server](@/using-kimun/ai-mcp-server.md).
 
 ## Check your keys
 

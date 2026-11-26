@@ -54,7 +54,8 @@ The command follows these rules:
 
 - It never overwrites a skill folder that differs from the version in your Kimün. It keeps the folder and tells you.
 - Add `--force` to replace such a folder. The command replaces only a plain folder.
-- It never writes through a symbolic link. A link usually comes from another tool that manages the skill. The command refuses and changes nothing.
+- It refuses a skill folder that is itself a symbolic link, even with `--force`. Such a link usually comes from another tool that manages the skill. The command does not follow the link to replace the folder, and it changes nothing.
+- A skills folder that is a link, such as `~/.claude/skills`, is used as it is. The command writes the skill folders into the place that the link points to.
 
 To update the skills later, run `kimun update` for the app, then run `kimun skill install` again. A folder with the old text needs `--force`.
 
