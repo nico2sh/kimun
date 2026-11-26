@@ -1020,7 +1020,7 @@ mod tests {
     fn real_guidance_has_a_short_block() {
         let short = short_guidance(GUIDANCE);
         assert!(short.contains("vault_info"));
-        assert!(!short.contains("research_topic"));
+        assert!(!short.contains("Research a topic"));
     }
 
     #[tokio::test]

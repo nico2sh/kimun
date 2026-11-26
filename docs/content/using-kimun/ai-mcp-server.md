@@ -55,7 +55,7 @@ The server sends your AI app a short method for answering questions about your n
 
 ## Prompts
 
-The server also offers ready-made requests, such as a journal review, a search for links between notes, brainstorming, and sorting your inbox.
+The server also offers ready-made requests for a journal review, a weekly review, and sorting your inbox.
 
 Your AI app can ask you before it changes or deletes anything. Kimün also saves a backup of the old text first. See [Backups](@/using-kimun/cli.md#backups).
 

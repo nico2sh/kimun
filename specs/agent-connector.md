@@ -34,7 +34,7 @@ The term for the MCP server and the skills together is **Agent connector** (see 
 
 - A server-side loop for agents. An `ask_notes` tool that calls `/api/answer` is a later, optional addition. It needs an LLM key.
 - Parsing of relative date phrases in the server, the CLI or the MCP server. The agent resolves them.
-- Changes to the eight MCP prompts. A later step decides whether to remove or upgrade the five retrieval prompts. It uses the question set to decide.
+- Changes to the eight MCP prompts in the first build. After the question set runs, the owner decided to remove the five retrieval prompts (see Follow-ups).
 - Semantic search in the CLI.
 - A new write path or new write tools.
 
@@ -169,6 +169,6 @@ The owner did not decide these. When the owner reads this doc, the owner must ch
 
 ## Follow-ups
 
-- Decide whether to remove or upgrade the five retrieval prompts, using the question set.
+- Done after the question set runs: the five retrieval prompts (`research_topic`, `research_note`, `find_connections`, `link_suggestions`, `brainstorm`) were removed. Four of them could not take their required argument from Claude Code, because the server lists `max_results` first and sends numbers as text. One returned "none" when related notes existed. The skill keeps a recipe for each. Three prompts stay: `daily_review`, `weekly_review` and `triage_inbox`.
 - For servers that can answer, add `ask_notes`.
 - Semantic search in the CLI.
