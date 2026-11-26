@@ -70,7 +70,7 @@ EVENTS = {
     8: "Sprint review for the [[mobile-app]]. Login flow is done, push alerts are late. #project",
     10: "Read [[designing-data-intensive-applications]] chapter 5 on replication. #reading",
     12: "Decided to pause the [[data-migration]] until the backups are tested. #migration #decision",
-    14: "Two weeks since the [[website-redesign]] kickoff. The new header is approved. #project",
+    14: "The [[website-redesign]] kickoff is today. The new header is approved. #project",
     16: "Budget meeting went badly. [[sam-okafor]] asked for a full cost table. #budget",
     19: "Spent the morning on the [[hiring-plan]]. We need two more engineers. #hiring",
     21: "Sick day. No work done.",

@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use kimun_core::error::VaultError;
+use kimun_core::note::BREADCRUMB_SEP;
 use kimun_core::{DateSource, NoteVault};
 use rmcp::model::{CallToolResult, Content};
 
@@ -70,7 +71,10 @@ fn failure_text(e: &RagError) -> String {
 }
 
 fn render_hit(hit: &ChunkResult, position: usize) -> String {
-    let mut out = format!("{} — {}", hit.path, hit.title);
+    // The title is the section path. Core joins its headings with a control
+    // character, so show a visible separator to the agent.
+    let title = hit.title.replace(BREADCRUMB_SEP, " › ");
+    let mut out = format!("{} — {}", hit.path, title);
     if let Some(date) = hit.date.as_deref().filter(|d| !d.is_empty()) {
         out.push_str(&format!("\n  date: {date}"));
     }
@@ -326,6 +330,26 @@ mod tests {
         assert_eq!(lines[2], "  score: 0.83");
         assert_eq!(lines[3], "  rank: 1");
         assert_eq!(lines[4], "  chunk: the chunk text");
+    }
+
+    #[tokio::test]
+    async fn semantic_hit_title_shows_the_section_path_with_a_visible_separator() {
+        // The server stores the section path with the control character U+001F
+        // between the headings. The agent must see a visible separator instead.
+        let body: &'static str = r#"{"chunks":[{"path":"/journal/2026-11-22.md","title":"2026-11-22\u001fMorning\u001fCall","content":"text","hash":"h","similarity_score":0.69,"ordinal":1}]}"#;
+        let (url, _) = server(READY, 200, body, Duration::ZERO);
+        let dir = TempDir::new().unwrap();
+        let h = handler_for(&dir, Some(settings_for(Some(&url)))).await;
+        let text = text_of(&call(&h, q("calls")).await);
+        let first = text.lines().next().unwrap();
+        assert_eq!(
+            first,
+            "/journal/2026-11-22.md — 2026-11-22 › Morning › Call"
+        );
+        assert!(
+            !text.contains('\u{1f}'),
+            "no control character may reach the agent"
+        );
     }
 
     #[tokio::test]
