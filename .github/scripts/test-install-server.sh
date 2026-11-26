@@ -53,8 +53,8 @@ fi
 rs=tui/src/server_manage
 [ "$(sed -n 's/^pub const SIGNING_KEY: &str = "\(.*\)";$/\1/p' $rs/release.rs)" = "$(sed -n 2p release-signing.pub)" ] \
   || fail "SIGNING_KEY in $rs/release.rs is not the key in release-signing.pub"
-unit="$(sed -n 's/^const UNIT: &str = "\(.*\)";$/\1/p' $rs/service.rs)"
-label="$(sed -n 's/^const LAUNCHD_LABEL: &str = "\(.*\)";$/\1/p' $rs/service.rs)"
+unit="$(sed -n 's/^\(pub(crate) \)\{0,1\}const UNIT: &str = "\(.*\)";$/\2/p' $rs/service.rs)"
+label="$(sed -n 's/^\(pub(crate) \)\{0,1\}const LAUNCHD_LABEL: &str = "\(.*\)";$/\2/p' $rs/service.rs)"
 grep -q "^SYSTEMD_UNIT=\"\$HOME/.config/systemd/user/$unit\"$" install-server.sh || fail "the app names a different systemd unit than install-server.sh: $unit"
 grep -q "^LAUNCHD_LABEL=\"$label\"$" install-server.sh || fail "the app names a different launchd label than install-server.sh: $label"
 ok "the app (server_manage) and install-server.sh agree on the key, the unit and the label"

@@ -11,7 +11,7 @@
 
 mod install;
 mod lock;
-mod marker;
+pub(crate) mod marker;
 mod process;
 mod release;
 mod service;
@@ -26,6 +26,7 @@ pub use install::{
 };
 pub use marker::{MarkerProblem, ServerInstall, ServiceKind};
 pub use release::{Fetch, Network, SIGNING_KEY, ServerRelease};
+pub(crate) use service::{LAUNCHD_LABEL, UNIT};
 pub use service::{ServiceControl, SystemService, service_file};
 pub use target::{is_local_url, port_of};
 
@@ -86,7 +87,7 @@ impl std::fmt::Display for Unavailable {
 
 /// The port the script's service listens on: `[server] port` of `server.toml` in `config_dir`, else
 /// the server's default. The service starts with no arguments, so this file is its configuration.
-fn service_port(config_dir: &Path) -> u16 {
+pub(crate) fn service_port(config_dir: &Path) -> u16 {
     const DEFAULT: u16 = 7573;
     std::fs::read_to_string(config_dir.join("server.toml"))
         .ok()

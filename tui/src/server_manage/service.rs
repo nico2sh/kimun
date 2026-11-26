@@ -11,9 +11,9 @@ use super::marker::ServiceKind;
 use super::process::{SERVICE_TIMEOUT, run_bounded};
 
 /// The systemd unit's name. Must match `install-server.sh`.
-const UNIT: &str = "kimun-server.service";
+pub(crate) const UNIT: &str = "kimun-server.service";
 /// The launchd label. Must match `install-server.sh`.
-const LAUNCHD_LABEL: &str = "dev.2co.kimun-server";
+pub(crate) const LAUNCHD_LABEL: &str = "dev.2co.kimun-server";
 
 /// Ask about, and restart, the server's service.
 pub trait ServiceControl: Send + Sync {

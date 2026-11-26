@@ -23,6 +23,8 @@ use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
 use commands::JournalArgs;
 use commands::note_ops::NoteSubcommand;
+use commands::server::ServerSubcommand;
+use commands::skill::SkillSubcommand;
 use commands::workspace::WorkspaceSubcommand;
 use helpers::{
     create_and_init_vault, load_and_resolve_workspace, load_settings, resolve_inbox_path,
@@ -51,6 +53,16 @@ pub enum CliCommand {
         #[command(subcommand)]
         subcommand: WorkspaceSubcommand,
     },
+    /// Set the Kimün server address and see its state
+    Server {
+        #[command(subcommand)]
+        subcommand: ServerSubcommand,
+    },
+    /// Install the Kimün skills for agent apps
+    Skill {
+        #[command(subcommand)]
+        subcommand: SkillSubcommand,
+    },
     /// Note operations (create, append, show)
     Note {
         #[command(subcommand)]
@@ -61,7 +73,11 @@ pub enum CliCommand {
     /// Report what this terminal can deliver, and every key binding's fate
     Doctor,
     /// Start the MCP server (stdio transport)
-    Mcp,
+    Mcp {
+        /// Print the settings to add to an agent app, then exit
+        #[arg(long)]
+        print_config: bool,
+    },
     /// List all hashtag labels in the vault with note counts
     Labels {
         #[arg(long, value_enum, default_value = "text")]
@@ -81,6 +97,12 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             let mut settings = load_settings(config_path)?;
             commands::workspace::run(subcommand, &mut settings).await
         }
+        CliCommand::Server { subcommand } => {
+            let mut settings = load_settings(config_path)?;
+            commands::server::run(subcommand, &mut settings).await
+        }
+        // Vault-independent: it writes only the skill folders it is given.
+        CliCommand::Skill { subcommand } => commands::skill::run(subcommand),
         CliCommand::Note { subcommand } => {
             let (settings, workspace_path, workspace_name) =
                 load_and_resolve_workspace(config_path)?;
@@ -134,7 +156,11 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
         // more. Opening a workspace here would make a diagnostic depend on the
         // thing being diagnosed.
         CliCommand::Doctor => commands::doctor::run(config_path),
-        CliCommand::Mcp => commands::mcp::run(config_path).await,
+        // `--print-config` only prints text: no vault, no workspace, no settings.
+        CliCommand::Mcp { print_config: true } => commands::mcp::config_print::run(),
+        CliCommand::Mcp {
+            print_config: false,
+        } => commands::mcp::run(config_path).await,
         CliCommand::Labels { format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
             let result = commands::labels::run(&vault, format, &workspace_name).await;

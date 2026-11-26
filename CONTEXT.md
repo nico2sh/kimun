@@ -605,6 +605,10 @@ _Avoid_: auto-pair, auto-close (those mean inserting the closing char while typi
 The fixed run of spaces one indent puts at the start of a row — what Tab, `>>`, the visual `>` and a list continuation's dedent all move a row by, read from the **rope buffer** (`indent_width`, 4 by default) so every door agrees. Always spaces, never a tab. On the way back out, a dedent removes up to one step of leading spaces, or one existing leading tab, which counts as a whole step. Not a tab stop: that is how an existing `\t` *draws* (`Metrics::tab_width`), and the two are kept apart the way vim keeps `shiftwidth` from `tabstop`.
 _Avoid_: tab width, tab size (the drawing rule), hard tab (a setting kimün no longer has).
 
+**Agent connector**:
+The ways an outside agent reaches a **Vault**: the MCP server and the skills. The agent runs in a harness that Kimün does not control (Claude Code, Codex, OpenCode, Hermes), and its own model does the thinking. The connector gives that model tools and guidance. The model picks the date range for a time question and decides which note to read next. This is the job that the **Ask workspace** does with the **Kimün server**'s model, done by the agent instead. It works with no **Kimün server**. With a semantic-only or full server it also offers search by meaning. Writes through it are **automated edits**.
+_Avoid_: MCP (one channel of it), plugin, integration, RAG connector (RAG names one technique, and the connector does word search too).
+
 **Automated edit**:
 A note mutation performed through the CLI or the MCP server rather than the TUI editor. Automated edits produce a **backup**; interactive TUI edits do not (the editor carries its own version history).
 _Avoid_: programmatic write, headless edit
@@ -662,6 +666,10 @@ _Avoid_: RAG server (names one technique; the server is also plain search and a 
 **Unconfigured**:
 The **Kimün server** state when no embedder is configured — the default on first run. The server boots and serves its web UI and health probe, but every data operation (indexing, search, question-answering) is rejected until an embedder is chosen; the vector store is not even opened, since its shape depends on the embedder. Distinct from *semantic-only* (embedder present, LLM absent) and from offline (unreachable). Clients detect it from the health probe and skip pushing and **reconciliation** entirely.
 _Avoid_: setup mode (implies a different runtime mode; it is the same server with a capability absent), broken/degraded (it is a deliberate, healthy state).
+
+**Stopped**:
+The **Kimün server** state in which a **Server install marker** shows that the install script put the server on this machine, the configured address points at this machine, and the server does not answer. A marker that records no service still counts, because it still proves the install. It tells the user that the server is installed and only needs to be started. Distinct from *unreachable*, where nothing shows that a server is installed here (a remote server, Docker, a Cargo install, or no marker), so the client can say only that nothing answers. The **Agent connector** reports *stopped* and names the start command. It never starts the server itself, because a start is a change to the user's machine that the user must choose.
+_Avoid_: down, crashed (nothing shows why it is not running), offline (the client's word for any unreachable server).
 
 **Collection**:
 The **Kimün server**'s per-vault namespace for embeddings, keyed by **Vault ID**. One vault ↔ one collection; the server holds many, each isolating its vault's vectors, hashes, and **reconciliation** from every other's.

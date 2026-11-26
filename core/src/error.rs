@@ -80,6 +80,12 @@ pub enum VaultError {
         /// Why it was rejected.
         message: String,
     },
+    /// A dated search was given a range or a date source it cannot use.
+    #[error("{message}")]
+    InvalidDateFilter {
+        /// What is wrong and, for an unknown source, which sources exist.
+        message: String,
+    },
     /// A vault scan found paths that collide once compared case-insensitively.
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict {
@@ -152,6 +158,7 @@ impl VaultError {
             | VaultError::ReplaceTextNotUnique { .. }
             | VaultError::TaskChanged { .. }
             | VaultError::InvalidRegex { .. }
+            | VaultError::InvalidDateFilter { .. }
             | VaultError::InvalidProperty { .. } => Some(self.to_string()),
             // The user can act on this one: update the app.
             VaultError::DBError(e @ DBError::IndexNewer { .. }) => Some(e.to_string()),

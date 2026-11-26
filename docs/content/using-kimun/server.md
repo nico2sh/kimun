@@ -46,11 +46,47 @@ Intel Macs have no prebuilt server. Use Docker there. The server README also des
 
 Then tell Kimün where the server is. Open Preferences, go to Server, and enter the address. The default local address is `http://localhost:7573`. To turn the feature off, leave the address empty.
 
+You can also set the address from a terminal:
+
+```sh
+kimun server use http://localhost:7573
+kimun server use https://kimun.example.com --token SECRET
+kimun server use --off
+kimun server status
+```
+
+- `kimun server use` saves the address. Give `--token` for a server that needs one.
+- A token that you type on the command line stays in your shell history. Preferences has no token field. If you share the computer or your shell keeps its history, start the command with a space (when your shell is set to ignore such commands), or remove the line from the history afterwards.
+- When you change the address and give no `--token`, Kimün clears the saved token. It keeps the token only for the same address.
+- `kimun server use --off` removes the address and the token.
+- `kimun server status` shows the state of the server and the next step. It checks the address and not the token. A wrong token shows up only in a failed search, with a message that the server rejected the token.
+
+The command only writes the settings file. It does not install or start the server.
+
+Restart your AI app after you change the address. The MCP server reads the address at its start.
+
+### What the AI tools do with the server
+
+The tool `semantic_search` uses the server. The tool `vault_info` reports its state: `none`, `stopped`, `unreachable`, `unconfigured`, `semantic-only`, or `full`. The state `stopped` means that the install script put the server on this computer and it does not answer. When the server is not ready, the tools tell the AI app the next step, and the AI app passes it to you. The tools never start the server. See [MCP server](@/using-kimun/ai-mcp-server.md#server-state).
+
 To change the server's own settings, such as the model, click `Open server settings` in the same place. It opens the server's page in your browser.
 
 The footer shows the connection: `rag: online`, `rag: syncing`, `rag: offline`, or `rag: not configured`.
 
 If you share the server with other people, or open it to the network, read the security notes in the server README first. The server uses plain HTTP, so it is meant for a trusted network.
+
+## Filter a search
+
+A program can call the server's `POST /api/embeddings` search with filters. A request with no filter works as before. These fields are optional:
+
+- `date_from` and `date_to`: a range of days, written `YYYY-MM-DD`. Give both or neither. The start must not be after the end.
+- `date_key`: which date to use, such as `journal` for journal notes. It needs `date_from` and `date_to`.
+- `folder`: only notes inside this folder.
+- `tags`: only notes that have all of these tags.
+
+The server reports `search_filters: true` on its `/health` page when it accepts these fields. An older server does not report it.
+
+If the server uses Qdrant as its store, it refuses any filter and returns an error. The default SQLite store supports all filters.
 
 ## Update the server
 

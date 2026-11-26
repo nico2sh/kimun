@@ -1,0 +1,417 @@
+---
+name: kimun-cli
+description: Use when the user has kimun installed and wants to create, append, search, or read notes from the terminal, or when automating note management as part of a workflow or agent task
+---
+
+# Kimün CLI Reference
+
+Kimün is a local-first, terminal notes app. Notes are plain Markdown files indexed for fast search. Use the CLI to write, append, search, and read notes without opening the TUI — ideal for automation, piping, and AI-driven workflows.
+
+## Quick Reference
+
+| Task | Command |
+|------|---------|
+| Create note | `kimun note create "path" "content"` |
+| Append to note | `kimun note append "path" "content"` |
+| Overwrite a note | `kimun note overwrite "path" "content" --force` |
+| Replace text in a note | `kimun note replace "path" "old" "new" [--all] [--regex] [--preview]` |
+| Delete a note | `kimun note delete "path" --force` |
+| List a note's properties | `kimun note prop list "path" [--format json]` |
+| Read one property | `kimun note prop get "path" key` |
+| Set a property | `kimun note prop set "path" key value… [--type KIND] [--yaml]` |
+| Remove a property | `kimun note prop remove "path" key` |
+| Log to today's journal | `kimun journal "text"` |
+| Log to a specific date | `kimun journal --date YYYY-MM-DD "text"` |
+| Show today's journal | `kimun journal show` |
+| Show a specific journal entry | `kimun journal show --date YYYY-MM-DD` |
+| Show note content | `kimun note show "path"` |
+| Search notes | `kimun search "query"` |
+| List notes | `kimun notes` |
+| List all labels | `kimun labels` |
+| Reindex after external edits | `kimun workspace reindex` |
+| Check for a newer release | `kimun update --check` |
+| Update the terminal app | `kimun update` |
+
+## Writing Notes
+
+All write commands accept content as a second argument **or from stdin** (when stdin is not a TTY).
+
+### Create
+Creates a new note. **Fails if the note already exists** — use `append` if unsure.
+
+```sh
+kimun note create "inbox/idea" "My content"
+echo "My content" | kimun note create "inbox/idea"
+```
+
+### Append
+Appends to a note. **Creates it automatically if it doesn't exist.** Safe to use as the default write command.
+
+```sh
+kimun note append "inbox/log" "New entry"
+echo "Entry" | kimun note append "inbox/log"
+```
+
+## Modifying Notes
+
+Three destructive operations let you change or remove existing content. Each one
+**backs up the note first** (see below), so an edit is recoverable.
+
+### Overwrite
+Replaces a note's **entire** body. Requires `--force` (it discards the old body).
+Content comes from an argument or stdin.
+
+```sh
+kimun note overwrite "projects/roadmap" "Brand new body" --force
+echo "New body" | kimun note overwrite "projects/roadmap" --force
+```
+
+### Replace
+Swaps text for new text, leaving the rest of the note intact. The find text must
+match **exactly once** — the command errors if it is missing or appears more than
+once, so it never edits the wrong spot. Use `--all` to replace every occurrence.
+No `--force` needed (it's a targeted, scriptable edit).
+
+By default the find text is a **literal substring**. Add `--regex` to treat it as
+a regular expression; the replacement may then use capture references (`$1`,
+`${name}`; `$$` for a literal `$`, and `${1}`/`${name}` when the next character
+is alphanumeric, e.g. `${1}_`). Inline flags `(?m)`, `(?s)`, `(?i)` control
+line/case behaviour. An invalid pattern errors without touching the note.
+
+`--preview` is a dry run: it prints the resulting note content to stdout (match
+count to stderr) and writes nothing — useful to inspect before committing.
+
+```sh
+kimun note replace "projects/roadmap" "Q2" "Q3"
+kimun note replace "projects/roadmap" "TODO" "DONE" --all
+kimun note replace "notes/log" "v\d+\.\d+" "v2.0" --regex
+kimun note replace "notes/log" "(\w+)@(\w+)" "$2.$1" --regex --all
+kimun note replace "projects/roadmap" "TODO" "DONE" --all --preview
+```
+
+### Delete
+Removes a note. Requires `--force`.
+
+```sh
+kimun note delete "inbox/stale-idea" --force
+```
+
+### Properties
+Read and edit frontmatter properties without touching the rest of the note.
+
+```sh
+kimun note prop list "projects/garden" --format json
+kimun note prop get "projects/garden" status
+kimun note prop set "projects/garden" status active
+kimun note prop set "projects/garden" tags garden spring    # several values → list
+kimun note prop set "projects/garden" priority high --type text
+kimun note prop remove "projects/garden" status
+```
+
+`tags` is always a list (comma-separated values become separate items; `set n tags` with no value clears it). Any other key's value
+must be exactly a value of the type the key has in other notes; one that doesn't fit
+(e.g. `high`, or `02134`, where `priority` is a number elsewhere) is refused with a user
+error — retry with `--type text|number|bool|date|datetime|list`, which changes only that
+note. A key no other note has is typed by its look (`5` → number, `true` → bool,
+`2026-05-01` → date, `2026-05-01T14:30` → date-time kept local, else text; `02134`
+stays text). Query properties with `kimun search "%status=active"` (see the search syntax).
+
+### Automatic backups
+Every CLI/MCP edit that overwrites or deletes a note's content first copies the
+old content into a hidden, dated backup inside the vault (excluded from search).
+Backups are kept for 30 days, then purged automatically. This covers `overwrite`,
+`replace`, `delete`, `prop set`/`prop remove`, and the backlink rewrites done by rename/move. `create` and
+`append` of a new note have nothing to back up. Interactive TUI editing does not
+back up (the editor has its own history). If a backup can't be written, the edit
+is aborted (fail-closed) — the note is left untouched.
+
+## Errors
+
+Failed operations print a one-line message to **stderr** and exit non-zero:
+
+- **Exit 2 — user/input error you can act on.** The message is clean and stable,
+  e.g. `Error: Note not found: inbox/x.md`, `Error: Note already exists: inbox/x.md`,
+  `Error: Text to replace is not unique in note: …`,
+  `Error: Text to replace not found in note: …`, `Error: Invalid path '…': …`.
+  Read it and adjust (fix the path, use `--all`, etc.) — don't retry unchanged.
+- **Exit 1 — internal failure** (database, filesystem, unexpected). Treat as a
+  real fault, not something to retry blindly; the full report goes to stderr.
+
+The MCP server returns the same wording as a tool error, so both surfaces report
+note problems identically.
+
+### Index made by a newer version
+
+If a command fails with `Error: This vault's index was made by a newer version of
+Kimün (index format X, this version reads Y). Update this app to open it.`, the
+terminal app is older than the app (usually the desktop app) that last opened the
+vault. It exits 2. Do not retry. Do not run `kimun workspace reindex`, because a
+reindex opens the index first and refuses too. Update instead:
+
+```sh
+kimun update --check   # prints current and latest version; changes nothing
+kimun update           # installs the latest release
+```
+
+`kimun update` only installs by itself for a direct download. For a Homebrew,
+cargo, or other managed install it prints the upgrade command to run instead —
+run that one. After the update, run the failed command again. An MCP server must
+be reconnected to pick up the new binary.
+
+The reverse case needs no action. An index from an older version is dropped and
+rebuilt automatically on the next open.
+
+## Journal
+
+`kimun journal` appends to a journal entry (today by default). `kimun journal show` displays one.
+
+```sh
+kimun journal "Captured this finding"             # append to today
+kimun journal --date 2024-01-15 "Backdated note"  # append to specific date
+echo "$(date +%H:%M) — task complete" | kimun journal
+
+kimun journal show                                # show today's entry
+kimun journal show --date 2024-01-15             # show specific date
+kimun journal show --format json                 # JSON output
+```
+
+- Defaults to today; `--date YYYY-MM-DD` targets any date
+- Creates the entry if it doesn't exist
+- `show` supports `--format text` (default) and `--format json`
+
+## Reindexing After External Edits
+
+Kimün serves search, listing, labels, backlinks, and forward links from an
+**index**, not by reading every file on each query. Every write through the CLI
+(or MCP, or the TUI) updates that index automatically. But if a note file is
+changed **outside Kimün** — edited with `sed`, `vim`, another editor, a sync
+tool, or any direct filesystem write — the index goes stale: search and metadata
+keep reflecting the old content until you rebuild it.
+
+After any out-of-band change to vault files, reindex:
+
+```sh
+kimun workspace reindex            # current workspace
+kimun workspace reindex myvault    # a named workspace
+```
+
+```sh
+# Typical pattern: bulk-edit on disk, then reindex
+sed -i 's/old-tag/new-tag/g' "$VAULT"/**/*.md
+kimun workspace reindex
+```
+
+Until you reindex, results from `search`, `notes`, `labels`, and link filters may
+be wrong. Stick to the `note` write commands above and you never need this — they
+keep the index in sync for you.
+
+## Path Rules
+
+- `"inbox/note"` — relative to the configured `quick_note_path` (default: vault root)
+- `"/inbox/note"` — absolute from vault root; use a leading `/` to be explicit
+- `.md` extension is optional in all commands
+
+## Searching
+
+```sh
+kimun search "query"               # Full-text search
+kimun search "query" --format json # JSON output
+kimun search "query" --format paths # Bare paths, one per line (pipeable)
+```
+
+### Query syntax
+
+Free text is case-insensitive, diacritics-ignored. Multiple terms = AND.
+
+**Wildcards** — `*` matches any sequence of characters, works in free text and with operators:
+
+```
+kimu*          # starts with "kimu"
+*report        # ends with "report"
+*meeting*      # contains "meeting" anywhere
+=task*         # note name starts with "task"
+=*2024*        # note name contains "2024"
+```
+
+| Operator | Long form | Matches |
+|----------|-----------|---------|
+| `=term` | `name:term` | note name contains term |
+| `@term` | `in:term` | Markdown section heading contains term |
+| `/term` | `pt:term` | note path (directory) contains term |
+| `#label` | `lb:label` | note carries that label (`#label` in the body, or in the frontmatter `tags` property) |
+| `<note` | `lk:note` | notes that link **to** `note` (its backlinks) |
+| `>note` | `fwd:note` | notes that `note` links **to** (its forward links) |
+| `%key<op>value` | `prop:key<op>value` | frontmatter property compares true; op is `= != < <= > >=` (`%status=done`, `%priority>=2`, `%due<2026-05-01`, `%status="in progress"`, `%"due date"<2026-05-01`, `%status=d*` wildcard) |
+| `%key` | `prop:key` | note has that property at all |
+| `^%key` | `or:prop:key` | sort by a property (`-^%key` descending; notes without it last) |
+| `-term` | | exclude notes containing term |
+
+**Hashtag labels** — any `#name` token in a note body (letters/digits/underscore) is indexed as a label and is case-insensitive. Hashtags inside frontmatter, code spans, fenced blocks, HTML, link bodies, and wikilinks are NOT indexed. Multiple `#` filters AND together.
+
+**Link filters** — `<note` (or `lk:note`) matches notes that link **to** `note` (its backlinks); `>note` (or `fwd:note`) matches the notes that `note` links **to** (its forward links). Both match by note name (`.md` optional, case-insensitive); a bare name matches in any folder, `<dir/note` / `>dir/note` disambiguates, and `*` wildcards work (`<proj*`). Only links to other notes count, not attachments or URLs.
+
+**Exclusion composes with all operators — `-` leads, then the operator:**
+
+```
+-cancelled           # exclude notes containing "cancelled"
+-=temp               # exclude notes with "temp" in the name
+-@draft              # exclude notes with "draft" in any section title
+-/private            # exclude notes under a "private/" path
+-#archived           # exclude notes carrying #archived label
+-<draft              # exclude notes that link to "draft"
+->draft              # exclude notes that "draft" links to
+```
+
+**Combining filters** (all terms are ANDed):
+
+```
+meeting -cancelled           # "meeting" but not "cancelled"
+=tasks @work report          # name "tasks", has "Work" section, contains "report"
+=2024 -@draft                # names from 2024, no "draft" section title
+/journal @tasks -done        # in journal/, "tasks" section, excluding "done"
+@personal kimun              # "kimun" under a "Personal" section
+<spec #urgent                # links to "spec" and labelled "urgent"
+<kimun -<draft               # links to "kimun" but not to "draft"
+>kimun #urgent               # "kimun" links to these, and labelled "urgent"
+#important -#archived        # notes carrying #important but not #archived
+meeting #important           # "meeting" in notes also carrying #important
+```
+
+## Listing Labels
+
+`kimun labels` enumerates every distinct hashtag label in the vault with note counts. Three formats:
+
+```sh
+kimun labels                  # text: `name (N notes)` per line, alphabetical
+kimun labels --format paths   # bare label names, one per line (pipeable)
+kimun labels --format json    # JSON: { workspace, total, labels: [{name, note_count}] }
+```
+
+### When to reach for it
+
+- **Map the vault's topical landscape** before answering "what does the user write about?" — `kimun labels` is the cheapest taxonomy survey available.
+- **Discover orphan/typo labels** — single-use labels often reveal a typo (`#imporant` vs `#important`) or a rarely-touched topic worth pruning.
+- **Drive label-based agentic browsing** — pick a label, then `kimun search "#label" --format paths | kimun note show` to read every note under it.
+- **Build per-label digests / per-topic dashboards** programmatically.
+
+### JSON schema
+
+```json
+{
+  "workspace": "personal",
+  "total": 12,
+  "labels": [
+    { "name": "idea",    "note_count": 5 },
+    { "name": "reading", "note_count": 4 }
+  ]
+}
+```
+
+### Effective patterns
+
+```sh
+# Top 10 most-used labels (most signal-rich topics first)
+kimun labels --format json | jq -r '.labels | sort_by(-.note_count) | .[:10][] | "\(.note_count)\t\(.name)"'
+
+# Single-use labels (candidate orphans / typos)
+kimun labels --format json | jq -r '.labels[] | select(.note_count == 1) | .name'
+
+# Read every note carrying a label
+kimun search "#systems" --format paths | kimun note show
+
+# Cross-tabulate two labels (AND)
+kimun search "#api #perf" --format paths
+
+# Label minus another label (e.g. open ideas)
+kimun search "#idea -#done" --format paths
+
+# Per-label index file
+kimun labels --format paths | while read l; do
+  echo "## $l"
+  kimun search "#$l" --format paths | sed 's/^/- /'
+  echo
+done > vault-by-label.md
+
+# Quick "what do I work on?" summary
+kimun labels --format json | jq -r '.labels[] | "\(.note_count)\t\(.name)"' | sort -rn | head
+```
+
+### Notes
+
+- Label names are stored lowercase. `#Foo` and `#foo` collapse into one entry.
+- A label is only counted once per note even if the hashtag appears many times.
+- Counts reflect what's INDEXED — hashtags inside frontmatter, code, HTML, link bodies, and wikilinks are excluded.
+
+## Reading Notes
+
+```sh
+kimun note show "path/to/note"           # Display note content and metadata
+kimun notes                              # List all notes
+kimun notes --path "journal/"            # Filter by path prefix
+kimun notes --format json                # JSON output
+kimun notes --format paths               # Bare paths for piping
+```
+
+## JSON Output
+
+`search`, `notes`, `note show`, and `journal show` all support `--format json`. Each note object includes:
+`path`, `title`, `content`, `size`, `modified`, `journal_date`, `metadata.tags`, `metadata.links`, `metadata.headers`.
+
+```sh
+# Get titles and paths
+kimun notes --format json | jq '.notes[] | {title, path}'
+
+# Find all journal entries
+kimun notes --format json | jq '.notes[] | select(.journal_date != null)'
+
+# Filter by tag
+kimun search "project" --format json | jq '.notes[] | select(.metadata.tags[] == "active")'
+
+# Get today's journal headings
+kimun journal show --format json | jq '.notes[0].metadata.headers[].text'
+
+# Pipe search results directly into note show
+kimun search "todo" --format paths | kimun note show
+```
+
+## Patterns for AI Workflows
+
+```sh
+# Log a research finding to today's journal
+kimun journal "Finding: X is faster than Y for large datasets"
+
+# Capture command output as a timestamped note
+some-command | kimun note create "logs/output-$(date +%F)"
+
+# Append a running log (safe: creates if missing)
+echo "$(date): step completed" | kimun note append "logs/progress"
+
+# Search for context before starting a task
+kimun search "authentication" --format json | jq '.notes[] | {title, path}'
+
+# Read a specific note for context
+kimun note show "projects/roadmap"
+
+# Read today's journal for context
+kimun journal show
+
+# Chain: search → read all matching notes
+kimun search "meeting notes" --format paths | kimun note show
+
+# Survey topics before working: list labels, pick the relevant one, read all notes
+kimun labels
+kimun search "#api" --format paths | kimun note show
+
+# Pre-tag a captured note in one shot (labels live in body, not frontmatter)
+echo "Quick thought about caching. #idea #perf" | kimun note append "inbox/cache-thoughts"
+```
+
+## Common Mistakes
+
+- **`create` on an existing note** — it fails. Use `append` when you're not sure if the note exists.
+- **`overwrite`/`delete` without `--force`** — they refuse to run. The flag is the confirmation; there is no interactive prompt (the CLI is built for automation).
+- **`replace` with a non-unique `old` string** — it errors rather than guess. Make the match unique, or pass `--all` to replace every occurrence on purpose.
+- **No stdin from a live terminal** — piping works (`echo "x" | kimun journal`); passing no content from an interactive terminal produces an empty write.
+- **Relative vs absolute paths** — if a `quick_note_path` is set in `kimun_config.toml`, relative paths are resolved against it. Prefix with `/` to always target the vault root explicitly.
+- **Reindexing to fix a "newer version" index error**: it cannot work. Run `kimun update` (see Errors).
+- **`kimun journal show` — `--format paths` is not supported**; use `text` or `json`.

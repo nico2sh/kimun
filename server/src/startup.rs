@@ -371,7 +371,8 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// enabled reranker whose model download failed shows `false`, with the
 /// reason under `reranker_error` (null when off by config or healthy).
 /// `version` is this binary's; `latest_version` is a newer stable release when
-/// the update check found one, else null.
+/// the update check found one, else null. `search_filters` is true when
+/// `/api/embeddings` accepts the filter fields; older servers omit it.
 pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let embedder = state
         .rag
@@ -388,6 +389,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<serde_js
         "degraded": state.startup_error,
         "version": crate::update::CURRENT_VERSION,
         "latest_version": state.update_check.available(),
+        "search_filters": true,
     }))
 }
 
@@ -632,6 +634,7 @@ mod tests {
                     "degraded": null,
                     "version": crate::update::CURRENT_VERSION,
                     "latest_version": null,
+                    "search_filters": true,
                 }),
             ),
             (
@@ -647,6 +650,7 @@ mod tests {
                     "degraded": "model download failed",
                     "version": crate::update::CURRENT_VERSION,
                     "latest_version": null,
+                    "search_filters": true,
                 }),
             ),
             (
@@ -662,6 +666,7 @@ mod tests {
                     "degraded": null,
                     "version": crate::update::CURRENT_VERSION,
                     "latest_version": null,
+                    "search_filters": true,
                 }),
             ),
             (
@@ -677,6 +682,7 @@ mod tests {
                     "degraded": null,
                     "version": crate::update::CURRENT_VERSION,
                     "latest_version": null,
+                    "search_filters": true,
                 }),
             ),
         ];
@@ -685,6 +691,13 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{name}");
             assert_eq!(body, expected, "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn health_reports_search_filters() {
+        let state = AppState::new(None, config(UNCONFIGURED));
+        let (_, body) = get(router(Arc::new(state)), "/health", None).await;
+        assert_eq!(body["search_filters"], true);
     }
 
     #[tokio::test]

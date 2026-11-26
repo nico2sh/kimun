@@ -23,6 +23,8 @@
 //!   OS itself — `std::path` parses per target — stay behind `cfg` and are
 //!   verified on that OS's CI leg.
 
+mod folder_install;
+pub use folder_install::{install_files, FolderInstall};
 mod image_cache;
 pub use image_cache::{image_extension, ImageCache, IMAGE_CACHE_CAP};
 
@@ -80,6 +82,13 @@ pub enum SystemError {
     #[error("already exists: {path}")]
     AlreadyExists {
         /// The occupied path.
+        path: String,
+    },
+    /// The target folder is a symbolic link. Installing through it could write
+    /// somewhere the user did not mean, so nothing is changed.
+    #[error("{path} is a symbolic link, the folder was not changed")]
+    Symlink {
+        /// The folder that is a symbolic link.
         path: String,
     },
     /// A file could not be renamed or deleted because something still holds it
