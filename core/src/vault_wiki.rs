@@ -11,16 +11,18 @@ use crate::note::properties::NoteProperties;
 use crate::note::{
     FrontmatterFormat, LinkType, NoteDetails, NoteTarget, PropertyEntry, PropertyValue,
 };
-use crate::wiki::{body_hash, is_stale, log_template, schema_template};
+use crate::wiki::{body_hash, is_stale, log_template, schema_template, source_slug, url_host};
 use crate::{
-    Catalogue, CatalogueEntry, LinkResolution, NoteVault, ResultType, SkippedSource, StampReport,
-    VaultBrowseOptionsBuilder, WikiDeclaration, WikiFinding, WikiInitEntry, WikiInitOptions,
-    WikiInitReport, WikiReport, WikiRule,
+    Catalogue, CatalogueEntry, LinkResolution, NoteVault, ResultType, SaveSourceRequest,
+    SkippedSource, StampReport, VaultBrowseOptionsBuilder, WikiDeclaration, WikiFinding,
+    WikiInitEntry, WikiInitOptions, WikiInitReport, WikiReport, WikiRule,
 };
 
 const CONTENT_HASH: &str = "content_hash";
 const DECLARATION_LABEL: &str = ".kimun/wiki.toml";
 const INGESTED_AT: &str = "ingested_at";
+const CONTENT_TYPE: &str = "content_type";
+const SOURCE_URL: &str = "source_url";
 const SOURCES: &str = "sources";
 const UPDATED: &str = "updated";
 
@@ -100,6 +102,75 @@ impl NoteVault {
             });
         }
         Ok(report)
+    }
+
+    /// Saves `request` as a new, stamped note in the sources folder. The path
+    /// is the folder plus the local day and a slug of the title. When that
+    /// name is taken, a free one is picked. The note gets `source_url`,
+    /// `ingested_at`, `content_type` and `content_hash`, so `wiki check` finds
+    /// it stamped and unmodified. Source protection allows this, because the
+    /// note is new. It returns the path used. Without a declaration it gives
+    /// `WikiNotDeclared`. This makes no network call. It only saves the text
+    /// it gets.
+    pub async fn save_source(&self, request: &SaveSourceRequest) -> Result<VaultPath, VaultError> {
+        self.save_source_on(chrono::Local::now().date_naive(), request)
+            .await
+    }
+
+    /// [`Self::save_source`] with `today` as the day in the path and in
+    /// `ingested_at`.
+    pub(crate) async fn save_source_on(
+        &self,
+        today: chrono::NaiveDate,
+        request: &SaveSourceRequest,
+    ) -> Result<VaultPath, VaultError> {
+        let declaration = self
+            .wiki_declaration()
+            .await?
+            .ok_or(VaultError::WikiNotDeclared)?;
+        let title = request
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .or_else(|| url_host(&request.url))
+            .unwrap_or_else(|| "source".to_string());
+        let slug = source_slug(&title, &request.url);
+        let name = VaultPath::note_path_from(format!("{}-{slug}", today.format("%Y-%m-%d")));
+        let path = declaration.sources_path().append(&name);
+
+        let markdown = nfs::to_lf(&request.markdown);
+        let body = if markdown.starts_with("# ") || markdown.starts_with("#\t") {
+            markdown
+        } else {
+            format!("# {title}\n\n{markdown}")
+        };
+        // The hash covers the text below the frontmatter. Build the block
+        // with a placeholder, hash the whole text, then build it again with
+        // the real hash. A body that starts with `---` is read as body, as
+        // the block is closed before it.
+        let with_hash = |hash: &str| -> Result<String, VaultError> {
+            let mut text = String::new();
+            let values = [
+                (SOURCE_URL, PropertyValue::Text(request.url.clone())),
+                (INGESTED_AT, PropertyValue::Date(today)),
+                (
+                    CONTENT_TYPE,
+                    PropertyValue::Text(request.content_type.clone()),
+                ),
+                (CONTENT_HASH, PropertyValue::Text(hash.to_string())),
+            ];
+            for (key, value) in &values {
+                text = NoteProperties::new(&text, FrontmatterFormat::Yaml)
+                    .set(key, value)
+                    .map_err(|e| Self::frontmatter_error(&path, key, e))?;
+            }
+            Ok(text)
+        };
+        let hash = body_hash(&format!("{}{body}", with_hash(&"0".repeat(16))?));
+        let text = format!("{}{body}", with_hash(&hash)?);
+        self.create_note_avoiding_conflicts(&path, text).await
     }
 
     /// Stamps every source that has no `content_hash`: sets `content_hash` to

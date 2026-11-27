@@ -262,6 +262,43 @@ fn vault_err(e: kimun_core::error::VaultError) -> Result<CallToolResult, McpErro
     }
 }
 
+/// `true` when a rename or move failed because the source note is missing or the
+/// destination is taken. Only these two cases keep the short "not found or
+/// destination already exists" text. Every other failure, such as a protection
+/// refusal, goes through [`vault_err`] with core's own message.
+fn is_missing_or_taken(e: &kimun_core::error::VaultError) -> bool {
+    use kimun_core::error::{FSError, VaultError};
+    e.is_not_found()
+        || match e {
+            VaultError::NoteExists { .. }
+            | VaultError::DirectoryExists { .. }
+            | VaultError::FSError(FSError::AlreadyExists { .. })
+            // `rename_dest_err` turns a taken destination into this variant.
+            | VaultError::FSError(FSError::InvalidPath { .. }) => true,
+            // The source file is gone: the raw IO error of the rename.
+            VaultError::FSError(FSError::ReadFileError(io)) => {
+                io.kind() == std::io::ErrorKind::NotFound
+            }
+            _ => false,
+        }
+}
+
+/// The result of a failed rename or move.
+fn rename_err(
+    e: kimun_core::error::VaultError,
+    from: &VaultPath,
+    to: &VaultPath,
+) -> Result<CallToolResult, McpError> {
+    if is_missing_or_taken(&e) {
+        Ok(CallToolResult::error(vec![Content::text(format!(
+            "Note not found or destination already exists: {} → {}",
+            from, to
+        ))]))
+    } else {
+        vault_err(e)
+    }
+}
+
 #[tool_router]
 impl KimunHandler {
     pub fn new(vault: NoteVault) -> Self {
@@ -359,10 +396,13 @@ impl KimunHandler {
         Parameters(p): Parameters<AppendNoteParams>,
     ) -> Result<CallToolResult, McpError> {
         let vault_path = Self::resolve_path(&p.path);
-        self.vault
+        if let Err(e) = self
+            .vault
             .append_to_note(&vault_path, &p.content, None)
             .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        {
+            return vault_err(e);
+        }
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Note saved: {}",
             vault_path
@@ -670,10 +710,13 @@ impl KimunHandler {
             .journal_path()
             .append(&VaultPath::note_path_from(&date_str))
             .absolute();
-        self.vault
+        if let Err(e) = self
+            .vault
             .append_to_note(&vault_path, &p.text, Some(format!("# {}\n\n", date_str)))
             .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        {
+            return vault_err(e);
+        }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Note saved: {}",
@@ -803,11 +846,7 @@ impl KimunHandler {
                 "Note renamed: {} → {}",
                 from, to
             ))])),
-            Err(e) if e.is_user_error() => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Note not found or destination already exists: {} → {}",
-                from, to
-            ))])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => rename_err(e, &from, &to),
         }
     }
 
@@ -826,11 +865,7 @@ impl KimunHandler {
                 "Note moved: {} → {}",
                 from, to
             ))])),
-            Err(e) if e.is_user_error() => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Note not found or destination already exists: {} → {}",
-                from, to
-            ))])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => rename_err(e, &from, &to),
         }
     }
 
@@ -1086,6 +1121,160 @@ mod tests {
         vault.validate_and_init().await.unwrap();
         let handler = KimunHandler::new(vault);
         (handler, dir)
+    }
+
+    /// A handler over a vault with source protection on and a wiki declared.
+    /// `/sources/a` exists and is protected.
+    async fn make_protected_handler() -> (KimunHandler, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(
+            VaultConfig::new(crate::test_support::sys(dir.path())).with_protected_sources(true),
+        )
+        .await
+        .unwrap();
+        vault.validate_and_init().await.unwrap();
+        vault
+            .wiki_init(kimun_core::WikiInitOptions::default())
+            .await
+            .unwrap();
+        vault
+            .create_note(&VaultPath::note_path_from("/sources/a"), "# A\n\nraw text")
+            .await
+            .unwrap();
+        (KimunHandler::new(vault), dir)
+    }
+
+    #[tokio::test]
+    async fn append_note_on_a_protected_source_is_a_recoverable_error() {
+        let (handler, _dir) = make_protected_handler().await;
+        let result = handler
+            .append_note(Parameters(AppendNoteParams {
+                path: "/sources/a".to_string(),
+                content: "more".to_string(),
+            }))
+            .await
+            .expect("a protection refusal is a tool error, not a protocol error");
+        assert!(!is_success(&result));
+        assert!(result_text(&result).contains(".kimun/wiki.toml"));
+    }
+
+    #[tokio::test]
+    async fn rename_note_on_a_protected_source_names_the_protection_not_a_missing_note() {
+        let (handler, _dir) = make_protected_handler().await;
+        let result = handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "/sources/a".to_string(),
+                new_name: "b".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!is_success(&result));
+        let text = result_text(&result);
+        assert!(text.contains(".kimun/wiki.toml"), "{text}");
+        assert!(!text.contains("not found"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn move_note_on_a_protected_source_names_the_protection() {
+        let (handler, _dir) = make_protected_handler().await;
+        let result = handler
+            .move_note(Parameters(MoveNoteParams {
+                path: "/sources/a".to_string(),
+                new_path: "/elsewhere/a".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!is_success(&result));
+        let text = result_text(&result);
+        assert!(text.contains(".kimun/wiki.toml"), "{text}");
+        assert!(!text.contains("not found"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn rename_of_a_page_that_a_source_links_to_names_the_link_reason() {
+        let (handler, _dir) = make_protected_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "/wiki/page".to_string(),
+                content: "# Page\n\nbody".to_string(),
+            }))
+            .await
+            .unwrap();
+        handler
+            .vault
+            .create_note(
+                &VaultPath::note_path_from("/sources/linker"),
+                "# Linker\n\nsee [[page]]",
+            )
+            .await
+            .unwrap();
+        let result = handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "/wiki/page".to_string(),
+                new_name: "renamed".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!is_success(&result));
+        let text = result_text(&result);
+        assert!(text.contains("would rewrite a link"), "{text}");
+        assert!(text.contains("linker"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn journal_with_a_malformed_declaration_is_a_recoverable_error() {
+        let (handler, dir) = make_protected_handler().await;
+        std::fs::write(
+            dir.path().join(".kimun").join("wiki.toml"),
+            "not_a_known_key = 1\n",
+        )
+        .unwrap();
+        let result = handler
+            .journal(Parameters(JournalParams {
+                text: "entry".to_string(),
+                date: Some("2026-01-02".to_string()),
+            }))
+            .await
+            .expect("a bad declaration is a tool error, not a protocol error");
+        assert!(!is_success(&result));
+        assert!(result_text(&result).contains(".kimun/wiki.toml"));
+    }
+
+    #[tokio::test]
+    async fn rename_note_still_says_not_found_for_a_missing_note() {
+        let (handler, _dir) = make_handler().await;
+        let result = handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "ghost".to_string(),
+                new_name: "other".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!is_success(&result));
+        assert!(result_text(&result).contains("Note not found or destination already exists"));
+    }
+
+    #[tokio::test]
+    async fn rename_note_still_says_destination_exists_for_a_taken_name() {
+        let (handler, _dir) = make_handler().await;
+        for name in ["one", "two"] {
+            handler
+                .create_note(Parameters(CreateNoteParams {
+                    path: name.to_string(),
+                    content: "# N\n\nbody".to_string(),
+                }))
+                .await
+                .unwrap();
+        }
+        let result = handler
+            .rename_note(Parameters(RenameNoteParams {
+                path: "one".to_string(),
+                new_name: "two".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!is_success(&result));
+        assert!(result_text(&result).contains("Note not found or destination already exists"));
     }
 
     async fn set_prop(

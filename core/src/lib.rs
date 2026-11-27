@@ -99,8 +99,8 @@ pub use vault_results::{
 };
 pub use vault_search::{DateFilter, DateSource};
 pub use wiki::{
-    Catalogue, CatalogueEntry, Severity, SkippedSource, StampReport, WikiFinding, WikiInitEntry,
-    WikiInitOptions, WikiInitReport, WikiReport, WikiRule,
+    source_slug, Catalogue, CatalogueEntry, SaveSourceRequest, Severity, SkippedSource,
+    StampReport, WikiFinding, WikiInitEntry, WikiInitOptions, WikiInitReport, WikiReport, WikiRule,
 };
 
 use std::{

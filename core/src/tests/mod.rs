@@ -14,4 +14,5 @@ mod wiki_check;
 mod wiki_declaration;
 mod wiki_init;
 mod wiki_protection;
+mod wiki_save_source;
 mod wiki_stamp;

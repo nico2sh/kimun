@@ -14,6 +14,69 @@ pub(crate) fn body_hash(text: &str) -> String {
     format!("{:016x}", nfs::hash_text(text_below_frontmatter(&text)))
 }
 
+/// A web page, or other text, to save as a source note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveSourceRequest {
+    /// Where the text came from. It is stored as `source_url`.
+    pub url: String,
+    /// The title of the source. When `None`, the host of the URL is used.
+    pub title: Option<String>,
+    /// The kind of content, such as `text/markdown`. It is stored as
+    /// `content_type`.
+    pub content_type: String,
+    /// The text of the source, as Markdown.
+    pub markdown: String,
+}
+
+/// The longest slug, in characters.
+const SLUG_MAX_CHARS: usize = 60;
+
+/// The slug used when a title and its fallback both give nothing.
+const SLUG_DEFAULT: &str = "source";
+
+/// A note name made from `title`. It lower-cases the title and keeps the
+/// letters and digits of any script. Every other run of characters becomes one
+/// `-`, and `-` is trimmed at both ends. The result has at most 60 characters.
+/// When it is empty, the same is done with `fallback`. When that is empty too,
+/// the result is `source`.
+pub fn source_slug(title: &str, fallback: &str) -> String {
+    let slug = clean_slug(title);
+    if !slug.is_empty() {
+        return slug;
+    }
+    let slug = clean_slug(fallback);
+    if !slug.is_empty() {
+        return slug;
+    }
+    SLUG_DEFAULT.to_string()
+}
+
+fn clean_slug(text: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for c in text.to_lowercase().chars() {
+        if c.is_alphanumeric() {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(c);
+        } else {
+            pending_dash = true;
+        }
+    }
+    let cut: String = out.chars().take(SLUG_MAX_CHARS).collect();
+    cut.trim_matches('-').to_string()
+}
+
+/// The host of `url`, or `None` when it does not parse or has no host.
+pub(crate) fn url_host(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()?
+        .host_str()
+        .map(str::to_string)
+}
+
 /// What `wiki stamp` changed.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct StampReport {
