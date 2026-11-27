@@ -100,6 +100,12 @@ async fn init_with_custom_folders_writes_them_to_the_declaration() {
     assert!(vault.exists(&d.log_path()).await);
     let schema = vault.get_note_text(&d.schema_path()).await.unwrap();
     assert!(schema.contains("/raw"));
+    assert!(schema.contains("/kb/"));
+    assert!(
+        schema.contains(&d.log),
+        "the schema names the declared log {}:\n{schema}",
+        d.log
+    );
 }
 
 #[tokio::test]

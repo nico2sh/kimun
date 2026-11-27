@@ -138,7 +138,10 @@ async fn rename_directory_on_an_ancestor_of_sources_is_refused() {
     let (_d, vault, source) = vault_with(true, Some("/lib/sources")).await;
     let from = VaultPath::new("/lib");
     let to = VaultPath::new("/library");
-    assert_protected(vault.rename_directory(&from, &to).await, &from);
+    match vault.rename_directory(&from, &to).await {
+        Err(VaultError::SourceProtectedFolder { folder }) => assert_eq!(folder, from),
+        other => panic!("expected SourceProtectedFolder, got {other:?}"),
+    }
     assert!(vault.exists(&source).await);
     assert!(!vault.exists(&to).await);
 }
@@ -196,7 +199,16 @@ async fn rename_note_is_refused_when_a_source_links_to_it() {
     vault.create_note(&linker, "see [[page]]").await.unwrap();
 
     let to = VaultPath::new("/wiki/renamed.md");
-    assert_protected(vault.rename_note(&page, &to).await, &linker);
+    match vault.rename_note(&page, &to).await {
+        Err(VaultError::SourceProtectedByLink {
+            page: p,
+            linking_note: s,
+        }) => {
+            assert_eq!(p, page);
+            assert_eq!(s, linker);
+        }
+        other => panic!("expected SourceProtectedByLink, got {other:?}"),
+    }
     assert!(vault.exists(&page).await);
     assert!(!vault.exists(&to).await);
     assert_eq!(vault.get_note_text(&linker).await.unwrap(), "see [[page]]");
@@ -284,4 +296,37 @@ async fn source_match_ignores_case() {
         other => panic!("expected SourceProtected, got {other:?}"),
     }
     assert_eq!(vault.get_note_text(&upper).await.unwrap(), "source text");
+}
+
+#[tokio::test]
+async fn backlink_refusal_says_the_rename_would_rewrite_a_link() {
+    let (_d, vault, _source) = protected().await;
+    let page = VaultPath::new("/wiki/page.md");
+    vault.create_note(&page, "a page").await.unwrap();
+    let linker = VaultPath::new("/sources/linker.md");
+    vault.create_note(&linker, "see [[page]]").await.unwrap();
+    let err = vault
+        .rename_note(&page, &VaultPath::new("/wiki/renamed.md"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.user_message().unwrap(),
+        "Renaming /wiki/page.md would rewrite a link in /sources/linker.md. \
+         That note is in the sources folder that .kimun/wiki.toml protects. \
+         Automated edits cannot change it."
+    );
+}
+
+#[tokio::test]
+async fn ancestor_refusal_says_the_folder_holds_the_sources_folder() {
+    let (_d, vault, _source) = vault_with(true, Some("/research/sources")).await;
+    let err = vault
+        .rename_directory(&VaultPath::new("/research"), &VaultPath::new("/papers"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.user_message().unwrap(),
+        "/research holds the sources folder that .kimun/wiki.toml protects. \
+         Automated edits cannot change it."
+    );
 }

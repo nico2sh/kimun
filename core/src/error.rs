@@ -104,6 +104,26 @@ pub enum VaultError {
         /// The refused entry, or the note whose links a rename would rewrite.
         path: VaultPath,
     },
+    /// A note rename would rewrite a link inside a protected source. Nothing
+    /// was changed.
+    #[error(
+        "Renaming {page} would rewrite a link in {linking_note}. That note is in the sources folder that .kimun/wiki.toml protects. Automated edits cannot change it."
+    )]
+    SourceProtectedByLink {
+        /// The note the rename was asked for.
+        page: VaultPath,
+        /// The protected source that links to it.
+        linking_note: VaultPath,
+    },
+    /// An automated edit tried to change a folder that holds the protected
+    /// sources folder. Nothing was changed.
+    #[error(
+        "{folder} holds the sources folder that .kimun/wiki.toml protects. Automated edits cannot change it."
+    )]
+    SourceProtectedFolder {
+        /// The refused folder.
+        folder: VaultPath,
+    },
     /// A vault scan found paths that collide once compared case-insensitively.
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict {
@@ -180,6 +200,8 @@ impl VaultError {
             | VaultError::InvalidWikiDeclaration { .. }
             | VaultError::WikiNotDeclared
             | VaultError::SourceProtected { .. }
+            | VaultError::SourceProtectedByLink { .. }
+            | VaultError::SourceProtectedFolder { .. }
             | VaultError::InvalidProperty { .. } => Some(self.to_string()),
             // The user can act on this one: update the app.
             VaultError::DBError(e @ DBError::IndexNewer { .. }) => Some(e.to_string()),

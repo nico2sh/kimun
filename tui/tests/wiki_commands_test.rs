@@ -132,6 +132,32 @@ async fn wiki_check_json_has_rule_names_in_snake_case() {
         .map(|x| x["rule"].as_str().unwrap())
         .collect();
     assert!(rules.contains(&"unresolved_link"), "rules: {rules:?}");
+    let severity_of = |rule: &str| {
+        json["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["rule"] == rule)
+            .map(|x| x["severity"].as_str().unwrap().to_string())
+    };
+    assert_eq!(severity_of("unresolved_link").as_deref(), Some("problem"));
+}
+
+#[tokio::test]
+async fn wiki_check_json_marks_an_unstamped_source_as_info() {
+    let f = Fixture::new().await;
+    f.kimun(&["wiki", "init"]);
+    f.write("sources/a.md", "# Source\n\nraw text\n");
+    let check = f.kimun(&["wiki", "check", "--format", "json"]);
+    assert_eq!(check.status.code(), Some(0), "stdout: {}", stdout(&check));
+    let json: serde_json::Value = serde_json::from_str(&stdout(&check)).unwrap();
+    let unstamped = json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["rule"] == "unstamped")
+        .expect("an unstamped finding");
+    assert_eq!(unstamped["severity"], "info");
 }
 
 #[tokio::test]

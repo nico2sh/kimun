@@ -197,6 +197,32 @@ async fn stamp_goes_on_past_a_broken_source_and_lists_it() {
 }
 
 #[tokio::test]
+async fn stamp_skips_a_source_whose_frontmatter_cannot_be_edited() {
+    let (dir, vault, first) = vault_with(true, false, "first body\n").await;
+    let middle = VaultPath::new("/sources/b.md");
+    let last = VaultPath::new("/sources/c.md");
+    vault.create_note(&last, "last body\n").await.unwrap();
+    // Flow-style YAML parses, but a property edit is refused.
+    let flow = "---\n{title: x}\n---\nmiddle body\n";
+    let middle_file = dir.path().join("sources").join("b.md");
+    std::fs::write(&middle_file, flow).unwrap();
+
+    let report = vault.wiki_stamp().await.unwrap();
+    assert_eq!(report.stamped, vec![first.clone(), last.clone()]);
+    assert_eq!(report.skipped.len(), 1);
+    assert_eq!(report.skipped[0].path, middle);
+    let reason = &report.skipped[0].reason;
+    assert!(reason.contains("cannot be edited"), "{reason}");
+    assert_eq!(std::fs::read_to_string(&middle_file).unwrap(), flow);
+
+    let again = vault.wiki_stamp().await.unwrap();
+    assert!(again.stamped.is_empty());
+    assert_eq!(again.skipped.len(), 1);
+    assert_eq!(again.skipped[0].path, middle);
+    assert_eq!(std::fs::read_to_string(&middle_file).unwrap(), flow);
+}
+
+#[tokio::test]
 async fn stamp_writes_the_day_it_is_given() {
     let (_d, vault, source) = vault_with(true, false, "body\n").await;
     let day = chrono::NaiveDate::from_ymd_opt(2031, 7, 4).unwrap();

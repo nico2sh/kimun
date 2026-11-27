@@ -165,13 +165,17 @@ fn catalogue_text(catalogue: &Catalogue) -> String {
     for e in &catalogue.entries {
         let summary = e.summary.as_deref().map(one_line).unwrap_or_default();
         let page_type = e.page_type.as_deref().map(one_line).unwrap_or_default();
-        out.push_str(&format!(
-            "{}  {}  {}  {}\n",
+        // An empty type keeps its column so summaries line up. The line
+        // itself never ends in spaces.
+        let line = format!(
+            "{}  {}  {}  {}",
             e.path.to_bare_string(),
             one_line(&e.title),
             page_type,
             summary
-        ));
+        );
+        out.push_str(line.trim_end());
+        out.push('\n');
     }
     let more = catalogue.total.saturating_sub(catalogue.entries.len());
     if more > 0 {
@@ -299,5 +303,58 @@ mod tests {
             total: 1,
         };
         assert_eq!(catalogue_text(&c), "/wiki/a  A    first second\n");
+    }
+
+    fn entry(summary: Option<&str>, page_type: Option<&str>) -> CatalogueEntry {
+        CatalogueEntry {
+            path: VaultPath::new("/wiki/a.md"),
+            title: "A".into(),
+            summary: summary.map(str::to_string),
+            page_type: page_type.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn catalogue_text_has_no_trailing_whitespace() {
+        for (summary, page_type) in [
+            (None, None),
+            (None, Some("concept")),
+            (Some("s"), None),
+            (Some("  "), None),
+        ] {
+            let c = Catalogue {
+                entries: vec![entry(summary, page_type)],
+                total: 1,
+            };
+            let text = catalogue_text(&c);
+            for line in text.lines() {
+                assert_eq!(line, line.trim_end(), "{summary:?} {page_type:?}");
+            }
+        }
+        let c = Catalogue {
+            entries: vec![entry(None, Some("concept"))],
+            total: 1,
+        };
+        assert_eq!(catalogue_text(&c), "/wiki/a  A  concept\n");
+    }
+
+    #[test]
+    fn one_line_truncates_at_a_multi_byte_character_without_panicking() {
+        // Three bytes per character.
+        let three = "\u{20ac}".repeat(200);
+        let out = one_line(&three);
+        assert_eq!(out.chars().count(), SUMMARY_WIDTH);
+        assert!(out.ends_with("..."));
+        // A 4-byte emoji sits exactly at the cut.
+        let cut = SUMMARY_WIDTH - 3;
+        let emoji = format!("{}\u{1F600}{}", "a".repeat(cut - 1), "b".repeat(50));
+        let out = one_line(&emoji);
+        assert!(out.contains('\u{1F600}'));
+        assert!(out.ends_with("..."));
+        // An emoji just past the cut is dropped whole.
+        let past = format!("{}\u{1F600}{}", "a".repeat(cut), "b".repeat(50));
+        let out = one_line(&past);
+        assert!(!out.contains('\u{1F600}'));
+        assert!(out.ends_with("..."));
     }
 }

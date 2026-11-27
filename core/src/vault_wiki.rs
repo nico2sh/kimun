@@ -133,6 +133,12 @@ impl NoteVault {
                     reason: "The frontmatter does not parse. Fix it by hand, then stamp again."
                         .to_string(),
                 }),
+                Stamp::Uneditable(key) => report.skipped.push(SkippedSource {
+                    path,
+                    reason: format!(
+                        "The frontmatter cannot be edited to add {key}. Rewrite it as plain key: value lines, then stamp again."
+                    ),
+                }),
             }
         }
         Ok(report)
@@ -407,8 +413,9 @@ impl NoteVault {
         Ok(notes)
     }
 
-    /// Stamps one note. A note whose frontmatter does not parse is left
-    /// alone. A read or write error is still an error.
+    /// Stamps one note. A note whose frontmatter does not parse, or parses but
+    /// refuses the property edit, is left alone. A read or write error is
+    /// still an error.
     async fn stamp_note(
         &self,
         path: &VaultPath,
@@ -424,14 +431,24 @@ impl NoteVault {
             return Ok(Stamp::AlreadyStamped);
         }
         let hash = PropertyValue::Text(body_hash(&text));
+        // Both edits happen in memory. A refusal returns before anything is
+        // written, so the file stays as it was.
         let set = |text: &str, key: &str, value: &PropertyValue| {
-            NoteProperties::new(text, FrontmatterFormat::Yaml)
-                .set(key, value)
-                .map_err(|e| Self::frontmatter_error(path, key, e))
+            NoteProperties::new(text, FrontmatterFormat::Yaml).set(key, value)
         };
-        let mut updated = set(&text, CONTENT_HASH, &hash)?;
+        let refused = |key: &str, e| match Self::frontmatter_error(path, key, e) {
+            VaultError::InvalidProperty { .. } => Ok(Stamp::Uneditable(key.to_string())),
+            other => Err(other),
+        };
+        let mut updated = match set(&text, CONTENT_HASH, &hash) {
+            Ok(t) => t,
+            Err(e) => return refused(CONTENT_HASH, e),
+        };
         if value_of(&properties, INGESTED_AT).is_none() {
-            updated = set(&updated, INGESTED_AT, &PropertyValue::Date(today))?;
+            updated = match set(&updated, INGESTED_AT, &PropertyValue::Date(today)) {
+                Ok(t) => t,
+                Err(e) => return refused(INGESTED_AT, e),
+            };
         }
         self.save_note_unchecked(path, updated).await?;
         Ok(Stamp::Written)
@@ -443,6 +460,8 @@ enum Stamp {
     Written,
     AlreadyStamped,
     BrokenFrontmatter,
+    /// The frontmatter parses but refused an edit of this property.
+    Uneditable(String),
 }
 
 fn finding(rule: WikiRule, path: &VaultPath, message: String) -> WikiFinding {

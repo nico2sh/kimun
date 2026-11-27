@@ -49,8 +49,11 @@ impl NoteVault {
             return Ok(());
         };
         let dir = dir.flatten();
-        if dir.is_like(&sources) || dir.is_ancestor_of(&sources) || sources.is_ancestor_of(&dir) {
+        if dir.is_like(&sources) || sources.is_ancestor_of(&dir) {
             return Err(VaultError::SourceProtected { path: dir });
+        }
+        if dir.is_ancestor_of(&sources) {
+            return Err(VaultError::SourceProtectedFolder { folder: dir });
         }
         Ok(())
     }
@@ -67,7 +70,13 @@ impl NoteVault {
         };
         refuse_inside(&sources, from)?;
         for (entry, _) in self.get_backlinks(&from.flatten()).await? {
-            refuse_inside(&sources, &entry.path)?;
+            let source = entry.path.flatten();
+            if sources.is_ancestor_of(&source) {
+                return Err(VaultError::SourceProtectedByLink {
+                    page: from.flatten(),
+                    linking_note: source,
+                });
+            }
         }
         Ok(())
     }

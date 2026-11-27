@@ -127,3 +127,69 @@ async fn catalogue_ignores_notes_outside_the_wiki_folder() {
     let c = vault.wiki_catalogue(10).await.unwrap();
     assert_eq!(c.total, 1);
 }
+
+#[tokio::test]
+async fn catalogue_of_a_wiki_folder_that_does_not_exist_is_empty() {
+    let (dir, vault) = vault_with(true).await;
+    assert!(!dir.path().join("wiki").exists());
+    let c = vault.wiki_catalogue(10).await.unwrap();
+    assert!(c.entries.is_empty());
+    assert_eq!(c.total, 0);
+}
+
+#[tokio::test]
+async fn catalogue_limit_zero_lists_nothing_and_keeps_total() {
+    let (_d, vault) = vault_with(true).await;
+    add(&vault, "/wiki/a.md", "# A\n").await;
+    add(&vault, "/wiki/b.md", "# B\n").await;
+    let c = vault.wiki_catalogue(0).await.unwrap();
+    assert!(c.entries.is_empty());
+    assert_eq!(c.total, 2);
+}
+
+#[tokio::test]
+async fn catalogue_does_not_list_an_attachment_under_the_wiki_folder() {
+    let (_d, vault) = vault_with(true).await;
+    add(&vault, "/wiki/page.md", "# Page\n").await;
+    vault
+        .save_attachment(&VaultPath::new("/wiki/diagram.png"), b"png")
+        .await
+        .unwrap();
+    let c = vault.wiki_catalogue(10).await.unwrap();
+    assert_eq!(c.total, 1);
+    assert_eq!(c.entries[0].path, VaultPath::new("/wiki/page.md"));
+}
+
+#[tokio::test]
+async fn catalogue_lists_a_page_with_malformed_frontmatter_without_properties() {
+    let (dir, vault) = vault_with(true).await;
+    add(&vault, "/wiki/ok.md", "# Ok\n").await;
+    let wiki = dir.path().join("wiki");
+    std::fs::write(
+        wiki.join("broken.md"),
+        "---\nsummary: [unclosed\ntype: topic\n---\n# Broken\n",
+    )
+    .unwrap();
+    let c = vault.wiki_catalogue(10).await.unwrap();
+    assert_eq!(c.total, 2);
+    let broken = c
+        .entries
+        .iter()
+        .find(|e| e.path == VaultPath::new("/wiki/broken.md"))
+        .expect("the broken page is listed");
+    assert_eq!(broken.summary, None);
+    assert_eq!(broken.page_type, None);
+}
+
+#[tokio::test]
+async fn catalogue_summary_that_is_a_list_is_none() {
+    let (_d, vault) = vault_with(true).await;
+    add(
+        &vault,
+        "/wiki/listy.md",
+        "---\nsummary:\n  - one\n  - two\n---\n# Listy\n",
+    )
+    .await;
+    let c = vault.wiki_catalogue(10).await.unwrap();
+    assert_eq!(c.entries[0].summary, None);
+}
