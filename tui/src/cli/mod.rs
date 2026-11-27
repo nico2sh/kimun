@@ -19,12 +19,27 @@ impl std::fmt::Display for UserError {
 
 impl std::error::Error for UserError {}
 
+/// `wiki check` found a problem. It has already printed its report, so this
+/// prints nothing. It exists so the command can return normally, close its
+/// vault, and let the process exit with code 1.
+#[derive(Debug)]
+pub struct CheckFailed;
+
+impl std::fmt::Display for CheckFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("wiki check found problems")
+    }
+}
+
+impl std::error::Error for CheckFailed {}
+
 use clap::Subcommand;
 use color_eyre::eyre::{Result, eyre};
 use commands::JournalArgs;
 use commands::note_ops::NoteSubcommand;
 use commands::server::ServerSubcommand;
 use commands::skill::SkillSubcommand;
+use commands::wiki::WikiSubcommand;
 use commands::workspace::WorkspaceSubcommand;
 use helpers::{
     create_and_init_vault, load_and_resolve_workspace, load_settings, resolve_inbox_path,
@@ -83,6 +98,11 @@ pub enum CliCommand {
         #[arg(long, value_enum, default_value = "text")]
         format: OutputFormat,
     },
+    /// Set up and check an LLM-maintained wiki
+    Wiki {
+        #[command(subcommand)]
+        subcommand: WikiSubcommand,
+    },
     /// Check for a newer release and, where possible, self-update
     Update {
         /// Only check and report; do not download or install
@@ -112,7 +132,8 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
             let mut vault = NoteVault::new(
                 VaultConfig::new(workspace_path)
                     .with_index(cache_path)
-                    .with_backup(true),
+                    .with_backup(true)
+                    .with_protected_sources(true),
             )
             .await?;
             vault.set_inbox_path(kimun_core::nfs::VaultPath::new(&inbox_path));
@@ -164,6 +185,12 @@ pub async fn run_cli(command: CliCommand, config_path: Option<std::path::PathBuf
         CliCommand::Labels { format } => {
             let (vault, workspace_name) = create_and_init_vault(config_path).await?;
             let result = commands::labels::run(&vault, format, &workspace_name).await;
+            vault.close().await;
+            result
+        }
+        CliCommand::Wiki { subcommand } => {
+            let (vault, _workspace_name) = create_and_init_vault(config_path).await?;
+            let result = commands::wiki::run(subcommand, &vault).await;
             vault.close().await;
             result
         }

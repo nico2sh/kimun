@@ -46,8 +46,10 @@ impl NoteVault {
 
     /// Writes an attachment (raw bytes — e.g. an encoded PNG) to `path` under
     /// the workspace. Creates parent directories as needed. The attachment is
-    /// not added to the notes index.
+    /// not added to the notes index. Overwriting an existing source is
+    /// refused when source protection is on.
     pub async fn save_attachment(&self, path: &VaultPath, bytes: &[u8]) -> Result<(), VaultError> {
+        self.ensure_existing_not_protected(path).await?;
         nfs::save_attachment(self.workspace_path(), path, bytes).await?;
         Ok(())
     }
@@ -86,6 +88,7 @@ impl NoteVault {
     ) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
+        self.ensure_not_protected(&from).await?;
         nfs::rename_attachment(self.workspace_path(), &from, &to)
             .await
             .map_err(rename_dest_err)?;
@@ -96,6 +99,7 @@ impl NoteVault {
     /// are not indexed.
     pub async fn delete_attachment(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
+        self.ensure_not_protected(&path).await?;
         nfs::delete_attachment(self.workspace_path(), &path).await?;
         Ok(())
     }

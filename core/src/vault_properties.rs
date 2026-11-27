@@ -188,7 +188,7 @@ impl NoteVault {
     /// A malformed existing block is the note's problem
     /// ([`FSError::InvalidFrontmatter`]); a refused edit of a sound block is the
     /// request's ([`VaultError::InvalidProperty`]).
-    fn frontmatter_error(
+    pub(crate) fn frontmatter_error(
         path: &VaultPath,
         key: &str,
         e: properties::FrontmatterError,

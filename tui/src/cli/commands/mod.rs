@@ -10,6 +10,7 @@ pub mod search;
 pub mod server;
 pub mod skill;
 pub mod update;
+pub mod wiki;
 pub mod workspace;
 
 // Re-export for convenience

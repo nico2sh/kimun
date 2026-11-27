@@ -86,6 +86,24 @@ pub enum VaultError {
         /// What is wrong and, for an unknown source, which sources exist.
         message: String,
     },
+    /// `.kimun/wiki.toml` does not parse or breaks a declaration rule.
+    #[error("{message}")]
+    InvalidWikiDeclaration {
+        /// What is wrong. Names `.kimun/wiki.toml`.
+        message: String,
+    },
+    /// A wiki command ran in a vault that has no `.kimun/wiki.toml`.
+    #[error("This vault has no wiki declaration. Run kimun wiki init.")]
+    WikiNotDeclared,
+    /// An automated edit tried to change an existing entry in the sources
+    /// folder that the wiki declaration protects. Nothing was changed.
+    #[error(
+        "{path} is in the sources folder that .kimun/wiki.toml protects. Automated edits cannot change it."
+    )]
+    SourceProtected {
+        /// The refused entry, or the note whose links a rename would rewrite.
+        path: VaultPath,
+    },
     /// A vault scan found paths that collide once compared case-insensitively.
     #[error("Case-sensitivity conflicts detected in vault:\n{}", conflicts.join("\n"))]
     CaseConflict {
@@ -159,6 +177,9 @@ impl VaultError {
             | VaultError::TaskChanged { .. }
             | VaultError::InvalidRegex { .. }
             | VaultError::InvalidDateFilter { .. }
+            | VaultError::InvalidWikiDeclaration { .. }
+            | VaultError::WikiNotDeclared
+            | VaultError::SourceProtected { .. }
             | VaultError::InvalidProperty { .. } => Some(self.to_string()),
             // The user can act on this one: update the app.
             VaultError::DBError(e @ DBError::IndexNewer { .. }) => Some(e.to_string()),

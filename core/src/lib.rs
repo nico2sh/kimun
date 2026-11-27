@@ -62,6 +62,7 @@ mod vault_browse;
 mod vault_config;
 mod vault_dates;
 mod vault_entries;
+mod vault_guard;
 mod vault_journal;
 mod vault_links;
 mod vault_note_edits;
@@ -70,6 +71,8 @@ mod vault_properties;
 mod vault_results;
 mod vault_saved_searches;
 mod vault_search;
+mod vault_wiki;
+mod wiki;
 pub use index::file::IndexFile;
 pub use index::search_terms::{
     expand_bare_note_prefixes, query_has_unterminated_quote, query_token_spans, quote_query_term,
@@ -82,6 +85,7 @@ pub use index::{
 pub use nfs::pinned_notes::{PinOutcome, PinToggle, PINNED_NOTES_CAP};
 pub use nfs::saved_searches::{saved_search_name_matches, SavedSearch};
 pub use nfs::vault_id::VaultId;
+pub use nfs::wiki_declaration::WikiDeclaration;
 pub use nfs::EntryKind;
 pub use system::{image_extension, Host, ImageCache, SystemPath, IMAGE_CACHE_CAP};
 pub use vault_browse::{NotesValidation, VaultBrowseOptions, VaultBrowseOptionsBuilder};
@@ -94,6 +98,10 @@ pub use vault_results::{
     ResultType, SearchResult,
 };
 pub use vault_search::{DateFilter, DateSource};
+pub use wiki::{
+    Catalogue, CatalogueEntry, Severity, SkippedSource, StampReport, WikiFinding, WikiInitEntry,
+    WikiInitOptions, WikiInitReport, WikiReport, WikiRule,
+};
 
 use std::{
     collections::HashMap,
@@ -164,6 +172,9 @@ pub struct NoteVault {
     /// Whether destructive writes back up the previous content first. Mirrors
     /// [`VaultConfig::backup`]; see its docs.
     backup: bool,
+    /// Whether automated edits refuse to change existing entries in the
+    /// declared sources folder. Mirrors [`VaultConfig::protect_sources`].
+    protect_sources: bool,
     /// Per-note in-process write locks; see [`NoteLocks`]. Shared across
     /// clones.
     note_locks: NoteLocks,
@@ -188,6 +199,7 @@ impl NoteVault {
     pub async fn new(config: VaultConfig) -> Result<Self, VaultError> {
         debug!("Creating new vault Instance");
         let backup = config.backup;
+        let protect_sources = config.protect_sources;
         let workspace_path = config.workspace_path;
         if !workspace_path.exists() {
             return Err(VaultError::VaultPathNotFound {
@@ -211,6 +223,7 @@ impl NoteVault {
             inbox_path: VaultPath::new(DEFAULT_INBOX_PATH),
             index,
             backup,
+            protect_sources,
             note_locks: NoteLocks::default(),
             vault_id: Arc::new(tokio::sync::OnceCell::new()),
         };
@@ -532,7 +545,8 @@ impl NoteVault {
 
     /// Appends `text` to the note at `path`, creating it (with `default`
     /// content) when absent. The read and the write run under the per-note lock
-    /// so concurrent appends to the same note can't lose an update.
+    /// so concurrent appends to the same note can't lose an update. An
+    /// existing source is refused when source protection is on.
     pub async fn append_to_note(
         &self,
         path: &VaultPath,
@@ -540,13 +554,16 @@ impl NoteVault {
         default: Option<String>,
     ) -> Result<(), VaultError> {
         let _guard = self.lock_note(path).await;
+        // Checked before the create below: once the file exists, the guard
+        // could no longer tell a new source from an old one.
+        self.ensure_existing_not_protected(path).await?;
         let (existing, _created) = self.load_or_create_note(path, default).await?;
         let combined = if existing.is_empty() {
             text.to_string()
         } else {
             format!("{existing}\n{text}")
         };
-        self.save_note_unlocked(path, combined).await?;
+        self.save_note_unchecked(path, combined).await?;
         Ok(())
     }
 
@@ -565,7 +582,20 @@ impl NoteVault {
     /// Like [`save_note`] but assumes the caller already holds the per-note lock
     /// (see [`lock_note`]). Used by read-modify-write operations such as
     /// [`replace_in_note`] that hold the lock across both the read and the write.
+    /// Refuses an existing source when source protection is on.
     async fn save_note_unlocked<S: AsRef<str>>(
+        &self,
+        path: &VaultPath,
+        text: S,
+    ) -> Result<(NoteEntryData, NoteContentData), VaultError> {
+        self.ensure_existing_not_protected(path).await?;
+        self.save_note_unchecked(path, text).await
+    }
+
+    /// The write behind [`save_note_unlocked`] with no source check: back up,
+    /// write, and index. The caller holds the per-note lock and has made any
+    /// protection check that applies.
+    pub(crate) async fn save_note_unchecked<S: AsRef<str>>(
         &self,
         path: &VaultPath,
         text: S,

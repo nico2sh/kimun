@@ -4,6 +4,7 @@ pub mod pinned_notes;
 pub mod saved_searches;
 pub mod vault_id;
 mod vault_path;
+pub mod wiki_declaration;
 use std::{
     fmt::Display,
     hash::Hash,

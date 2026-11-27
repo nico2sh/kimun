@@ -263,6 +263,24 @@ impl<'t> NoteProperties<'t> {
         PropertySet::from_entries(self.formatter.parse(&block).unwrap_or_default())
     }
 
+    /// Whether the block parses. A note with no block parses.
+    pub(crate) fn parses(&self) -> bool {
+        self.span.is_none()
+            || self
+                .formatter
+                .parse(&crate::nfs::to_lf(self.block()))
+                .is_ok()
+    }
+
+    /// Whether `key` holds a list item that the readers drop because it is
+    /// not text, a number or a bool. Only a YAML block is checked. Any other
+    /// block gives false.
+    pub(crate) fn has_non_scalar_items(&self, key: &str) -> bool {
+        self.span.is_some()
+            && self.format == FrontmatterFormat::Yaml
+            && yaml_formatter::has_non_scalar_items(&crate::nfs::to_lf(self.block()), key)
+    }
+
     /// The note's text with `key` (already normalized) set to `value`.
     /// Strict: a malformed existing block is an error, never guessed at.
     pub(crate) fn set(&self, key: &str, value: &PropertyValue) -> Result<String, FrontmatterError> {

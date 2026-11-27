@@ -793,6 +793,16 @@ fn frontmatter_end_byte(text: &str) -> usize {
     frontmatter_bounds(text).map_or(0, |bounds| bounds.end)
 }
 
+/// The text below the frontmatter block, or all of `text` when it has no
+/// closed block. A leading byte-order mark is never part of the result.
+/// Tolerates both LF and CRLF.
+pub(crate) fn text_below_frontmatter(text: &str) -> &str {
+    match frontmatter_end_byte(text) {
+        0 => split_bom(text).1,
+        end => &text[end..],
+    }
+}
+
 /// Where a closed YAML/TOML frontmatter block sits in a note.
 pub(in crate::note) struct FrontmatterBounds<'t> {
     /// The fence, `---` or `+++` (without `\r`).

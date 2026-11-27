@@ -291,6 +291,19 @@ fn read_value(v: &Yaml) -> Option<PropertyValue> {
     }
 }
 
+/// True when `key` holds a list with an item that is not a scalar. An
+/// unquoted `[[name]]` item reads as a nested list, and the property readers
+/// drop it. A block that does not parse gives false.
+pub(super) fn has_non_scalar_items(block: &str, key: &str) -> bool {
+    let Ok(Some(root)) = root(block) else {
+        return false;
+    };
+    root.iter().any(|(k, v)| {
+        key_matches(k, key)
+            && matches!(v, Yaml::Array(items) if items.iter().any(|i| scalar_text(i).is_none()))
+    })
+}
+
 fn scalar_text(v: &Yaml) -> Option<String> {
     match v {
         Yaml::String(s) | Yaml::Real(s) => Some(s.clone()),

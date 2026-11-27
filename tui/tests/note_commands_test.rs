@@ -808,3 +808,37 @@ async fn test_note_prop_get_list_and_remove() {
         "+++\nn = 1\n+++\nbody\n"
     );
 }
+
+// --- source protection ---
+
+/// The real binary, so the test sees the exit code and the printed refusal.
+#[tokio::test]
+async fn test_note_overwrite_of_a_source_is_refused_with_exit_2() {
+    let config_dir = TempDir::new().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    let workspace_dir = TempDir::new().unwrap();
+    kimun_core::nfs::wiki_declaration::write_wiki_declaration(
+        &sys(workspace_dir.path()),
+        &kimun_core::WikiDeclaration::defaults(),
+    )
+    .await
+    .unwrap();
+    let source = workspace_dir.path().join("sources").join("a.md");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "source text").unwrap();
+    write_config(&config_path, workspace_dir.path()).await;
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_kimun"))
+        .args(["--config", config_path.to_str().unwrap()])
+        .args(["note", "overwrite", "/sources/a", "changed", "--force"])
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+    assert!(
+        stderr.contains("/sources/a.md is in the sources folder that .kimun/wiki.toml protects"),
+        "stderr: {stderr}"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), "source text");
+}

@@ -28,6 +28,11 @@ pub struct VaultConfig {
     /// a hidden in-vault backup directory before mutating it. The TUI leaves this
     /// off; the CLI and MCP server turn it on.
     pub backup: bool,
+    /// When `true`, automated edits refuse to change an existing note,
+    /// directory, or attachment in the sources folder that
+    /// `.kimun/wiki.toml` declares. The CLI and MCP server turn it on. The
+    /// TUI and GUI leave it off, so the person editing is never bound.
+    pub protect_sources: bool,
 }
 
 impl VaultConfig {
@@ -44,6 +49,7 @@ impl VaultConfig {
             workspace_path,
             index: None,
             backup: false,
+            protect_sources: false,
         }
     }
 
@@ -58,6 +64,13 @@ impl VaultConfig {
     /// (see the [`backup`](Self::backup) field).
     pub fn with_backup(mut self, backup: bool) -> Self {
         self.backup = backup;
+        self
+    }
+
+    /// Enables or disables source protection (see the
+    /// [`protect_sources`](Self::protect_sources) field).
+    pub fn with_protected_sources(mut self, protect: bool) -> Self {
+        self.protect_sources = protect;
         self
     }
 }

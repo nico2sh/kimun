@@ -502,6 +502,18 @@ _Avoid_: reader face (the superseded bespoke surface — the reveal is the share
 A real vault note created from a **Turn**'s answer: question as title, answer as body, each **Citation** converted to a `[[wikilink]]` to its source note — so the answer joins the vault's link graph and its provenance survives as **note links** (backlinks from the sources find it). Created through the normal new-note flow and edited in the normal editor; the **Ask workspace** never edits notes itself.
 _Avoid_: exported answer (it is not an export format, it is a note), answer note (ambiguous with a note that merely contains an answer).
 
+**Proposed action**:
+A change to the **Vault** that a **Turn**'s answer asks for, shown in the **Thread** as a card the user confirms or dismisses. The **Kimün server**'s model only proposes it, because the server never reads or writes the vault. The app runs it after confirmation. It uses the same core operation as the matching **agent connector** tool. It counts as an **automated edit**, so it produces a **backup**. Nothing runs before the user confirms.
+_Avoid_: tool call (the model fetching data inside the answer loop, which never changes the vault), command, suggestion (it has no action behind it).
+
+**Wiki declaration**:
+The optional file `.kimun/wiki.toml` that marks a **Vault** as an LLM-kept wiki. It names the folder of sources and the folder of wiki pages. It lists the properties that a wiki page requires. It gives the path of the **Wiki schema note**. It holds machine rules only and has a strict format. A vault with no declaration behaves as it does without the feature. It is hidden like the other per-vault files in `.kimun/`, so it never appears as a note.
+_Avoid_: wiki configuration (the file is not app configuration, because it travels with the notes), schema (that names the prose note).
+
+**Wiki schema note**:
+A normal, visible note that holds the wiki conventions in prose for the AI. It says, for example, how to name pages and what a page starts with. The **Wiki declaration** names its path. The user edits it like any note, and an agent or the **Kimün server**'s model reads it as guidance.
+_Avoid_: CLAUDE.md (that is one agent's file name, the schema note serves every agent), instructions.
+
 ### Indexing
 
 **NoteIndex**:

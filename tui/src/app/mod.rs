@@ -95,6 +95,10 @@ async fn run_cli_command(
     match crate::cli::run_cli(command, config).await {
         Ok(()) => Ok(ExitCode::SUCCESS),
         Err(report) => {
+            // `wiki check` printed its report already: only the exit code is left.
+            if report.downcast_ref::<crate::cli::CheckFailed>().is_some() {
+                return Ok(ExitCode::from(1));
+            }
             let user_message = report
                 .downcast_ref::<kimun_core::error::VaultError>()
                 .and_then(|ve| ve.user_message())

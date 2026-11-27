@@ -41,7 +41,9 @@ use std::fmt::Display;
 // Crate-internal whole-note operations (markdown pipeline, link rewriting).
 // The note module is the only door to the extractor: nothing outside `note/`
 // names `content_extractor` directly.
-pub(crate) use content_extractor::{process_image_links, replace_note_links};
+pub(crate) use content_extractor::{
+    process_image_links, replace_note_links, text_below_frontmatter,
+};
 
 use crate::nfs::VaultPath;
 

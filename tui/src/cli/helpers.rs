@@ -146,7 +146,8 @@ pub async fn create_and_init_vault_with_settings(
     let mut vault = NoteVault::new(
         VaultConfig::new(workspace_path)
             .with_index(cache_path)
-            .with_backup(true),
+            .with_backup(true)
+            .with_protected_sources(true),
     )
     .await?;
     let inbox = resolve_inbox_path(&settings);

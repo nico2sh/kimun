@@ -15,6 +15,7 @@ impl NoteVault {
     pub async fn delete_note(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_note()?;
+        self.ensure_not_protected(&path).await?;
         let _guard = self.lock_note(&path).await;
         self.backup_if_enabled(&path).await?;
 
@@ -35,6 +36,7 @@ impl NoteVault {
     pub async fn delete_directory(&self, path: &VaultPath) -> Result<(), VaultError> {
         let path = path.flatten();
         path.ensure_directory()?;
+        self.ensure_directory_not_protected(&path).await?;
 
         self.index
             .delete_directories(std::slice::from_ref(&path))
@@ -61,6 +63,7 @@ impl NoteVault {
     /// commit — is `NoteRename`'s (`note_rename.rs`); see its docs for the stage order and
     /// failure atomicity.
     pub async fn rename_note(&self, from: &VaultPath, to: &VaultPath) -> Result<(), VaultError> {
+        self.ensure_rename_not_protected(from).await?;
         NoteRename::new(
             &self.index,
             self.workspace_path(),
@@ -82,6 +85,7 @@ impl NoteVault {
     ) -> Result<(), VaultError> {
         let from = from.flatten();
         let to = to.flatten();
+        self.ensure_directory_not_protected(&from).await?;
 
         nfs::rename_directory(self.workspace_path(), &from, &to)
             .await
