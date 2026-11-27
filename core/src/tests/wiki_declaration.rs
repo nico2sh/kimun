@@ -162,6 +162,33 @@ fn validate_rejects_a_log_or_schema_inside_the_sources_folder() {
 }
 
 #[test]
+fn validate_rejects_a_log_and_a_schema_that_are_the_same_note() {
+    let mut d = WikiDeclaration::defaults();
+    d.log = "/wiki/schema.md".to_string();
+    let message = d.validate().unwrap_err();
+    assert!(message.contains("different"), "got: {message}");
+    // The same note written two ways is still the same note.
+    let mut d = WikiDeclaration::defaults();
+    d.log = "/Wiki/./Schema.md".to_string();
+    assert!(d.validate().is_err());
+    // Two different notes stay valid.
+    assert!(WikiDeclaration::defaults().validate().is_ok());
+}
+
+#[test]
+fn defaults_name_the_log_and_the_schema_inside_the_wiki_folder() {
+    let d = WikiDeclaration::defaults();
+    assert_eq!(
+        d.log_path(),
+        d.wiki_path().append(&VaultPath::note_path_from("log"))
+    );
+    assert_eq!(
+        d.schema_path(),
+        d.wiki_path().append(&VaultPath::note_path_from("schema"))
+    );
+}
+
+#[test]
 fn validate_rejects_a_log_with_a_character_that_is_not_allowed() {
     let mut d = WikiDeclaration::defaults();
     d.log = "/wiki/lo?g.md".to_string();

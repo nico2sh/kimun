@@ -30,11 +30,14 @@ pub struct WikiDeclaration {
 impl WikiDeclaration {
     /// The default layout: `/sources`, `/wiki`, `/wiki/log.md`, `/wiki/schema.md`.
     pub fn defaults() -> Self {
+        let wiki = VaultPath::new("/wiki");
         Self {
             sources: "/sources".to_string(),
-            wiki: "/wiki".to_string(),
-            log: "/wiki/log.md".to_string(),
-            schema: "/wiki/schema.md".to_string(),
+            log: wiki.append(&VaultPath::note_path_from("log")).to_string(),
+            schema: wiki
+                .append(&VaultPath::note_path_from("schema"))
+                .to_string(),
+            wiki: wiki.to_string(),
             required_properties: ["summary", "sources", "updated"]
                 .into_iter()
                 .map(String::from)
@@ -116,6 +119,9 @@ impl WikiDeclaration {
         }
         if !schema.is_note() {
             return Err(format!("schema must be a note path, got '{}'", self.schema));
+        }
+        if log.is_like(&schema) {
+            return Err("log and schema must be different notes".to_string());
         }
         if sources.is_ancestor_of(&log) || sources.is_ancestor_of(&schema) {
             return Err("log and schema must not be inside the sources folder".to_string());

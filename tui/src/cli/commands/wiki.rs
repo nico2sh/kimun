@@ -40,7 +40,9 @@ pub enum WikiSubcommand {
         #[arg(long, value_enum, default_value = "text")]
         format: OutputFormat,
     },
-    /// Give every source without a content hash its hash and ingest date
+    /// Give every source without a content hash its hash and ingest date.
+    /// If a source cannot be stamped, the command skips it, prints it, and
+    /// exits with code 1.
     Stamp,
 }
 
