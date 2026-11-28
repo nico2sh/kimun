@@ -58,7 +58,7 @@ unicode-segmentation = "1"
 png = "0.18"
 # Main-article extraction and HTML to markdown for `kimun wiki clip`. It limits
 # nesting depth, attributes per tag and parse time, and drops unsafe link targets.
-page2md = "0.2"
+page2md = "0.2.1"
 # `src/ropetext` — the built-in editing engine, a workspace crate until it was
 # folded in (see its module docs).
 # default-features = false drops `unicode_lines`/`cr_lines`, leaving `\n` as the
