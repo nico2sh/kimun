@@ -91,6 +91,10 @@ impl fmt::Display for ClipError {
             ),
             Self::Timeout => write!(f, "The page took too long to load."),
             Self::TooManyRedirects => write!(f, "The address redirected too many times."),
+            Self::Status(code @ (401 | 403 | 429 | 451)) => write!(
+                f,
+                "The server answered with status {code}. Some sites refuse automated requests."
+            ),
             Self::Status(code) => write!(f, "The server answered with status {code}."),
             Self::UnsupportedType(kind) => {
                 write!(f, "This kind of content cannot be clipped: {kind}.")
@@ -103,6 +107,10 @@ impl fmt::Display for ClipError {
 
 impl std::error::Error for ClipError {}
 
+/// A page with this many words or fewer counts as very short. A login page or
+/// a block page that a server sends with status 200 is usually this short.
+pub const THIN_PAGE_WORDS: usize = 100;
+
 /// What a clip saved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipOutcome {
@@ -110,6 +118,16 @@ pub struct ClipOutcome {
     pub path: VaultPath,
     /// The title the page gave, or the host of its address.
     pub title: String,
+    /// How many words the saved text has.
+    pub words: usize,
+}
+
+impl ClipOutcome {
+    /// Whether the text is so short that the page may be a login page or a
+    /// block page.
+    pub fn is_thin(&self) -> bool {
+        self.words <= THIN_PAGE_WORDS
+    }
 }
 
 /// Why `clip_url` failed: the page could not be used, or the vault refused it.
@@ -190,6 +208,7 @@ pub async fn clip_url(
     })
     .await??;
     let title = article.title.clone().or_else(|| host_of(url));
+    let words = article.markdown.split_whitespace().count();
     let path = vault
         .save_source(&SaveSourceRequest {
             url: url.to_string(),
@@ -201,6 +220,7 @@ pub async fn clip_url(
     Ok(ClipOutcome {
         path,
         title: title.unwrap_or_default(),
+        words,
     })
 }
 
@@ -336,8 +356,54 @@ mod tests {
         let text = vault.get_note_text(&outcome.path).await.unwrap();
         assert!(text.contains("[[x]] <b>raw</b>"), "{text}");
         assert!(text.contains("content_type: text/markdown"), "{text}");
-        // No page title: the host stands in for it.
-        assert_eq!(outcome.title, "127.0.0.1");
+        // The first heading of the text is the title.
+        assert_eq!(outcome.title, "Notes");
+    }
+
+    #[tokio::test]
+    async fn clip_url_counts_the_words_of_the_saved_page() {
+        let (vault, _dir) = wiki_vault(true).await;
+        let server = serve(false, |_| vec![ok_page(&article())]);
+        let url = format!("{}/post", server.base);
+        let outcome = clip_url(&vault, &url, &FetchPolicy::for_tests())
+            .await
+            .unwrap();
+        assert!(outcome.words > THIN_PAGE_WORDS, "{}", outcome.words);
+        assert!(!outcome.is_thin());
+    }
+
+    #[tokio::test]
+    async fn clip_url_flags_a_very_short_page() {
+        let (vault, _dir) = wiki_vault(true).await;
+        let page = reply(
+            "200 OK",
+            &["Content-Type: text/plain"],
+            b"Log in to continue",
+        );
+        let server = serve(false, |_| vec![page]);
+        let url = format!("{}/wall", server.base);
+        let outcome = clip_url(&vault, &url, &FetchPolicy::for_tests())
+            .await
+            .unwrap();
+        assert_eq!(outcome.words, 4);
+        assert!(outcome.is_thin());
+    }
+
+    #[test]
+    fn a_refused_request_hints_that_sites_block_automated_requests() {
+        for code in [401, 403, 429, 451] {
+            let m = ClipError::Status(code).to_string();
+            assert_eq!(
+                m,
+                format!(
+                    "The server answered with status {code}. Some sites refuse automated requests."
+                )
+            );
+        }
+        for code in [404, 410, 500, 503] {
+            let m = ClipError::Status(code).to_string();
+            assert_eq!(m, format!("The server answered with status {code}."));
+        }
     }
 
     #[tokio::test]

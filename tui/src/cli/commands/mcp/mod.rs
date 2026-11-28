@@ -2966,6 +2966,7 @@ mod tests {
         let text = plain_text(&result);
         assert!(text.starts_with("Saved /sources/"), "{text}");
         assert!(text.contains("Title: My Post"), "{text}");
+        assert!(text.contains(" words)"), "{text}");
         let report = handler.vault.wiki_check().await.unwrap();
         assert_eq!(report.problems(), 0, "{:?}", report.findings);
     }

@@ -100,12 +100,14 @@ The command exits with code 2. Creating a new source is allowed. You can still e
 kimun wiki clip https://example.com/article
 ```
 
-The command fetches the page, keeps the main content, converts it to Markdown, and saves it as a new source. It prints the path and the title:
+The command fetches the page, keeps the main content, converts it to Markdown, and saves it as a new source. It prints the path, the number of words that it saved, and the title:
 
 ```
-Saved /sources/2026-11-28-example-domain
+Saved /sources/2026-11-28-example-domain (28 words)
 Title: Example Domain
 ```
+
+If the page has 100 words or fewer, the command adds a line that starts with `Warning`. A login page or a block page that a site sends as a normal page is usually this short. Open the note and make sure that it has the text you wanted.
 
 The note name is the date and a short form of the title. The note starts with these properties:
 
@@ -116,7 +118,7 @@ The note name is the date and a short form of the title. The note starts with th
 | `content_type` | The kind of content, such as `text/html`. |
 | `content_hash` | A fingerprint of the text. |
 
-The first heading of the note is the title of the page.
+The first heading of the note is the title of the page. For a Markdown page, the title is the `title` of its front matter block, or else its first heading, or else the file name of the address. For a plain text page, the title is the `title` of a front matter block, if the text starts with one. Otherwise it is the file name of the address, such as `rfc2616.txt`. If the address has no file name, the title is the host. Kimün removes a front matter block from the saved text of both kinds, because the note has its own properties.
 
 If you clip the same address again, Kimün saves a second note with the ending `_0`. It does not check for duplicates. Look at the sources folder first.
 
@@ -145,7 +147,7 @@ When a clip fails, the command exits with code 2 and gives one of these messages
 | `The page is larger than the limit of N MB.` | The page is over a size limit. |
 | `The page took too long to load.` | A time limit passed. |
 | `The address redirected too many times.` | The page redirected more than five times. |
-| `The server answered with status N.` | The server gave an error, such as 404. |
+| `The server answered with status N.` | The server gave an error, such as 404. For 401, 403, 429, and 451, the message adds that some sites refuse automated requests. |
 | `This kind of content cannot be clipped: ...` | The page is not HTML, Markdown, or plain text. |
 | `The page has no readable content.` | Kimün found no text. |
 | `The network request failed: ...` | The connection failed. |

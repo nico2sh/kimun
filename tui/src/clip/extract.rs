@@ -47,10 +47,11 @@ pub fn extract_markdown(
         .filter(|m| !m.is_empty());
     let article = match media.as_deref() {
         Some("text/html" | "application/xhtml+xml") => html_to_article(body, url)?,
-        Some("text/markdown" | "text/plain") => passthrough(body),
+        Some("text/markdown") => markdown_article(body, url),
+        Some("text/plain") => text_article(body, url),
         Some(other) => return Err(ClipError::UnsupportedType(other.to_string())),
         None if body.trim_start().starts_with('<') => html_to_article(body, url)?,
-        None => passthrough(body),
+        None => text_article(body, url),
     };
     if article.markdown.trim().is_empty() {
         return Err(ClipError::NoContent);
@@ -58,11 +59,136 @@ pub fn extract_markdown(
     Ok(article)
 }
 
-fn passthrough(body: &str) -> Article {
+/// Plain text, as it came, except for a front matter block at the very start
+/// (some servers send a Markdown page as plain text). The title is the `title`
+/// of that block, else the file name of the address, for example
+/// `rfc2616.txt`. Otherwise the caller uses the host. A `#` line is not a
+/// heading here: in plain text it is as likely a comment in a script.
+fn text_article(body: &str, url: &str) -> Article {
+    let (front_title, rest) = split_front_matter(body);
     Article {
-        title: None,
-        markdown: body.to_string(),
+        title: front_title.or_else(|| file_name(url)),
+        markdown: rest.to_string(),
     }
+}
+
+/// Markdown, as it came, except for a front matter block at the very start.
+/// The block is dropped, because the saved note has its own properties. Its
+/// `title` is the title. Without one, the title is the first heading, then
+/// the file name of the address.
+fn markdown_article(body: &str, url: &str) -> Article {
+    let (front_title, rest) = split_front_matter(body);
+    let title = front_title
+        .or_else(|| first_heading(rest))
+        .or_else(|| file_name(url));
+    Article {
+        title,
+        markdown: rest.to_string(),
+    }
+}
+
+/// How many lines a front matter block can have before it counts as no block.
+const MAX_FRONT_MATTER_LINES: usize = 200;
+
+/// Split a leading front matter block (`---` lines around `key: value` lines)
+/// from the text. Returns its `title`, if it has one, and the text after it.
+/// A text that starts with a `---` rule but has no such block comes back whole.
+fn split_front_matter(body: &str) -> (Option<String>, &str) {
+    let text = body.strip_prefix('\u{feff}').unwrap_or(body);
+    let mut lines = text.split_inclusive('\n');
+    let Some(first) = lines.next() else {
+        return (None, body);
+    };
+    if first.trim_end() != "---" {
+        return (None, body);
+    }
+    let mut offset = first.len();
+    let mut block: Vec<&str> = Vec::new();
+    for line in lines {
+        offset += line.len();
+        let line = line.trim_end();
+        if line == "---" || line == "..." {
+            if !looks_like_yaml(&block) {
+                return (None, body);
+            }
+            let title = block.iter().find_map(|l| title_value(l));
+            return (title, text[offset..].trim_start_matches(['\n', '\r']));
+        }
+        block.push(line);
+        if block.len() > MAX_FRONT_MATTER_LINES {
+            break;
+        }
+    }
+    (None, body)
+}
+
+/// Whether the lines read as the inside of a front matter block: each
+/// non-empty line is a `key:` line, a list item, a comment, or indented.
+fn looks_like_yaml(block: &[&str]) -> bool {
+    let mut any = false;
+    for line in block.iter().filter(|l| !l.trim().is_empty()) {
+        let indented = line.starts_with([' ', '\t']);
+        let item = line.starts_with("- ") || line.starts_with('#');
+        if !(indented || item || is_key_line(line)) {
+            return false;
+        }
+        any = any || is_key_line(line);
+    }
+    any
+}
+
+/// `key:` or `key: value`, with a plain word as the key.
+fn is_key_line(line: &str) -> bool {
+    line.split_once(':').is_some_and(|(key, _)| {
+        !key.is_empty()
+            && key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    })
+}
+
+/// The value of a top-level `title:` line, without quotes.
+fn title_value(line: &str) -> Option<String> {
+    let value = line.strip_prefix("title:")?.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
+        .unwrap_or(value);
+    clean_title(unquoted)
+}
+
+/// How many lines at the start of a text are searched for a heading.
+const MAX_HEADING_SEARCH_LINES: usize = 200;
+
+/// The text of the first `# ` heading, outside code fences.
+fn first_heading(text: &str) -> Option<String> {
+    let mut in_fence = false;
+    for line in text.lines().take(MAX_HEADING_SEARCH_LINES) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        } else if !in_fence && let Some(heading) = line.strip_prefix("# ") {
+            return clean_title(heading);
+        }
+    }
+    None
+}
+
+/// The last part of the address path, decoded, when it looks like a file name:
+/// it has an extension that is one to five letters or digits, and the name is
+/// not just an extension.
+fn file_name(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let segment = parsed.path_segments()?.next_back()?;
+    let decoded = percent_encoding::percent_decode_str(segment)
+        .decode_utf8()
+        .ok()?;
+    let (stem, extension) = decoded.rsplit_once('.')?;
+    let extension_ok =
+        (1..=5).contains(&extension.len()) && extension.chars().all(|c| c.is_ascii_alphanumeric());
+    (extension_ok && !stem.is_empty())
+        .then(|| clean_title(&decoded))
+        .flatten()
 }
 
 fn html_to_article(body: &str, url: &str) -> Result<Article, ClipError> {
@@ -172,12 +298,104 @@ mod tests {
     }
 
     #[test]
-    fn markdown_and_plain_pass_through() {
+    fn markdown_and_plain_pass_through_unchanged() {
         for ct in ["text/markdown", "text/plain"] {
             let a = extract_markdown("# Hi\n\n[[x]] <b>raw</b>\n", Some(ct), URL).unwrap();
             assert_eq!(a.markdown, "# Hi\n\n[[x]] <b>raw</b>\n");
-            assert_eq!(a.title, None);
         }
+    }
+
+    fn md(body: &str, url: &str) -> Article {
+        extract_markdown(body, Some("text/markdown"), url).unwrap()
+    }
+
+    fn plain(body: &str, url: &str) -> Article {
+        extract_markdown(body, Some("text/plain"), url).unwrap()
+    }
+
+    #[test]
+    fn markdown_takes_its_title_from_the_first_heading() {
+        let a = md("Intro line\n\n## Not it\n\n# Real Title\n\ntext", URL);
+        assert_eq!(a.title.as_deref(), Some("Real Title"));
+        let a = md("# Hi\n\ntext", URL);
+        assert_eq!(a.title.as_deref(), Some("Hi"));
+    }
+
+    #[test]
+    fn markdown_front_matter_gives_the_title_and_is_dropped() {
+        let a = md(
+            "---\ntitle: Quick Start\nsidebar: x\n---\n\nWelcome to the docs.\n",
+            URL,
+        );
+        assert_eq!(a.title.as_deref(), Some("Quick Start"));
+        assert_eq!(a.markdown, "Welcome to the docs.\n");
+        assert!(!a.markdown.contains("sidebar"), "{}", a.markdown);
+    }
+
+    #[test]
+    fn a_quoted_front_matter_title_loses_its_quotes_and_beats_a_heading() {
+        let a = md("---\ntitle: \"The Real One\"\n---\n# Other\n\ntext", URL);
+        assert_eq!(a.title.as_deref(), Some("The Real One"));
+        let a = md("---\ntitle: 'Single'\n---\ntext", URL);
+        assert_eq!(a.title.as_deref(), Some("Single"));
+    }
+
+    #[test]
+    fn front_matter_without_a_title_is_still_dropped() {
+        let a = md("---\ntags: [a, b]\n---\n# Heading\n\ntext", URL);
+        assert_eq!(a.title.as_deref(), Some("Heading"));
+        assert_eq!(a.markdown, "# Heading\n\ntext");
+    }
+
+    #[test]
+    fn a_leading_rule_is_not_front_matter() {
+        let body = "---\n\nSome text\n\n---\n\nmore text";
+        let a = md(body, URL);
+        assert_eq!(a.markdown, body);
+    }
+
+    #[test]
+    fn markdown_without_a_heading_or_front_matter_uses_the_file_name() {
+        let a = md("Just words.", "https://example.com/docs/README.md");
+        assert_eq!(a.title.as_deref(), Some("README.md"));
+    }
+
+    #[test]
+    fn plain_text_uses_the_file_name_of_the_address() {
+        let a = plain(
+            "Network Working Group",
+            "https://www.rfc-editor.org/rfc/rfc2616.txt",
+        );
+        assert_eq!(a.title.as_deref(), Some("rfc2616.txt"));
+    }
+
+    #[test]
+    fn plain_text_with_front_matter_gives_the_title_and_drops_the_block() {
+        // Some servers send a Markdown page as text/plain, front matter included.
+        let a = plain(
+            "---\ntitle: Quick Start\n---\n\nWelcome.\n",
+            "https://example.com/learn",
+        );
+        assert_eq!(a.title.as_deref(), Some("Quick Start"));
+        assert_eq!(a.markdown, "Welcome.\n");
+    }
+
+    #[test]
+    fn plain_text_does_not_take_a_hash_line_for_a_title() {
+        let a = plain(
+            "# comment in a script\necho hi\n",
+            "https://example.com/run.sh",
+        );
+        assert_eq!(a.title.as_deref(), Some("run.sh"));
+    }
+
+    #[test]
+    fn a_file_name_is_decoded_and_needs_an_extension() {
+        let a = plain("x", "https://example.com/a%20b.txt");
+        assert_eq!(a.title.as_deref(), Some("a b.txt"));
+        assert_eq!(plain("x", "https://example.com/post/1").title, None);
+        assert_eq!(plain("x", "https://example.com/").title, None);
+        assert_eq!(plain("x", "https://example.com/.hidden").title, None);
     }
 
     #[test]

@@ -113,11 +113,19 @@ pub async fn run(subcommand: WikiSubcommand, vault: &NoteVault) -> Result<()> {
 
 /// What `wiki clip` prints after a page is saved.
 pub(crate) fn clip_text(outcome: &ClipOutcome) -> String {
-    format!(
-        "Saved {}\nTitle: {}\n",
+    let words = count(outcome.words, "word", "words");
+    let mut out = format!(
+        "Saved {} ({words})\nTitle: {}\n",
         outcome.path.to_bare_string(),
         outcome.title
-    )
+    );
+    if outcome.is_thin() {
+        out.push_str(&format!(
+            "Warning: the page has only {words}. It may be a login page or a block page. \
+             Open the note and make sure that it has the text you wanted.\n"
+        ));
+    }
+    out
 }
 
 pub(crate) fn init_text(report: &WikiInitReport) -> String {
@@ -264,6 +272,40 @@ mod tests {
             notes_checked,
             findings,
         }
+    }
+
+    fn outcome(words: usize) -> ClipOutcome {
+        ClipOutcome {
+            path: VaultPath::new("/sources/2026-11-28-a-page.md"),
+            title: "A page".to_string(),
+            words,
+        }
+    }
+
+    #[test]
+    fn clip_text_shows_the_word_count() {
+        assert_eq!(
+            clip_text(&outcome(250)),
+            "Saved /sources/2026-11-28-a-page (250 words)\nTitle: A page\n"
+        );
+        assert_eq!(
+            clip_text(&outcome(1)),
+            "Saved /sources/2026-11-28-a-page (1 word)\nTitle: A page\n\
+             Warning: the page has only 1 word. It may be a login page or a block page. \
+             Open the note and make sure that it has the text you wanted.\n"
+        );
+    }
+
+    #[test]
+    fn clip_text_warns_about_a_very_short_page() {
+        let text = clip_text(&outcome(8));
+        assert!(
+            text.contains(
+                "Warning: the page has only 8 words. It may be a login page or a block page."
+            ),
+            "{text}"
+        );
+        assert!(!clip_text(&outcome(crate::clip::THIN_PAGE_WORDS + 1)).contains("Warning"),);
     }
 
     #[test]

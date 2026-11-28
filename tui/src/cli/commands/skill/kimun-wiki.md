@@ -48,7 +48,9 @@ Give each wiki page a name that differs from every source name. If a page and a 
 - The page can have at most 20 MB, and an HTML page at most 2 MB.
 - It does not run JavaScript. A page that needs a login, or that builds its text with a script, gives little or no content.
 
-If a clip fails, tell the user the message and the reason. Do not try the same address again. If the page needs a login or a script, ask the user to paste the text, and save it as a source with `create_note`.
+If a clip fails, tell the user the message and the reason. Do not try the same address again. If the page needs a login or a script, or the message says that the site refuses automated requests, ask the user to paste the text, and save it as a source with `create_note`.
+
+The result tells you how many words the page has. If it has a `Warning` line, the page is very short. It is usually a login page or a block page. Tell the user, and do not ingest the page unless the user says to.
 
 A second clip of the same address makes a second note with the ending `_0`. Before you clip, call `list_notes` on the sources folder. If the page is already there, use that note.
 
