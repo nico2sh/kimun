@@ -224,6 +224,7 @@ Press `F4` or `Ctrl+,`. The list on the left has these sections:
 - Display: the editor font and size, reduce motion, the rail position, and the update check.
 - Keyboard: change the shortcuts. See [Keyboard shortcuts](#keyboard-shortcuts).
 - Sorting, Indexing, Editor, and Server: the other settings.
+- Wiki: set up a wiki or change its folders. See [In the desktop app](@/using-kimun/wiki.md#in-the-desktop-app).
 
 ![The Display section of Preferences](/img/gui-preferences.png)
 

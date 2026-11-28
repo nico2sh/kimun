@@ -510,6 +510,8 @@ _Avoid_: tool call (the model fetching data inside the answer loop, which never 
 The optional file `.kimun/wiki.toml` that marks a **Vault** as an LLM-kept wiki. It names the folder of sources and the folder of wiki pages. It lists the properties that a wiki page requires. It gives the path of the **Wiki schema note**. It holds machine rules only and has a strict format. A vault with no declaration behaves as it does without the feature. It is hidden like the other per-vault files in `.kimun/`, so it never appears as a note.
 _Avoid_: wiki configuration (the file is not app configuration, because it travels with the notes), schema (that names the prose note).
 
+The **GUI** edits it in Preferences, Wiki, and in the "Set up wiki" palette row. Both act at once, outside the Save draft.
+
 **Wiki schema note**:
 A normal, visible note that holds the wiki conventions in prose for the AI. It says, for example, how to name pages and what a page starts with. The **Wiki declaration** names its path. The user edits it like any note, and an agent or the **Kimün server**'s model reads it as guidance.
 _Avoid_: CLAUDE.md (that is one agent's file name, the schema note serves every agent), instructions.

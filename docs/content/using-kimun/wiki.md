@@ -233,6 +233,40 @@ With an AI agent that has a scheduler, give it a task such as this one:
 
 > Every Monday, call `wiki_check`. Fix each problem that it names. Then tell me what you fixed and what is still open.
 
+## In the desktop app
+
+The desktop app sets up a wiki and changes its folders. It has no screen for the other wiki commands.
+
+To set up a wiki, open Preferences and choose Wiki. The section comes after Indexing. It shows five fields:
+
+- Sources folder
+- Wiki folder
+- Log note
+- Schema note
+- Required properties
+
+The fields start with the defaults of `kimun wiki init`. Separate the required properties with commas. If you change the wiki folder, the log note and the schema note follow it, unless you edited them.
+
+If the vault is not a wiki, the button reads `Set up wiki`. Click it to create the declaration, the folders, and the two notes. Below the button, one line for each folder and note says `Created` or `Kept`.
+
+If the vault is a wiki, the fields show the saved declaration and the button reads `Apply`. Click it to save your changes. Apply creates what is missing and never moves a note. The old folders and their notes stay where they are.
+
+If you change the sources folder, the section tells you before you click. The old folder is no longer protected, and the new folder is. If the schema note exists, Apply does not change its text. Edit it so that it names the new layout.
+
+If the file `.kimun/wiki.toml` has a mistake, the section shows the message. Fix the fields and click `Set up wiki`. The button replaces the file.
+
+If the vault already has a folder with the name of the sources folder, Kimün uses it as the sources folder. From then on, Kimün protects it from automated edits.
+
+The section acts at once. Save and Cancel do not apply to it, because the declaration is stored with your notes.
+
+To set up a wiki with the defaults, open the command palette and run `Set up wiki`. The palette tells you the result in one line:
+
+- `Wiki set up: created ...` lists the items that it made.
+- `This vault is already a wiki. Change its folders in Preferences, Wiki.` means that nothing was missing.
+- `The wiki declaration has a mistake. Fix it in Preferences, Wiki.` means that the file needs a repair.
+
+If you deleted the wiki folder by accident, open Preferences, Wiki and click `Apply`. You can also run `Set up wiki` in the palette. Both make the folder again.
+
 ## Work with an AI agent
 
 The [MCP server](@/using-kimun/ai-mcp-server.md) has one tool for each wiki command: `wiki_init`, `wiki_check`, `wiki_catalogue`, `wiki_stamp`, and `wiki_clip`. The tool `vault_info` tells the agent whether the vault is a wiki and where the folders are. The tools give the same text as the commands.
