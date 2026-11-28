@@ -24,7 +24,7 @@ Do not change the schema note unless the user asks.
 1. Get the source into the sources folder.
    - For a web page, call `wiki_clip` with the https address (`kimun wiki clip URL`). It saves the page and gives the path. See "Save a web page".
    - For text the user gave you, call `create_note` in the sources folder. Then call `wiki_stamp` (`kimun wiki stamp`). It adds `content_hash` and `ingested_at`.
-2. Read the whole source with `show_note`.
+2. Read the whole source with `show_note`. If the source is long, list its headings with `get_chunks` and an empty `section`. Then read it one section at a time.
 3. Find the pages that the source touches. Use `wiki_catalogue` (`kimun wiki catalogue`) and `search_notes`.
 4. Update those pages. If a concept has no page, create one in the wiki folder.
 5. On every page that you touch, set the required properties. A page needs `summary`, `sources`, and `updated` unless the declaration says otherwise.

@@ -22,7 +22,7 @@ Use this method to answer questions about the notes in a Kimün vault. It works 
 
 1. For a time reference, call `vault_info`. It reports today's date and the date keys you can use. Choose a date range and state the range in your answer.
 2. For an open question, try `semantic_search` first. If the tool reports that no server is set up, use `search_notes`. For exact words, labels or properties, use `search_notes`.
-3. Decide from the result list which notes to read. Read only those notes. Use `get_chunks` to read one section of a long note. Use `show_note` to read a whole note.
+3. Decide from the result list which notes to read. Read only those notes. Use `get_chunks` with a `section` heading name to read one section of a long note. Pass an empty `section` to list its headings first. Use `show_note` to read a whole note.
 4. When a note points to another note, follow the link. Use `get_outlinks` for the notes it links to. Use `get_backlinks` for the notes that link to it.
 5. Put the note path next to each claim in your answer. Say which parts of the answer do not come from the notes.
 

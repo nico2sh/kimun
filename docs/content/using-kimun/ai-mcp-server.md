@@ -41,7 +41,7 @@ Then restart your AI app.
 These tools work without a Kimün server:
 
 - `search_notes` searches by words, labels, properties, and links. It also filters by date, with `date_from`, `date_to`, and `date_key`.
-- `get_chunks` reads one section of a note. `show_note` reads a whole note.
+- `get_chunks` reads one section of a note. Give it a heading name in `section`, and it returns the text under that heading. An empty `section` lists the headings. `show_note` reads a whole note.
 - `list_notes` lists the notes in a folder.
 - `get_backlinks` and `get_outlinks` show which notes link to a note, and which notes it links to.
 - `get_properties`, `set_property`, and `remove_property` read and change the properties of a note.

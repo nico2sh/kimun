@@ -16,7 +16,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use color_eyre::eyre::{Result, eyre};
-use kimun_core::note::{FrontmatterFormat, NoteMetadata, PropertyInput, PropertyKind};
+use kimun_core::note::{
+    ContentChunk, FrontmatterFormat, NoteMetadata, PropertyInput, PropertyKind,
+};
 use kimun_core::{NoteVault, nfs::VaultPath};
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
@@ -127,6 +129,48 @@ pub struct BacklinksParams {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ChunksParams {
     pub path: String,
+    /// A heading name. Only the chunks under that heading come back, its
+    /// subsections included. The match ignores case and surrounding spaces.
+    /// An empty text lists the headings of the note and returns no body text.
+    #[serde(default)]
+    pub section: Option<String>,
+}
+
+/// The heading path of a chunk, as `A > B > C`. Empty when it has no heading.
+fn breadcrumb_text(chunk: &ContentChunk) -> String {
+    chunk
+        .breadcrumb
+        .replace(kimun_core::note::BREADCRUMB_SEP, " > ")
+}
+
+/// Whether one heading of the chunk's path is `name`, ignoring case and
+/// surrounding spaces.
+fn breadcrumb_has(chunk: &ContentChunk, name: &str) -> bool {
+    chunk
+        .breadcrumb
+        .split(kimun_core::note::BREADCRUMB_SEP)
+        .any(|heading| heading.trim().to_lowercase() == name.to_lowercase())
+}
+
+/// The chunks as text: each one after its heading path, blank line between.
+fn chunk_lines(chunks: &[&ContentChunk]) -> String {
+    chunks
+        .iter()
+        .map(|c| format!("[{}] {}", breadcrumb_text(c), c.text.trim()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The heading paths of the chunks, one for each line, each path once, in
+/// the order of the note. `None` when no chunk has a heading.
+fn heading_lines(chunks: &[&ContentChunk]) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    let paths: Vec<String> = chunks
+        .iter()
+        .map(|c| breadcrumb_text(c))
+        .filter(|path| !path.is_empty() && seen.insert(path.clone()))
+        .collect();
+    (!paths.is_empty()).then(|| paths.join("\n"))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -860,7 +904,9 @@ impl KimunHandler {
         )]))
     }
 
-    #[tool(description = "Return the content chunks (sections) of a note as JSON.")]
+    #[tool(
+        description = "Return the content chunks (sections) of a note, each after its heading path. Without section, every chunk comes back. To read one part of a long note, pass section with a heading name: only the chunks under that heading come back, its subsections included (case does not matter). Pass an empty section to list the headings of the note, with no body text."
+    )]
     async fn get_chunks(
         &self,
         Parameters(p): Parameters<ChunksParams>,
@@ -872,24 +918,34 @@ impl KimunHandler {
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let mut lines: Vec<String> = Vec::new();
-        for chunks in chunks_map.values() {
-            for chunk in chunks {
-                let breadcrumb = chunk
-                    .breadcrumb
-                    .replace(kimun_core::note::BREADCRUMB_SEP, " > ");
-                lines.push(format!("[{}] {}", breadcrumb, chunk.text.trim()));
-            }
-        }
-
-        if lines.is_empty() {
+        let chunks: Vec<&ContentChunk> = chunks_map.values().flatten().collect();
+        if chunks.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
                 "No chunks found.",
             )]));
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            lines.join("\n\n"),
-        )]))
+        let text = match p.section.as_deref().map(str::trim) {
+            None => chunk_lines(&chunks),
+            Some("") => {
+                heading_lines(&chunks).unwrap_or_else(|| "This note has no headings.".to_string())
+            }
+            Some(name) => {
+                let picked: Vec<&ContentChunk> = chunks
+                    .iter()
+                    .copied()
+                    .filter(|c| breadcrumb_has(c, name))
+                    .collect();
+                if picked.is_empty() {
+                    let headings = heading_lines(&chunks)
+                        .unwrap_or_else(|| "This note has no headings.".to_string());
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "No section named \"{name}\". Headings of this note:\n{headings}"
+                    ))]));
+                }
+                chunk_lines(&picked)
+            }
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
     #[tool(
@@ -2230,6 +2286,7 @@ mod tests {
         let result = handler
             .get_chunks(Parameters(ChunksParams {
                 path: "chunked".to_string(),
+                section: None,
             }))
             .await
             .unwrap();
@@ -2249,10 +2306,99 @@ mod tests {
         let result = handler
             .get_chunks(Parameters(ChunksParams {
                 path: "missing/note".to_string(),
+                section: None,
             }))
             .await;
         // Just verify it returned something without panicking
         let _ = result;
+    }
+
+    /// A note with nested headings, for the `section` tests.
+    const SECTIONED: &str = "# Title\n\n## Alpha\n\ntext of alpha\n\n### Alpha child\n\ntext of the child\n\n## Beta\n\ntext of beta";
+
+    async fn chunks_of(
+        handler: &KimunHandler,
+        path: &str,
+        section: Option<&str>,
+    ) -> CallToolResult {
+        handler
+            .get_chunks(Parameters(ChunksParams {
+                path: path.to_string(),
+                section: section.map(str::to_string),
+            }))
+            .await
+            .unwrap()
+    }
+
+    async fn sectioned_handler() -> (KimunHandler, tempfile::TempDir) {
+        let (handler, dir) = make_handler().await;
+        handler
+            .create_note(Parameters(CreateNoteParams {
+                path: "sectioned".to_string(),
+                content: SECTIONED.to_string(),
+            }))
+            .await
+            .unwrap();
+        (handler, dir)
+    }
+
+    #[tokio::test]
+    async fn get_chunks_with_a_section_returns_only_that_section_and_its_children() {
+        let (handler, _dir) = sectioned_handler().await;
+        let result = chunks_of(&handler, "sectioned", Some("Alpha")).await;
+        assert!(is_success(&result));
+        let text = plain_text(&result);
+        assert!(text.contains("text of alpha"), "{text}");
+        assert!(text.contains("text of the child"), "{text}");
+        assert!(!text.contains("text of beta"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn get_chunks_section_matches_a_child_heading_alone() {
+        let (handler, _dir) = sectioned_handler().await;
+        let text = plain_text(&chunks_of(&handler, "sectioned", Some("Alpha child")).await);
+        assert!(text.contains("text of the child"), "{text}");
+        assert!(!text.contains("text of alpha"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn get_chunks_section_ignores_case_and_surrounding_spaces() {
+        let (handler, _dir) = sectioned_handler().await;
+        let text = plain_text(&chunks_of(&handler, "sectioned", Some("  bETa ")).await);
+        assert!(text.contains("text of beta"), "{text}");
+        assert!(!text.contains("text of alpha"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn get_chunks_with_an_unknown_section_is_an_error_that_lists_the_headings() {
+        let (handler, _dir) = sectioned_handler().await;
+        let result = chunks_of(&handler, "sectioned", Some("Gamma")).await;
+        assert_eq!(result.is_error, Some(true));
+        let text = plain_text(&result);
+        assert!(text.contains("No section named \"Gamma\""), "{text}");
+        for heading in ["Title", "Alpha", "Alpha child", "Beta"] {
+            assert!(text.contains(heading), "{heading} missing: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn get_chunks_with_an_empty_section_lists_the_headings_without_the_text() {
+        let (handler, _dir) = sectioned_handler().await;
+        let result = chunks_of(&handler, "sectioned", Some("")).await;
+        assert!(is_success(&result));
+        let text = plain_text(&result);
+        assert!(text.contains("Title > Alpha > Alpha child"), "{text}");
+        assert!(text.contains("Title > Beta"), "{text}");
+        assert!(!text.contains("text of"), "no body text: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_chunks_without_a_section_still_returns_every_chunk() {
+        let (handler, _dir) = sectioned_handler().await;
+        let text = plain_text(&chunks_of(&handler, "sectioned", None).await);
+        for body in ["text of alpha", "text of the child", "text of beta"] {
+            assert!(text.contains(body), "{body} missing: {text}");
+        }
     }
 
     // ---- Resource tests ----
