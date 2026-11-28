@@ -15,6 +15,7 @@
 //! its views again, so FILES lists the new folders.
 
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -44,6 +45,28 @@ pub(crate) const WIKI_APPLY_ID: &str = "preferences-wiki-apply";
 pub(crate) const WIKI_RESULT_ID: &str = "preferences-wiki-result";
 /// Why the fields are off.
 pub(crate) const WIKI_INERT_ID: &str = "preferences-wiki-inert";
+/// What a wiki is.
+pub(crate) const WIKI_INTRO_ID: &str = "preferences-wiki-intro";
+/// The words of the declaration reader, in their own surface.
+pub(crate) const WIKI_DETAIL_ID: &str = "preferences-wiki-detail";
+/// What the button does.
+pub(crate) const WIKI_BUTTON_NOTE_ID: &str = "preferences-wiki-button-note";
+
+/// What a wiki is, at the top of the section.
+const INTRO: [&str; 3] = [
+    "A wiki is a set of notes that an AI agent writes and keeps up to date from your sources.",
+    "You collect raw sources, such as saved web pages. The agent reads them and writes the wiki pages.",
+    "Kimün saves web pages as sources, protects the sources from automated edits, and checks the wiki for mistakes.",
+];
+
+/// The note under the button for a vault that is not a wiki.
+const SET_UP_NOTE: &str = "Set up wiki makes the two folders and the two notes above, and marks this vault as a wiki. It never changes a note that exists.";
+
+/// The note under the button for a wiki.
+const APPLY_NOTE: &str = "Apply saves these values. It makes any folder or note that is missing. It never moves or deletes a note.";
+
+/// Above the words of the declaration reader.
+const DETAIL_HEAD: &str = "The reader said:";
 
 /// The state line while the declaration is read.
 const READING: &str = "Reading the wiki settings.";
@@ -67,13 +90,43 @@ impl WikiField {
         WikiField::Properties,
     ];
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             WikiField::Sources => "Sources folder",
             WikiField::Wiki => "Wiki folder",
             WikiField::Log => "Log note",
             WikiField::Schema => "Schema note",
             WikiField::Properties => "Required properties",
+        }
+    }
+
+    /// What the field is for.
+    fn hint(self) -> &'static str {
+        match self {
+            WikiField::Sources => {
+                "Raw material goes here, such as saved web pages. Kimün protects this folder from automated edits."
+            }
+            WikiField::Wiki => {
+                "The pages that the agent writes and keeps up to date from your sources."
+            }
+            WikiField::Log => "A note where the agent adds one entry for each piece of work.",
+            WikiField::Schema => {
+                "A note with the rules for the agent: page names, properties, and how to read a source."
+            }
+            WikiField::Properties => {
+                "Every wiki page needs these properties. The wiki check reports a page that lacks one. Separate the names with commas."
+            }
+        }
+    }
+
+    /// The element id of the field's hint.
+    pub(crate) fn hint_id(self) -> &'static str {
+        match self {
+            WikiField::Sources => "preferences-wiki-hint-sources",
+            WikiField::Wiki => "preferences-wiki-hint-wiki",
+            WikiField::Log => "preferences-wiki-hint-log",
+            WikiField::Schema => "preferences-wiki-hint-schema",
+            WikiField::Properties => "preferences-wiki-hint-properties",
         }
     }
 
@@ -421,7 +474,13 @@ impl PreferencesView {
                 .bg(theme::background(t))
                 .border_color(theme::divider(t))
                 .text_color(theme::foreground(t));
-            field(f.label(), input, None::<AnyElement>, t).into_any_element()
+            let hint = div()
+                .id(f.hint_id())
+                .test_support()
+                .role(Role::Label)
+                .aria_label(f.hint())
+                .child(note(f.hint(), t));
+            field(f.label(), input, [hint], t).into_any_element()
         });
         let error = (!off).then(|| pane.settings.error()).flatten().map(|e| {
             div()
@@ -432,6 +491,54 @@ impl PreferencesView {
                 .text_xs()
                 .text_color(theme::error(t))
                 .child(e)
+        });
+        let detail = pane
+            .settings
+            .detail()
+            .filter(|_| pane.loading.is_none())
+            .map(|text| {
+                let mono = cx.theme().mono_font_family.clone();
+                // One row for each line, so the pointer under the faulty
+                // text of the reader stays under it in the monospace font.
+                let rows = text.lines().map(|line| {
+                    let line = if line.is_empty() { "\u{a0}" } else { line };
+                    div().child(line.to_string())
+                });
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(note(DETAIL_HEAD, t))
+                    .child(
+                        div()
+                            .id(WIKI_DETAIL_ID)
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(text.to_string())
+                            .flex()
+                            .flex_col()
+                            .p_3()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme::divider(t))
+                            .bg(theme::panel_background(t))
+                            .font_family(mono)
+                            .text_xs()
+                            .text_color(theme::foreground(t))
+                            .children(rows),
+                    )
+            });
+        let button_note = (!no_vault && pane.loading.is_none()).then(|| {
+            let text = match pane.settings.state() {
+                WikiState::Wiki(_) => APPLY_NOTE,
+                _ => SET_UP_NOTE,
+            };
+            div()
+                .id(WIKI_BUTTON_NOTE_ID)
+                .test_support()
+                .role(Role::Label)
+                .aria_label(text)
+                .child(note(text, t))
         });
         let schema_exists = pane.loaded.as_ref().is_some_and(|l| l.schema_exists);
         let effect = pane.settings.effect_note(schema_exists);
@@ -466,12 +573,24 @@ impl PreferencesView {
             .gap_4()
             .child(
                 div()
+                    .id(WIKI_INTRO_ID)
+                    .test_support()
+                    .role(Role::Label)
+                    .aria_label(INTRO.join(" "))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(INTRO.iter().map(|line| para(*line, t))),
+            )
+            .child(
+                div()
                     .id(WIKI_STATE_ID)
                     .test_support()
                     .role(Role::Label)
                     .aria_label(state_line.clone())
                     .child(para(state_line, t)),
             )
+            .children(detail)
             .children(no_vault.then(|| {
                 div()
                     .id(WIKI_INERT_ID)
@@ -494,6 +613,7 @@ impl PreferencesView {
                         })),
                 ),
             )
+            .children(button_note)
             .children(outcome)
             .into_any_element()
     }

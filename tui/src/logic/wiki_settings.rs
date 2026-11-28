@@ -207,9 +207,20 @@ impl WikiSettings {
         lines
     }
 
+    /// The words of the reader for a declaration that cannot be read, as they
+    /// came, with their line breaks. A frontend can show them apart from the
+    /// state line, in a monospace font, so the pointer under the faulty text
+    /// stays under it.
+    pub fn detail(&self) -> Option<&str> {
+        match &self.state {
+            WikiState::Broken(message) => Some(message),
+            _ => None,
+        }
+    }
+
     pub fn state_line(&self) -> String {
         match &self.state {
-            WikiState::Broken(message) => message.clone(),
+            WikiState::Broken(_) => "Kimün could not read the wiki declaration.".to_string(),
             WikiState::Wiki(_) => "This vault is a wiki.".to_string(),
             WikiState::NoVault => "No vault is open.".to_string(),
             WikiState::NotAWiki => "This vault is not a wiki.".to_string(),
@@ -388,10 +399,18 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_declaration_starts_from_the_defaults_and_shows_its_message() {
+    fn a_broken_declaration_starts_from_the_defaults_and_keeps_its_message_as_detail() {
         let s = WikiSettings::new(WikiState::Broken("wiki.toml is not valid".into()));
         assert_eq!(s.declaration().unwrap(), WikiDeclaration::defaults());
-        assert_eq!(s.state_line(), "wiki.toml is not valid");
+        assert_eq!(s.state_line(), "Kimün could not read the wiki declaration.");
+        assert_eq!(s.detail(), Some("wiki.toml is not valid"));
+    }
+
+    #[test]
+    fn only_a_broken_declaration_has_a_detail() {
+        assert_eq!(WikiSettings::new(WikiState::NoVault).detail(), None);
+        assert_eq!(WikiSettings::new(WikiState::NotAWiki).detail(), None);
+        assert_eq!(WikiSettings::new(WikiState::Wiki(saved())).detail(), None);
     }
 
     #[test]

@@ -253,7 +253,7 @@ If the vault is a wiki, the fields show the saved declaration and the button rea
 
 If you change the sources folder, the section tells you before you click. The old folder is no longer protected, and the new folder is. If the schema note exists, Apply does not change its text. Edit it so that it names the new layout.
 
-If the file `.kimun/wiki.toml` has a mistake, the section shows the message. Fix the fields and click `Set up wiki`. The button replaces the file.
+If the file `.kimun/wiki.toml` has a mistake, the section says so. It shows the words of the file reader in a box with a monospace font, so the pointer under the faulty text lines up. Fix the fields and click `Set up wiki`. The button replaces the file.
 
 If the vault already has a folder with the name of the sources folder, Kimün uses it as the sources folder. From then on, Kimün protects it from automated edits.
 

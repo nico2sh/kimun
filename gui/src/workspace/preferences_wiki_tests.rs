@@ -18,8 +18,9 @@ use kimun_notes::logic::wiki_settings::{Loaded, WikiState};
 use tokio::runtime::Runtime;
 
 use super::preferences::wiki::{
-    WIKI_APPLY_ID, WIKI_EFFECT_ID, WIKI_ERROR_ID, WIKI_INERT_ID, WIKI_LOG_ID, WIKI_PROPERTIES_ID,
-    WIKI_RESULT_ID, WIKI_SCHEMA_ID, WIKI_SOURCES_ID, WIKI_STATE_ID, WIKI_WIKI_ID, WikiField,
+    WIKI_APPLY_ID, WIKI_BUTTON_NOTE_ID, WIKI_DETAIL_ID, WIKI_EFFECT_ID, WIKI_ERROR_ID,
+    WIKI_INERT_ID, WIKI_INTRO_ID, WIKI_LOG_ID, WIKI_PROPERTIES_ID, WIKI_RESULT_ID, WIKI_SCHEMA_ID,
+    WIKI_SOURCES_ID, WIKI_STATE_ID, WIKI_WIKI_ID, WikiField,
 };
 use super::preferences::{Section, section_id};
 use super::preferences_tests::{on_vault, settle, vault};
@@ -205,7 +206,12 @@ fn a_broken_declaration_shows_its_message_and_the_defaults(cx: &mut TestAppConte
     std::fs::write(root(&v).join(".kimun").join("wiki.toml"), "not = [valid").unwrap();
     let s = wiki_section(cx, &rt, &v);
     let state = label(&s, WIKI_STATE_ID, cx).unwrap();
-    assert!(state.contains("wiki.toml"), "{state}");
+    assert_eq!(state, "Kimün could not read the wiki declaration.");
+    // The parser's words sit in their own surface, one row for each line,
+    // so the pointer under the faulty text stays under it.
+    let detail = label(&s, WIKI_DETAIL_ID, cx).unwrap();
+    assert!(detail.contains("wiki.toml"), "{detail}");
+    assert!(detail.lines().count() > 1, "{detail}");
     assert_eq!(value(&s, WikiField::Sources, cx), "/sources");
     assert_eq!(label(&s, WIKI_APPLY_ID, cx).as_deref(), Some("Set up wiki"));
     assert!(!s.pf_disabled(WIKI_APPLY_ID, cx));
@@ -404,6 +410,45 @@ fn changing_the_sources_folder_shows_the_protection_note_before_the_apply(cx: &m
     type_into(&s, WikiField::Sources, "/wiki/raw", cx);
     assert!(s.pf_shows(WIKI_ERROR_ID, cx));
     assert!(s.pf_disabled(WIKI_APPLY_ID, cx));
+    settle(&rt, cx);
+}
+
+/// The section says what a wiki is, what each field is for, and what the
+/// button does. Only a broken declaration shows the parser's words.
+#[gpui_kit::test]
+fn the_section_explains_the_wiki_the_fields_and_the_button(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = wiki_section(cx, &rt, &v);
+    let intro = label(&s, WIKI_INTRO_ID, cx).unwrap();
+    assert!(intro.contains("A wiki is a set of notes"), "{intro}");
+    for field in WikiField::ALL {
+        let hint = label(&s, field.hint_id(), cx);
+        assert!(hint.is_some_and(|h| !h.is_empty()), "{}", field.label());
+    }
+    let sources = label(&s, WikiField::Sources.hint_id(), cx).unwrap();
+    assert!(sources.contains("protects"), "{sources}");
+    let button = label(&s, WIKI_BUTTON_NOTE_ID, cx).unwrap();
+    assert!(button.contains("Set up wiki"), "{button}");
+    assert!(
+        !s.pf_shows(WIKI_DETAIL_ID, cx),
+        "no parser words without a mistake"
+    );
+    settle(&rt, cx);
+}
+
+/// For a wiki, the note under the button describes Apply instead.
+#[gpui_kit::test]
+fn the_note_under_the_button_describes_apply_for_a_wiki(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    make_wiki(&rt, &v);
+    let s = wiki_section(cx, &rt, &v);
+    let button = label(&s, WIKI_BUTTON_NOTE_ID, cx).unwrap();
+    assert!(button.contains("Apply"), "{button}");
+    assert!(button.contains("never moves or deletes"), "{button}");
     settle(&rt, cx);
 }
 
