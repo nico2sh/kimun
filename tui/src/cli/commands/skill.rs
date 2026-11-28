@@ -18,6 +18,8 @@ use crate::cli::UserError;
 
 /// The bytes of `skills/kimun-cli/SKILL.md`. CI checks that they match.
 const CLI_SKILL: &str = include_str!("skill/kimun-cli.md");
+/// The bytes of `skills/kimun-wiki/SKILL.md`. CI checks that they match.
+const WIKI_SKILL: &str = include_str!("skill/kimun-wiki.md");
 /// The bytes of `skills/kimun-ask/SKILL.md` before the guidance text. CI checks
 /// that this text followed by `guidance.md` matches the repository skill.
 const ASK_FRONTMATTER: &str = include_str!("skill/kimun-ask.frontmatter.md");
@@ -45,6 +47,8 @@ pub enum SkillName {
     Ask,
     /// The kimun-cli skill
     Cli,
+    /// The kimun-wiki skill
+    Wiki,
 }
 
 impl SkillName {
@@ -52,6 +56,7 @@ impl SkillName {
         match self {
             SkillName::Ask => "kimun-ask",
             SkillName::Cli => "kimun-cli",
+            SkillName::Wiki => "kimun-wiki",
         }
     }
 }
@@ -64,7 +69,7 @@ pub struct EmbeddedSkill {
 }
 
 /// The skills this binary carries.
-pub fn embedded_skills() -> [EmbeddedSkill; 2] {
+pub fn embedded_skills() -> [EmbeddedSkill; 3] {
     let ask = [ASK_FRONTMATTER.as_bytes(), GUIDANCE.as_bytes()].concat();
     [
         EmbeddedSkill {
@@ -74,6 +79,10 @@ pub fn embedded_skills() -> [EmbeddedSkill; 2] {
         EmbeddedSkill {
             name: SkillName::Cli.folder(),
             files: vec![("SKILL.md", CLI_SKILL.as_bytes().to_vec())],
+        },
+        EmbeddedSkill {
+            name: SkillName::Wiki.folder(),
+            files: vec![("SKILL.md", WIKI_SKILL.as_bytes().to_vec())],
         },
     ]
 }
@@ -259,16 +268,24 @@ mod tests {
     }
 
     #[test]
-    fn install_into_dir_writes_both_skills() {
+    fn embedded_wiki_skill_equals_the_repository_file() {
+        let s = skill("kimun-wiki");
+        assert_eq!(s.files.len(), 1);
+        assert_eq!(s.files[0].0, "SKILL.md");
+        assert_eq!(s.files[0].1, repo_file("skills/kimun-wiki/SKILL.md"));
+    }
+
+    #[test]
+    fn install_into_dir_writes_every_skill() {
         let tmp = TempDir::new().unwrap();
         let dir = abs(tmp.path());
         let (ok, text) = run_install(None, &opts(&dir, None, false));
         assert!(ok, "{text}");
-        for name in ["kimun-ask", "kimun-cli"] {
+        for name in ["kimun-ask", "kimun-cli", "kimun-wiki"] {
             let written = std::fs::read(dir.join(name).join("SKILL.md")).unwrap();
             assert_eq!(written, skill(name).files[0].1);
         }
-        assert_eq!(text.lines().count(), 2, "{text}");
+        assert_eq!(text.lines().count(), 3, "{text}");
         assert!(text.lines().all(|l| l.contains("written")), "{text}");
     }
 
@@ -279,6 +296,18 @@ mod tests {
         let (ok, text) = run_install(None, &opts(&dir, Some(SkillName::Ask), false));
         assert!(ok, "{text}");
         assert!(dir.join("kimun-ask").join("SKILL.md").exists());
+        assert!(!dir.join("kimun-cli").exists());
+        assert_eq!(text.lines().count(), 1, "{text}");
+    }
+
+    #[test]
+    fn only_wiki_writes_one_skill() {
+        let tmp = TempDir::new().unwrap();
+        let dir = abs(tmp.path());
+        let (ok, text) = run_install(None, &opts(&dir, Some(SkillName::Wiki), false));
+        assert!(ok, "{text}");
+        assert!(dir.join("kimun-wiki").join("SKILL.md").exists());
+        assert!(!dir.join("kimun-ask").exists());
         assert!(!dir.join("kimun-cli").exists());
         assert_eq!(text.lines().count(), 1, "{text}");
     }
@@ -352,6 +381,7 @@ mod tests {
         let claude = home.join(".claude").join("skills");
         assert!(claude.join("kimun-ask").join("SKILL.md").exists());
         assert!(claude.join("kimun-cli").join("SKILL.md").exists());
+        assert!(claude.join("kimun-wiki").join("SKILL.md").exists());
         assert!(!home.join(".agents").exists());
         let skipped: Vec<&str> = text.lines().filter(|l| l.contains("Skipped")).collect();
         assert_eq!(skipped.len(), 1, "{text}");
@@ -382,7 +412,7 @@ mod tests {
         run_install(None, &opts(&dir, None, false));
         let (ok, text) = run_install(None, &opts(&dir, None, false));
         assert!(ok, "{text}");
-        assert_eq!(text.lines().count(), 2, "{text}");
+        assert_eq!(text.lines().count(), 3, "{text}");
         assert!(text.lines().all(|l| l.contains("unchanged")), "{text}");
     }
 
@@ -416,6 +446,10 @@ mod tests {
             let SkillSubcommand::Install { only, .. } =
                 parse(&["skill", "install", "--only", "ask"]).unwrap();
             assert_eq!(only, Some(SkillName::Ask));
+
+            let SkillSubcommand::Install { only, .. } =
+                parse(&["skill", "install", "--only", "wiki"]).unwrap();
+            assert_eq!(only, Some(SkillName::Wiki));
 
             let SkillSubcommand::Install { only, dir, force } =
                 parse(&["skill", "install", "--dir", "X", "--force"]).unwrap();

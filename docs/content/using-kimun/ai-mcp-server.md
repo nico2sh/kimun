@@ -48,13 +48,18 @@ These tools work without a Kimün server:
 - `create_note`, `append_note`, `replace_in_note`, `overwrite_note`, and `delete_note` write notes.
 - `rename_note` and `move_note` rename or move a note. Kimün updates the links in your other notes.
 - `journal` adds to your journal. `quick_note` saves a note to your inbox.
-- `vault_info` gives today's date, the date keys, and the state of the Kimün server.
+- `vault_info` gives today's date, the date keys, the state of the Kimün server, and whether the vault is a [wiki](@/using-kimun/wiki.md).
+- `wiki_init`, `wiki_check`, `wiki_catalogue`, `wiki_stamp`, and `wiki_clip` work with a wiki. They do the same as the `kimun wiki` commands. `wiki_clip` is the only tool that reaches the network. It saves a web page as a source, and it refuses addresses that are not public https addresses. See [Wiki](@/using-kimun/wiki.md).
 
 This tool needs a Kimün server:
 
 - `semantic_search` finds notes by meaning. It needs a server with an embedder. It does not need an LLM key.
 
 Tell the AI app dates as `YYYY-MM-DD`. The AI app works out phrases such as "last week" itself. Both ends of a date range count.
+
+## Wiki state
+
+The tool `vault_info` ends with the wiki state. A vault that is not a wiki gives the line `wiki: not declared`. A wiki gives the line `wiki: declared` and then the folders, the log note, the schema note, and the required properties. If the declaration file has a mistake, the tool gives one line that names the mistake, and the rest of the reply stays the same. The AI app reads the schema note before it writes a page.
 
 ## Server state
 

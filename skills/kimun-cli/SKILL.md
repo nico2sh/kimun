@@ -29,6 +29,11 @@ Kimün is a local-first, terminal notes app. Notes are plain Markdown files inde
 | List notes | `kimun notes` |
 | List all labels | `kimun labels` |
 | Reindex after external edits | `kimun workspace reindex` |
+| Set up a wiki | `kimun wiki init [--sources DIR] [--wiki DIR]` |
+| Save a web page as a wiki source | `kimun wiki clip "https://..."` |
+| Check the wiki rules (exit 1 on a problem) | `kimun wiki check [--format json]` |
+| List the wiki pages | `kimun wiki catalogue [--limit N] [--format json]` |
+| Stamp sources that have no hash | `kimun wiki stamp` |
 | Check for a newer release | `kimun update --check` |
 | Update the terminal app | `kimun update` |
 

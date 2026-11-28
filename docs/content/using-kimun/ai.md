@@ -5,7 +5,7 @@ weight = 20
 
 # AI assistants
 
-You can let an AI assistant read and write your notes. Kimün gives the assistant two things. The first is the [MCP server](@/using-kimun/ai-mcp-server.md), a set of tools that the assistant calls. The second is the [skills](@/using-kimun/ai-skills.md), short guide files that teach the assistant a method.
+You can let an AI assistant read and write your notes. Kimün gives the assistant two things. The first is the [MCP server](@/using-kimun/ai-mcp-server.md), a set of tools that the assistant calls. The second is the [skills](@/using-kimun/ai-skills.md), short guide files that teach the assistant a method. A third part is the [wiki](@/using-kimun/wiki.md), a set of notes that the assistant keeps up to date from your sources.
 
 The Kimün server is optional. Most tools work without it. Both the tools and the skills back up old text before they change it, so you can undo a mistake. See [Backups](@/using-kimun/cli.md#backups).
 
@@ -17,6 +17,7 @@ The Kimün server is optional. Most tools work without it. Both the tools and th
 | `get_chunks` and `show_note` | No |
 | The links tools and the properties tools | No |
 | The writing tools | No |
+| The wiki tools (`wiki_init`, `wiki_check`, `wiki_catalogue`, `wiki_stamp`, `wiki_clip`) | No. `wiki_clip` needs internet access |
 | `vault_info` | No |
 | `semantic_search` | Yes, with an embedder. No LLM key is needed |
 

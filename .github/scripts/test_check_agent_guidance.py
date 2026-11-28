@@ -10,6 +10,7 @@ GUIDANCE = "<!-- short:start -->\nShort text.\n<!-- short:end -->\n\n# Full\n\nM
 FRONTMATTER = "---\nname: kimun-ask\ndescription: x\n---\n\n"
 SERVER = 'fn x() { include_str!("guidance.md"); }\n'
 CLI = "---\nname: kimun-cli\n---\n\n# CLI\n"
+WIKI = "---\nname: kimun-wiki\n---\n\n# Wiki\n"
 
 
 class CheckAgentGuidance(unittest.TestCase):
@@ -21,6 +22,8 @@ class CheckAgentGuidance(unittest.TestCase):
         cli_skill=CLI,
         cli_embedded=CLI,
         ask_frontmatter=FRONTMATTER,
+        wiki_skill=WIKI,
+        wiki_embedded=WIKI,
     ):
         d = Path(tempfile.mkdtemp())
         files = {
@@ -30,6 +33,8 @@ class CheckAgentGuidance(unittest.TestCase):
             "cli-SKILL.md": cli_skill,
             "kimun-cli.md": cli_embedded,
             "kimun-ask.frontmatter.md": ask_frontmatter,
+            "wiki-SKILL.md": wiki_skill,
+            "kimun-wiki.md": wiki_embedded,
         }
         for name, text in files.items():
             (d / name).write_bytes(text.encode())
@@ -74,6 +79,16 @@ class CheckAgentGuidance(unittest.TestCase):
         r = self.run_check(ask_frontmatter="---\nname: kimun-ask\ndescription: old\n---\n\n")
         self.assertEqual(r.returncode, 1)
         self.assertIn("kimun-ask.frontmatter.md", r.stdout)
+
+    def test_a_matching_embedded_wiki_skill_passes(self):
+        self.assertEqual(
+            self.run_check(wiki_skill=WIKI, wiki_embedded=WIKI).returncode, 0
+        )
+
+    def test_an_embedded_wiki_skill_that_differs_fails(self):
+        r = self.run_check(wiki_embedded=WIKI + "Old line.\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("kimun-wiki", r.stdout)
 
     def test_the_real_files_match(self):
         root = Path(__file__).resolve().parents[2]

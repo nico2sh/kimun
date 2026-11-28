@@ -12,16 +12,17 @@ follow it:
             copy of the text passes only when the short block appears in it
             unchanged.
 
-The terminal app embeds both skills for `kimun skill install`. Two more
+The terminal app embeds all three skills for `kimun skill install`. Three more
 checks keep the embedded files equal to the repository skills, byte for byte:
 
   cli     — skills/kimun-cli/SKILL.md equals tui/src/cli/commands/skill/kimun-cli.md.
   ask     — skills/kimun-ask/SKILL.md equals
             tui/src/cli/commands/skill/kimun-ask.frontmatter.md followed by
             guidance.md.
+  wiki    — skills/kimun-wiki/SKILL.md equals tui/src/cli/commands/skill/kimun-wiki.md.
 
-Run from the repo root, or pass the six paths: guidance skill server
-cli-skill cli-embedded ask-frontmatter.
+Run from the repo root, or pass the eight paths: guidance skill server
+cli-skill cli-embedded ask-frontmatter wiki-skill wiki-embedded.
 Exits 1 and says what differs.
 """
 
@@ -36,7 +37,18 @@ SERVER = "tui/src/cli/commands/mcp/mod.rs"
 CLI_SKILL = "skills/kimun-cli/SKILL.md"
 CLI_EMBEDDED = "tui/src/cli/commands/skill/kimun-cli.md"
 ASK_FRONTMATTER = "tui/src/cli/commands/skill/kimun-ask.frontmatter.md"
-PATHS = [GUIDANCE, SKILL, SERVER, CLI_SKILL, CLI_EMBEDDED, ASK_FRONTMATTER]
+WIKI_SKILL = "skills/kimun-wiki/SKILL.md"
+WIKI_EMBEDDED = "tui/src/cli/commands/skill/kimun-wiki.md"
+PATHS = [
+    GUIDANCE,
+    SKILL,
+    SERVER,
+    CLI_SKILL,
+    CLI_EMBEDDED,
+    ASK_FRONTMATTER,
+    WIKI_SKILL,
+    WIKI_EMBEDDED,
+]
 
 SHORT = re.compile(r"<!-- short:start -->\n?(.*?)\n?<!-- short:end -->", re.S)
 INCLUDE = 'include_str!("guidance.md")'
@@ -55,6 +67,8 @@ def problems(
     cli_skill: str,
     cli_embedded: str,
     ask_frontmatter: str,
+    wiki_skill: str,
+    wiki_embedded: str,
 ) -> list[str]:
     found = []
     short = SHORT.search(guidance)
@@ -74,11 +88,13 @@ def problems(
             "skills/kimun-ask/SKILL.md differs from "
             "kimun-ask.frontmatter.md followed by guidance.md"
         )
+    if wiki_skill != wiki_embedded:
+        found.append("skills/kimun-wiki/SKILL.md differs from the embedded kimun-wiki.md")
     return found
 
 
 def main(argv: list[str]) -> int:
-    paths = argv[1:7] if len(argv) >= 7 else PATHS
+    paths = argv[1:9] if len(argv) >= 9 else PATHS
     try:
         # Bytes, decoded without newline translation, so the copies compare exactly.
         texts = [Path(p).read_bytes().decode("utf-8") for p in paths]

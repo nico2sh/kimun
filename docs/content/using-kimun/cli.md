@@ -83,12 +83,25 @@ kimun server status                       # show the state and the next step
 
 Without `--token`, a changed address clears the saved token. See [Semantic search and Ask](@/using-kimun/server.md).
 
+## Wiki
+
+```sh
+kimun wiki init                           # set up the folders, the schema note and the log note
+kimun wiki clip https://example.com/page  # save a web page as a source
+kimun wiki check                          # check the wiki rules (exit code 1 on a problem)
+kimun wiki check --format json            # the same, as data
+kimun wiki catalogue                      # list the wiki pages
+kimun wiki stamp                          # give each source a hash and an ingest date
+```
+
+A wiki is a set of notes that an AI agent keeps up to date from your sources. See [Wiki](@/using-kimun/wiki.md).
+
 ## AI assistants
 
 ```sh
 kimun mcp --print-config                  # JSON settings for an AI app
 kimun skill install                       # copy the skills to Claude Code and Codex
-kimun skill install --only ask            # install one skill: ask or cli
+kimun skill install --only ask            # install one skill: ask, cli or wiki
 kimun skill install --dir ~/my-skills     # write into another folder
 kimun skill install --force               # replace a folder that differs
 ```

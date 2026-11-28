@@ -5,10 +5,11 @@ weight = 21
 
 # Skills
 
-A skill is a short guide file that teaches an AI coding assistant how to use a tool. Kimün has two skills:
+A skill is a short guide file that teaches an AI coding assistant how to use a tool. Kimün has three skills:
 
 - `kimun-cli` teaches the `kimun` commands. Then the assistant can manage your notes during a session.
 - `kimun-ask` teaches a method to answer questions about your notes. It works with the [MCP server](@/using-kimun/ai-mcp-server.md) or with the `kimun` commands. It includes recipes to research a topic, find connections, suggest links, and brainstorm.
+- `kimun-wiki` teaches the method of a [wiki](@/using-kimun/wiki.md): ingest a source, answer a question from the wiki, and check the wiki. Use it in a vault that you set up with `kimun wiki init`.
 
 With the skill, you can ask:
 
@@ -24,11 +25,17 @@ With the `kimun-ask` skill, you can ask:
 
 > "Which notes are close in meaning to my roadmap note, but not linked to it?"
 
+With the `kimun-wiki` skill, you can ask:
+
+> "Save this article as a source and update the wiki with what it says."
+
+> "Check my wiki and fix what you can."
+
 The skill uses semantic search when a Kimün server is set up. See [Semantic search](@/using-kimun/server.md). Without a server, the assistant uses word search.
 
 ## Install
 
-Use the standard skills tool. It installs both skills:
+Use the standard skills tool. It installs all three skills:
 
 ```sh
 npx skills add nico2sh/kimun
@@ -48,7 +55,7 @@ If you do not have Node, Kimün can copy the skills itself:
 kimun skill install
 ```
 
-The command writes into the skills folder of Claude Code and the skills folder of Codex. If an app is not installed, the command skips its folder. To install one skill only, add `--only ask` or `--only cli`. To write into another folder, add `--dir PATH`. Kimün then writes `PATH/kimun-ask/` and `PATH/kimun-cli/`.
+The command writes into the skills folder of Claude Code and the skills folder of Codex. If an app is not installed, the command skips its folder. To install one skill only, add `--only ask`, `--only cli`, or `--only wiki`. To write into another folder, add `--dir PATH`. Kimün then writes `PATH/kimun-ask/`, `PATH/kimun-cli/`, and `PATH/kimun-wiki/`.
 
 The command follows these rules:
 
