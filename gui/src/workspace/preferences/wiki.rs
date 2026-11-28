@@ -257,6 +257,17 @@ impl PreferencesView {
         cx.notify();
     }
 
+    /// The section opens. It reads the declaration again, so a change made
+    /// outside the app shows. If the user typed something here and did not
+    /// apply it, and the window names the same vault, the typed text stays.
+    pub(crate) fn wiki_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let same_vault = self.wiki_target().map(|(w, _)| w) == self.wiki.target;
+        if same_vault && self.wiki.settings.is_edited() {
+            return;
+        }
+        self.wiki_reload(window, cx);
+    }
+
     /// A read of the vault at `workspace` landed. Dropped when the window
     /// names another vault now.
     pub(crate) fn wiki_loaded(

@@ -812,8 +812,9 @@ impl PreferencesView {
             self.read_remote_size(cx);
         }
         if entering_wiki {
-            // The declaration: read in the background each time it opens.
-            self.wiki_reload(window, cx);
+            // The declaration: read in the background each time it opens,
+            // unless the user typed something that is not applied yet.
+            self.wiki_enter(window, cx);
         }
         if section == Section::Appearance
             && let Some(model) = self.model.as_ref()

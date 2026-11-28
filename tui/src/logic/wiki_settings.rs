@@ -107,6 +107,12 @@ impl WikiSettings {
         &self.draft
     }
 
+    /// True when the draft differs from the one the saved state gives. The
+    /// user typed something that is not applied yet.
+    pub fn is_edited(&self) -> bool {
+        self.draft != Self::new(self.state.clone()).draft
+    }
+
     pub fn set_sources(&mut self, text: &str) {
         self.draft.sources = text.to_string();
     }
@@ -358,6 +364,27 @@ mod tests {
         let s = WikiSettings::new(WikiState::Wiki(d.clone()));
         assert_eq!(s.declaration().unwrap(), d);
         assert_eq!(s.state_line(), "This vault is a wiki.");
+    }
+
+    #[test]
+    fn a_fresh_draft_is_not_edited_and_a_typed_change_is() {
+        let mut s = WikiSettings::new(WikiState::Wiki(saved()));
+        assert!(!s.is_edited());
+        s.set_sources("raw");
+        assert!(s.is_edited());
+        let mut fresh = WikiSettings::new(WikiState::NotAWiki);
+        assert!(!fresh.is_edited());
+        fresh.set_wiki("atlas");
+        assert!(fresh.is_edited());
+    }
+
+    #[test]
+    fn typing_the_saved_text_back_is_not_an_edit() {
+        let mut s = WikiSettings::new(WikiState::Wiki(saved()));
+        let original = s.draft().sources.clone();
+        s.set_sources("raw");
+        s.set_sources(&original);
+        assert!(!s.is_edited());
     }
 
     #[test]

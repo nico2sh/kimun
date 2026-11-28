@@ -407,6 +407,47 @@ fn changing_the_sources_folder_shows_the_protection_note_before_the_apply(cx: &m
     settle(&rt, cx);
 }
 
+/// Leaving the section and coming back keeps what was typed and not applied.
+#[gpui_kit::test]
+fn leaving_the_section_keeps_unapplied_edits(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    make_wiki(&rt, &v);
+    let s = wiki_section(cx, &rt, &v);
+    type_into(&s, WikiField::Sources, "raw", cx);
+    s.pf_section(cx, Section::Display);
+    s.pf_section(cx, Section::Wiki);
+    until_read(&s, &rt, cx);
+    assert_eq!(value(&s, WikiField::Sources, cx), "raw");
+    assert!(
+        s.pf_shows(WIKI_EFFECT_ID, cx),
+        "the effect note is still there"
+    );
+    settle(&rt, cx);
+}
+
+/// With nothing typed, coming back reads the declaration again, so a change
+/// made outside the app shows.
+#[gpui_kit::test]
+fn returning_without_edits_reads_the_declaration_again(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = vault(&rt);
+    let s = wiki_section(cx, &rt, &v);
+    assert_eq!(value(&s, WikiField::Sources, cx), "/sources");
+    s.pf_section(cx, Section::Display);
+    make_wiki(&rt, &v);
+    s.pf_section(cx, Section::Wiki);
+    until_read(&s, &rt, cx);
+    assert!(
+        label(&s, WIKI_STATE_ID, cx)
+            .unwrap()
+            .contains("This vault is a wiki."),
+    );
+    settle(&rt, cx);
+}
+
 /// The log and schema follow a valid wiki folder, and keep their text while
 /// the wiki folder text is invalid.
 #[gpui_kit::test]
