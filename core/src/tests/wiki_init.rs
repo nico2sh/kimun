@@ -236,3 +236,139 @@ async fn init_with_a_note_path_folder_writes_nothing_and_does_not_get_stuck() {
     let report = vault.wiki_init(WikiInitOptions::default()).await.unwrap();
     assert!(report.entries.iter().all(|e| e.created));
 }
+
+const DEFAULT_SCHEMA: &str = r####"# Wiki schema
+
+This note tells you how this wiki works. An AI agent and a human both follow it.
+Edit it to fit your needs.
+
+## The three layers
+
+- Sources are in `/sources`. They are raw notes. They are the ground truth.
+- The wiki is in `/wiki`. It holds pages that you write and keep up to date.
+- This schema note tells you how to do the work.
+
+Write only under `/wiki`. Never edit anything under `/sources`.
+
+## Page format
+
+Every wiki page starts with a frontmatter block. It has these properties:
+
+```
+---
+summary: One sentence that says what the page is about.
+sources: ["[[a-source]]", "[[another-source]]"]
+updated: 2026-01-31
+type: concept
+---
+```
+
+- `summary` is one short sentence.
+- `sources` lists the source notes the page draws on. Quote every wikilink in a property, as in the example.
+- `updated` is the date of the last change.
+- `type` says what kind of page it is, such as `concept`, `person` or `topic`.
+
+## Naming
+
+Use kebab-case for page names. Use lower case. Use hyphens between words.
+Example: `spaced-repetition`.
+
+## Linking
+
+- Link each concept page from a parent page, so that no page is an orphan.
+- Cite sources with wikilinks in the `sources` property.
+- Link related pages to each other with wikilinks.
+
+## Ingest
+
+Follow these steps for each new source:
+
+1. Read the source in full.
+2. Find the wiki pages that the source touches.
+3. Update those pages. Create a new page when a concept has none.
+4. Add the source to the `sources` property of every page you touched.
+5. Set `updated` to today on every page you touched.
+6. Add an entry to the log at `/wiki/log.md`.
+
+## Answer a question
+
+1. Read the wiki pages that are about the question.
+2. Answer from the wiki. Follow links when you need more.
+3. Check the sources when the wiki is unclear or seems wrong.
+4. Say which pages you used.
+5. When you find a gap, fix it in the wiki.
+
+## Lint
+
+Check the wiki for these problems:
+
+- Pages that miss a required property.
+- Pages that no other page links to.
+- Links that point to notes that do not exist.
+- Claims that the cited sources do not support.
+- Pages that have not been updated after a source changed.
+
+Fix what you can. Report the rest.
+
+## Log entries
+
+Add one entry at the end of `/wiki/log.md` for each piece of work. Each entry has:
+
+- The date.
+- The source.
+- The pages you touched.
+- The main finding.
+"####;
+
+#[test]
+fn schema_template_for_the_default_declaration_is_unchanged() {
+    assert_eq!(
+        crate::wiki::schema_template(&WikiDeclaration::defaults()),
+        DEFAULT_SCHEMA
+    );
+}
+
+fn page_format(text: &str) -> &str {
+    let start = text.find("## Page format").unwrap();
+    let end = text.find("## Naming").unwrap();
+    &text[start..end]
+}
+
+#[test]
+fn schema_template_lists_a_custom_property_list() {
+    let mut d = WikiDeclaration::defaults();
+    d.required_properties = vec!["summary".to_string(), "owner".to_string()];
+    let text = crate::wiki::schema_template(&d);
+    let block = page_format(&text);
+    assert!(block.contains("owner: <value>"), "{block}");
+    assert!(
+        block.contains("- `owner` is required on every page."),
+        "{block}"
+    );
+    assert!(block.contains("summary"), "{block}");
+    assert!(!block.contains("`updated`"), "{block}");
+    assert!(!block.contains("updated:"), "{block}");
+    assert!(block.contains("`type`"), "{block}");
+    assert!(block.contains("optional"), "{block}");
+}
+
+#[test]
+fn schema_template_lists_type_once_when_it_is_required() {
+    let mut d = WikiDeclaration::defaults();
+    d.required_properties = vec!["type".to_string()];
+    let text = crate::wiki::schema_template(&d);
+    let block = page_format(&text);
+    assert_eq!(block.matches("- `type`").count(), 1, "{block}");
+    assert!(!block.contains("optional"), "{block}");
+}
+
+#[tokio::test]
+async fn init_with_a_plain_file_where_a_folder_is_wanted_is_an_error() {
+    let (dir, vault) = empty_vault().await;
+    std::fs::write(dir.path().join("sources"), "a plain file").unwrap();
+    let result = vault.wiki_init(WikiInitOptions::default()).await;
+    assert!(result.is_err(), "{result:?}");
+    // wiki_init writes the declaration first, so the file stays. A second
+    // run reports the same error until the file in the way is moved.
+    assert!(dir.path().join(".kimun").join("wiki.toml").exists());
+}

@@ -855,6 +855,18 @@ pub(crate) async fn path_exists(
     Ok(tokio::fs::try_exists(&full_path).await?)
 }
 
+/// Returns true if `path` resolves to a directory on disk.
+pub(crate) async fn is_directory(
+    workspace_path: &SystemPath,
+    path: &VaultPath,
+) -> Result<bool, FSError> {
+    let full_path = resolve_path_on_disk(workspace_path, path).await;
+    Ok(tokio::fs::metadata(&full_path)
+        .await
+        .map(|m| m.is_dir())
+        .unwrap_or(false))
+}
+
 pub(crate) async fn delete_directory(
     workspace_path: &SystemPath,
     path: &VaultPath,

@@ -8,6 +8,7 @@ use crate::error::{FSError, VaultError};
 use crate::nfs::wiki_declaration;
 use crate::nfs::{self, VaultPath};
 use crate::note::properties::NoteProperties;
+use crate::note::property_keys_match;
 use crate::note::{
     FrontmatterFormat, LinkType, NoteDetails, NoteTarget, PropertyEntry, PropertyValue,
 };
@@ -75,10 +76,58 @@ impl NoteVault {
                 d
             }
         };
+        self.ensure_wiki_layout(&declaration, &mut report).await?;
+        Ok(report)
+    }
+
+    /// Sets the wiki declaration to `declaration`, from a settings screen.
+    /// Unlike [`Self::wiki_init`] it replaces an existing declaration. It
+    /// checks the declaration, cleans the property list, creates the folders
+    /// and notes that are missing, and writes `.kimun/wiki.toml` last. It
+    /// never reads the old file, so a broken file can be replaced. It never
+    /// moves, renames or deletes a folder or a note. When a step fails, the
+    /// old file is not changed.
+    pub async fn wiki_configure(
+        &self,
+        declaration: WikiDeclaration,
+    ) -> Result<WikiInitReport, VaultError> {
+        let mut declaration = declaration;
+        let mut properties: Vec<String> = Vec::new();
+        for name in &declaration.required_properties {
+            if name.trim().is_empty() {
+                continue;
+            }
+            let key = Self::property_key(name)?;
+            if !properties.iter().any(|p| property_keys_match(p, &key)) {
+                properties.push(key);
+            }
+        }
+        declaration.required_properties = properties;
+        declaration.validate().map_err(invalid)?;
+        let mut report = WikiInitReport::default();
+        self.ensure_wiki_layout(&declaration, &mut report).await?;
+        wiki_declaration::write_wiki_declaration(self.workspace_path(), &declaration).await?;
+        Ok(report)
+    }
+
+    /// Creates the sources and wiki folders and the schema and log notes
+    /// that are missing, and adds one report entry for each. It keeps what
+    /// exists. `create_note` makes the parent folder of a note.
+    async fn ensure_wiki_layout(
+        &self,
+        declaration: &WikiDeclaration,
+        report: &mut WikiInitReport,
+    ) -> Result<(), VaultError> {
         for folder in [declaration.sources_path(), declaration.wiki_path()] {
             let created = match self.create_directory(&folder).await {
                 Ok(_) => true,
-                Err(VaultError::DirectoryExists { .. }) => false,
+                // A plain file in the way also reads as "exists". It is not a
+                // folder, so it is an error. Never report it as kept.
+                Err(VaultError::DirectoryExists { .. })
+                    if nfs::is_directory(self.workspace_path(), &folder).await? =>
+                {
+                    false
+                }
                 Err(e) => return Err(e),
             };
             report.entries.push(WikiInitEntry {
@@ -87,7 +136,7 @@ impl NoteVault {
             });
         }
         let notes = [
-            (declaration.schema_path(), schema_template(&declaration)),
+            (declaration.schema_path(), schema_template(declaration)),
             (declaration.log_path(), log_template()),
         ];
         for (path, text) in notes {
@@ -101,7 +150,7 @@ impl NoteVault {
                 created,
             });
         }
-        Ok(report)
+        Ok(())
     }
 
     /// Saves `request` as a new, stamped note in the sources folder. The path

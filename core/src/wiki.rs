@@ -240,11 +240,70 @@ fn date_part(value: &PropertyValue) -> Option<chrono::NaiveDate> {
     }
 }
 
+/// The example line and the bullet for a property that has its own text.
+fn known_property(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "summary" => Some((
+            "summary: One sentence that says what the page is about.",
+            "- `summary` is one short sentence.",
+        )),
+        "sources" => Some((
+            "sources: [\"[[a-source]]\", \"[[another-source]]\"]",
+            "- `sources` lists the source notes the page draws on. Quote every wikilink in a property, as in the example.",
+        )),
+        "updated" => Some((
+            "updated: 2026-01-31",
+            "- `updated` is the date of the last change.",
+        )),
+        "type" => Some((
+            "type: concept",
+            "- `type` says what kind of page it is, such as `concept`, `person` or `topic`.",
+        )),
+        _ => None,
+    }
+}
+
+/// The frontmatter example lines and the bullet list of the "Page format"
+/// section. Required names come first, in order. `type` follows as optional
+/// unless it is required.
+fn page_format_parts(required: &[String]) -> (String, String) {
+    let mut example = String::new();
+    let mut bullets = Vec::new();
+    for name in required {
+        match known_property(name) {
+            Some((line, bullet)) => {
+                example.push_str(line);
+                bullets.push(bullet.to_string());
+            }
+            None => {
+                example.push_str(&format!("{name}: <value>"));
+                bullets.push(format!("- `{name}` is required on every page."));
+            }
+        }
+        example.push('\n');
+    }
+    if !required.iter().any(|n| n == "type") {
+        let (line, bullet) = known_property("type").expect("type is known");
+        example.push_str(line);
+        example.push('\n');
+        // The default list keeps the long-standing wording. A custom list
+        // says that `type` is optional.
+        let is_default = required == ["summary", "sources", "updated"];
+        bullets.push(if is_default {
+            bullet.to_string()
+        } else {
+            format!("{bullet} It is optional.")
+        });
+    }
+    (example, bullets.join("\n"))
+}
+
 /// The text of the schema note, with the declared folder names filled in.
 pub fn schema_template(d: &WikiDeclaration) -> String {
     let sources = &d.sources;
     let wiki = &d.wiki;
     let log = &d.log;
+    let (example, bullets) = page_format_parts(&d.required_properties);
     format!(
         "# Wiki schema
 
@@ -265,17 +324,10 @@ Every wiki page starts with a frontmatter block. It has these properties:
 
 ```
 ---
-summary: One sentence that says what the page is about.
-sources: [\"[[a-source]]\", \"[[another-source]]\"]
-updated: 2026-01-31
-type: concept
----
+{example}---
 ```
 
-- `summary` is one short sentence.
-- `sources` lists the source notes the page draws on. Quote every wikilink in a property, as in the example.
-- `updated` is the date of the last change.
-- `type` says what kind of page it is, such as `concept`, `person` or `topic`.
+{bullets}
 
 ## Naming
 

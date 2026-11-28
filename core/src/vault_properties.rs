@@ -178,7 +178,7 @@ impl NoteVault {
 
     /// The key as the user spelled it (casing kept; matching is
     /// case-insensitive, see `properties::match_key`).
-    fn property_key(key: &str) -> Result<String, VaultError> {
+    pub(crate) fn property_key(key: &str) -> Result<String, VaultError> {
         properties::clean_key(key).ok_or_else(|| VaultError::InvalidProperty {
             key: key.to_string(),
             message: "key must be non-empty and on one line".to_string(),

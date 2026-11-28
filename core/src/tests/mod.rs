@@ -11,6 +11,7 @@ mod vault;
 mod vault_config;
 mod wiki_catalogue;
 mod wiki_check;
+mod wiki_configure;
 mod wiki_declaration;
 mod wiki_init;
 mod wiki_protection;
