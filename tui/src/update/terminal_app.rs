@@ -464,11 +464,45 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use std::time::Instant;
 
+        /// A shell script named `kimun` that runs `body`.
+        ///
+        /// Linux refuses to run a file while any process holds it open for
+        /// writing ("Text file busy"). Tests run in parallel, so another
+        /// thread can fork while this one still has the file open, and the
+        /// child keeps a copy of the descriptor until it execs. The window is
+        /// short but real: without the wait below, a probe of the fresh
+        /// script failed in about 1 run of 15. So the helper runs the script
+        /// once with `--warmup`, which it answers at once, and retries until
+        /// the file is free.
         fn script(body: &str) -> (tempfile::TempDir, PathBuf) {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("kimun");
-            fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::write(
+                &path,
+                format!("#!/bin/sh\n[ \"$1\" = --warmup ] && exit 0\n{body}\n"),
+            )
+            .unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            let mut attempts = 0;
+            loop {
+                let started = Command::new(&path)
+                    .arg("--warmup")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                match started {
+                    Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                        attempts += 1;
+                        assert!(attempts < 400, "the script stayed busy: {e}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    other => {
+                        other.unwrap();
+                        break;
+                    }
+                }
+            }
             (dir, path)
         }
 
