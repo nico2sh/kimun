@@ -67,7 +67,8 @@ pub async fn run(subcommand: WikiSubcommand, vault: &NoteVault) -> Result<()> {
             let report = vault.wiki_check().await?;
             match format {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
-                OutputFormat::Text | OutputFormat::Paths => print!("{}", check_text(&report)),
+                OutputFormat::Text => print!("{}", check_text(&report)),
+                OutputFormat::Paths => print!("{}", check_paths(&report)),
             }
             if report.problems() > 0 {
                 return Err(CheckFailed.into());
@@ -172,6 +173,21 @@ pub(crate) fn check_text(report: &WikiReport) -> String {
     out
 }
 
+/// The notes that have a finding, one path per line, each once, in the order
+/// of their first finding. A clean wiki gives an empty string.
+pub(crate) fn check_paths(report: &WikiReport) -> String {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = String::new();
+    for f in &report.findings {
+        let path = f.path.to_bare_string();
+        if seen.insert(path.clone()) {
+            out.push_str(&path);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// `n` with the singular or plural noun, such as `1 note` or `2 notes`.
 fn count(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
@@ -269,6 +285,27 @@ mod tests {
             check_text(&report(vec![], 1)),
             "The wiki is clean. 1 note checked.\n"
         );
+    }
+
+    #[test]
+    fn check_paths_lists_each_note_once_in_finding_order() {
+        let at = |rule: WikiRule, path: &str, severity: Severity| WikiFinding {
+            rule,
+            severity,
+            path: VaultPath::new(path),
+            message: "m".into(),
+        };
+        let r = report(
+            vec![
+                at(WikiRule::Orphan, "/wiki/b.md", Severity::Problem),
+                at(WikiRule::Orphan, "/wiki/a.md", Severity::Problem),
+                at(WikiRule::MissingProperty, "/wiki/b.md", Severity::Problem),
+                at(WikiRule::Unstamped, "/sources/s.md", Severity::Info),
+            ],
+            5,
+        );
+        assert_eq!(check_paths(&r), "/wiki/b\n/wiki/a\n/sources/s\n");
+        assert_eq!(check_paths(&report(vec![], 5)), "");
     }
 
     #[test]

@@ -189,6 +189,8 @@ kimun wiki check --format json
 
 The JSON has the fields `declared`, `notes_checked`, and `findings`. Each finding has `rule`, `severity`, `path`, and `message`.
 
+To list only the notes that have a finding, add `--format paths`. The command prints each path once, one on each line, and prints nothing when the wiki is clean. The exit code stays the same.
+
 Kimün cannot find contradictions, claims that are out of date, or topics that the wiki covers too thinly. These need judgment. The AI agent checks them with the [skill](@/using-kimun/ai-skills.md).
 
 ## Stamp sources

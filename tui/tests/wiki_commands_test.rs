@@ -117,6 +117,27 @@ async fn wiki_check_exits_one_when_a_problem_exists_and_prints_the_report_first(
 }
 
 #[tokio::test]
+async fn wiki_check_paths_prints_only_the_notes_with_findings() {
+    let f = Fixture::new().await;
+    f.kimun(&["wiki", "init"]);
+    f.write("wiki/page.md", "# Page\n\n[[no such note]]\n");
+    let check = f.kimun(&["wiki", "check", "--format", "paths"]);
+    // Paths change the format, not the verdict.
+    assert_eq!(check.status.code(), Some(1), "stderr: {}", stderr(&check));
+    let out = stdout(&check);
+    assert_eq!(out, "/wiki/page\n", "stdout: {out}");
+}
+
+#[tokio::test]
+async fn wiki_check_paths_prints_nothing_for_a_clean_wiki() {
+    let f = Fixture::new().await;
+    f.kimun(&["wiki", "init"]);
+    let check = f.kimun(&["wiki", "check", "--format", "paths"]);
+    assert_eq!(check.status.code(), Some(0), "stderr: {}", stderr(&check));
+    assert_eq!(stdout(&check), "");
+}
+
+#[tokio::test]
 async fn wiki_check_json_has_rule_names_in_snake_case() {
     let f = Fixture::new().await;
     f.kimun(&["wiki", "init"]);
