@@ -88,6 +88,26 @@ pub struct SemanticSearchParams {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct WikiInitParams {
+    /// Folder for the raw source notes (default: sources)
+    pub sources: Option<String>,
+    /// Folder for the wiki pages (default: wiki)
+    pub wiki: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct WikiCatalogueParams {
+    /// Most pages to list (default 200)
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct WikiClipParams {
+    /// The https address of the page to save
+    pub url: String,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListNotesParams {
     pub path: Option<String>,
@@ -237,6 +257,8 @@ pub struct KimunHandler {
     settings: Option<crate::settings::SharedSettings>,
     /// The config folder and system the server report reads. `None` means the real ones.
     server_env: Option<info::ServerEnv>,
+    /// The limits and switches for `wiki_clip`. Strict unless a test says otherwise.
+    fetch_policy: crate::clip::FetchPolicy,
     // Read at runtime by the `#[tool_handler]` / `#[prompt_handler]` generated
     // impls (see below); clippy can't see through the macro expansion, so it
     // flags these as unread despite being the live tool/prompt dispatch tables.
@@ -312,6 +334,7 @@ impl KimunHandler {
             vault,
             settings: None,
             server_env: None,
+            fetch_policy: crate::clip::FetchPolicy::strict(),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
@@ -332,7 +355,7 @@ impl KimunHandler {
     }
 
     #[tool(
-        description = "Report today's date (local), the date keys the search tools accept as date_key, and whether semantic_search is available. Call it before a dated search."
+        description = "Report today's date (local), the date keys the search tools accept as date_key, whether semantic_search is available, and whether the vault is a wiki: when it is, the reply names the wiki folders, the log note, the schema note and the required properties. Call it before a dated search, and read the schema note before you write wiki pages."
     )]
     async fn vault_info(&self) -> Result<CallToolResult, McpError> {
         match info::render(
@@ -371,6 +394,94 @@ impl KimunHandler {
 
     fn resolve_path(path: &str) -> VaultPath {
         VaultPath::note_path_from(path)
+    }
+
+    /// Gives the handler a fetch policy for `wiki_clip`, so a test can reach a local server.
+    #[cfg(test)]
+    fn with_fetch_policy(mut self, policy: crate::clip::FetchPolicy) -> Self {
+        self.fetch_policy = policy;
+        self
+    }
+
+    #[tool(
+        description = "Set up a wiki in this vault: the declaration file, the sources folder, the wiki folder, and the schema and log notes. Call it first, before the other wiki tools. Anything that already exists is kept, so a second call changes nothing. Optional: sources and wiki name the two folders (defaults: sources and wiki).",
+        annotations(destructive_hint = false)
+    )]
+    async fn wiki_init(
+        &self,
+        Parameters(p): Parameters<WikiInitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let options = kimun_core::WikiInitOptions {
+            sources: p.sources.as_deref().map(VaultPath::new),
+            wiki: p.wiki.as_deref().map(VaultPath::new),
+        };
+        match self.vault.wiki_init(options).await {
+            Ok(report) => Ok(CallToolResult::success(vec![Content::text(
+                super::wiki::init_text(&report),
+            )])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "Check the vault against the wiki rules and list every finding as a line: `problem` or `info`, the rule, the note, and a message. The call succeeds even when it finds problems, because the tool ran. Works with or without a wiki declaration; with one, the wiki rules apply too (see wiki_init).",
+        annotations(read_only_hint = true)
+    )]
+    async fn wiki_check(&self) -> Result<CallToolResult, McpError> {
+        match self.vault.wiki_check().await {
+            Ok(report) => Ok(CallToolResult::success(vec![Content::text(
+                super::wiki::check_text(&report),
+            )])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "List the wiki pages with their title, type and summary, one per line. Needs a declared wiki: call wiki_init first. limit sets the most pages (default 200); when there are more, the last line says so.",
+        annotations(read_only_hint = true)
+    )]
+    async fn wiki_catalogue(
+        &self,
+        Parameters(p): Parameters<WikiCatalogueParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.vault.wiki_catalogue(p.limit.unwrap_or(200)).await {
+            Ok(catalogue) => Ok(CallToolResult::success(vec![Content::text(
+                super::wiki::catalogue_text(&catalogue),
+            )])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "Give every source note that has no content hash its hash and ingest date. Needs a declared wiki: call wiki_init first. A source that cannot be stamped is skipped and listed in the reply; the call still succeeds.",
+        annotations(destructive_hint = false)
+    )]
+    async fn wiki_stamp(&self) -> Result<CallToolResult, McpError> {
+        match self.vault.wiki_stamp().await {
+            Ok(report) => Ok(CallToolResult::success(vec![Content::text(
+                super::wiki::stamp_text(&report),
+            )])),
+            Err(e) => vault_err(e),
+        }
+    }
+
+    #[tool(
+        description = "Fetch a web page and save it as a source note in the wiki. Needs a declared wiki (call wiki_init first) and an https address. Pages on private or local networks are refused. The reply gives the note path and the page title.",
+        annotations(open_world_hint = true, destructive_hint = false)
+    )]
+    async fn wiki_clip(
+        &self,
+        Parameters(p): Parameters<WikiClipParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match crate::clip::clip_url(&self.vault, &p.url, &self.fetch_policy).await {
+            Ok(outcome) => Ok(CallToolResult::success(vec![Content::text(
+                super::wiki::clip_text(&outcome),
+            )])),
+            Err(crate::clip::ClipFailure::Vault(e)) => vault_err(e),
+            Err(crate::clip::ClipFailure::Clip(e)) => {
+                Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+            }
+        }
     }
 
     #[tool(
@@ -2527,5 +2638,260 @@ mod tests {
             "should not include journal: {}",
             text
         );
+    }
+
+    // ---- wiki tools ----
+
+    /// A handler over a vault with the test fetch policy. `declared` runs
+    /// wiki_init first. `protected` turns source protection on.
+    async fn wiki_handler(declared: bool, protected: bool) -> (KimunHandler, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(
+            VaultConfig::new(crate::test_support::sys(dir.path()))
+                .with_protected_sources(protected),
+        )
+        .await
+        .unwrap();
+        vault.validate_and_init().await.unwrap();
+        let handler =
+            KimunHandler::new(vault).with_fetch_policy(crate::clip::FetchPolicy::for_tests());
+        if declared {
+            let result = handler
+                .wiki_init(Parameters(WikiInitParams::default()))
+                .await
+                .unwrap();
+            assert!(is_success(&result), "{}", plain_text(&result));
+        }
+        (handler, dir)
+    }
+
+    #[tokio::test]
+    async fn wiki_tools_are_listed_with_descriptions_that_name_the_precondition() {
+        let (handler, _dir) = make_handler().await;
+        let tools = handler.tool_router.list_all();
+        let find = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("no tool {name}"))
+        };
+        let desc = |name: &str| find(name).description.as_ref().unwrap().to_string();
+        assert!(desc("wiki_init").contains("Call it first"));
+        for name in ["wiki_catalogue", "wiki_stamp", "wiki_clip"] {
+            let d = desc(name);
+            assert!(d.contains("Needs a declared wiki"), "{name}: {d}");
+            assert!(d.contains("wiki_init"), "{name}: {d}");
+        }
+        assert!(desc("wiki_clip").contains("https"));
+        assert!(desc("wiki_check").contains("succeeds even when it finds problems"));
+        let open_world = |name: &str| {
+            find(name)
+                .annotations
+                .as_ref()
+                .and_then(|a| a.open_world_hint)
+        };
+        assert_eq!(open_world("wiki_clip"), Some(true));
+        let destructive = |name: &str| {
+            find(name)
+                .annotations
+                .as_ref()
+                .and_then(|a| a.destructive_hint)
+        };
+        assert_eq!(destructive("wiki_init"), Some(false));
+        assert_eq!(destructive("wiki_stamp"), Some(false));
+    }
+
+    #[tokio::test]
+    async fn wiki_init_creates_the_structure_and_a_second_call_keeps_it() {
+        let (handler, dir) = wiki_handler(false, false).await;
+        let first = handler
+            .wiki_init(Parameters(WikiInitParams {
+                sources: Some("raw".to_string()),
+                wiki: None,
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&first));
+        let text = plain_text(&first);
+        assert!(text.contains("created"), "{text}");
+        assert!(dir.path().join("raw").is_dir());
+        assert!(dir.path().join("wiki").is_dir());
+        let second = handler
+            .wiki_init(Parameters(WikiInitParams {
+                sources: Some("raw".to_string()),
+                wiki: None,
+            }))
+            .await
+            .unwrap();
+        let text = plain_text(&second);
+        assert!(text.contains("kept") && !text.contains("created"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn wiki_check_reports_problems_as_success_with_the_cli_text() {
+        let (handler, _dir) = wiki_handler(true, false).await;
+        handler
+            .vault
+            .create_note(
+                &VaultPath::note_path_from("/wiki/page"),
+                "# Page\n\n[[no such note]]\n",
+            )
+            .await
+            .unwrap();
+        let result = handler.wiki_check().await.unwrap();
+        assert!(is_success(&result));
+        let text = plain_text(&result);
+        assert!(text.contains("problem  unresolved_link  "), "{text}");
+        let report = handler.vault.wiki_check().await.unwrap();
+        assert_eq!(text, crate::cli::commands::wiki::check_text(&report));
+    }
+
+    #[tokio::test]
+    async fn wiki_catalogue_respects_limit_and_prints_the_more_line() {
+        let (handler, _dir) = wiki_handler(true, false).await;
+        for n in ["a", "b", "c"] {
+            handler
+                .vault
+                .create_note(
+                    &VaultPath::note_path_from(format!("/wiki/{n}")),
+                    &format!("---\nsummary: Page {n}\n---\n# Page {n}\n"),
+                )
+                .await
+                .unwrap();
+        }
+        let result = handler
+            .wiki_catalogue(Parameters(WikiCatalogueParams { limit: Some(1) }))
+            .await
+            .unwrap();
+        assert!(is_success(&result));
+        let text = plain_text(&result);
+        assert!(
+            text.contains("Page a") && !text.contains("Page b"),
+            "{text}"
+        );
+        assert!(text.trim_end().ends_with("2 more pages"), "{text}");
+        let all = handler
+            .wiki_catalogue(Parameters(WikiCatalogueParams::default()))
+            .await
+            .unwrap();
+        assert!(plain_text(&all).contains("Page c"));
+    }
+
+    #[tokio::test]
+    async fn wiki_stamp_stamps_and_reports_skipped_sources() {
+        let (handler, dir) = wiki_handler(true, false).await;
+        std::fs::write(dir.path().join("sources/a.md"), "# A\n\ntext\n").unwrap();
+        std::fs::write(
+            dir.path().join("sources/b.md"),
+            "---\nkey: [unclosed\n---\nbody\n",
+        )
+        .unwrap();
+        let result = handler.wiki_stamp().await.unwrap();
+        assert!(
+            is_success(&result),
+            "a skipped source is not a tool failure"
+        );
+        let text = plain_text(&result);
+        assert!(text.contains("/sources/a\n"), "{text}");
+        assert!(text.contains("skipped  /sources/b  "), "{text}");
+        let stamped = handler
+            .vault
+            .get_note_text(&VaultPath::note_path_from("/sources/a"))
+            .await
+            .unwrap();
+        assert!(stamped.contains("content_hash:"), "{stamped}");
+    }
+
+    #[tokio::test]
+    async fn wiki_clip_saves_a_source_from_a_local_page_with_the_test_policy() {
+        use crate::clip::test_server::{ok_page, serve};
+        let (handler, _dir) = wiki_handler(true, false).await;
+        let server = serve(false, |_| {
+            vec![ok_page(
+                "<html><head><title>My Post</title></head><body><p>Hello there, this is a page.</p></body></html>",
+            )]
+        });
+        let url = format!("{}/post", server.base);
+        let result = handler
+            .wiki_clip(Parameters(WikiClipParams { url: url.clone() }))
+            .await
+            .unwrap();
+        assert!(is_success(&result), "{}", plain_text(&result));
+        let text = plain_text(&result);
+        assert!(text.starts_with("Saved /sources/"), "{text}");
+        assert!(text.contains("Title: My Post"), "{text}");
+        let report = handler.vault.wiki_check().await.unwrap();
+        assert_eq!(report.problems(), 0, "{:?}", report.findings);
+    }
+
+    #[tokio::test]
+    async fn wiki_clip_refuses_http_with_a_recoverable_error() {
+        let (handler, _dir) = wiki_handler(true, false).await;
+        // The strict policy, as the server uses it.
+        let handler = handler.with_fetch_policy(crate::clip::FetchPolicy::strict());
+        let result = handler
+            .wiki_clip(Parameters(WikiClipParams {
+                url: "http://example.com/page".to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(!is_success(&result));
+        assert!(
+            plain_text(&result).contains("https"),
+            "{}",
+            plain_text(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn wiki_catalogue_and_stamp_without_a_declaration_are_recoverable_errors_with_the_message()
+     {
+        let (handler, _dir) = wiki_handler(false, false).await;
+        let catalogue = handler
+            .wiki_catalogue(Parameters(WikiCatalogueParams::default()))
+            .await
+            .unwrap();
+        let stamp = handler.wiki_stamp().await.unwrap();
+        let clip = handler
+            .wiki_clip(Parameters(WikiClipParams {
+                url: "https://example.com/".to_string(),
+            }))
+            .await
+            .unwrap();
+        for result in [catalogue, stamp, clip] {
+            assert!(!is_success(&result));
+            assert!(
+                plain_text(&result).contains("wiki init"),
+                "{}",
+                plain_text(&result)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wiki_tools_on_a_protected_vault_work() {
+        use crate::clip::test_server::{ok_page, serve};
+        let (handler, dir) = wiki_handler(true, true).await;
+        // A source written outside the tools, as a person would add one.
+        std::fs::write(dir.path().join("sources/a.md"), "# A\n\ntext\n").unwrap();
+        let stamp = handler.wiki_stamp().await.unwrap();
+        assert!(is_success(&stamp), "{}", plain_text(&stamp));
+        let server = serve(false, |_| {
+            vec![ok_page(
+                "<html><body><p>Hello there, a page.</p></body></html>",
+            )]
+        });
+        let clip = handler
+            .wiki_clip(Parameters(WikiClipParams {
+                url: format!("{}/x", server.base),
+            }))
+            .await
+            .unwrap();
+        assert!(is_success(&clip), "{}", plain_text(&clip));
+        let again = handler
+            .wiki_init(Parameters(WikiInitParams::default()))
+            .await
+            .unwrap();
+        assert!(is_success(&again), "{}", plain_text(&again));
     }
 }

@@ -1,5 +1,6 @@
-//! The `vault_info` tool: three facts an agent needs before it searches. Today's
-//! date, the date keys the search tools accept, and the state of semantic search.
+//! The `vault_info` tool: the facts an agent needs before it searches or writes.
+//! Today's date, the date keys the search tools accept, the state of semantic
+//! search, and whether the vault is a wiki.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -108,7 +109,33 @@ pub(super) async fn render(
         out.push_str("\nhint: ");
         out.push_str(&hint.to_string().replace(['\r', '\n'], " "));
     }
+    out.push('\n');
+    out.push_str(&wiki_lines(vault).await);
     Ok(out)
+}
+
+/// What the vault says about its wiki, one fact per line. A declaration that
+/// cannot be read gives one error line, so a broken file never hides the date
+/// keys or the server state.
+async fn wiki_lines(vault: &NoteVault) -> String {
+    match vault.wiki_declaration().await {
+        Ok(None) => "wiki: not declared".to_string(),
+        Ok(Some(d)) => format!(
+            "wiki: declared\nwiki sources: {}\nwiki pages: {}\nwiki log: {}\nwiki schema: {}\nwiki required properties: {}",
+            d.sources_path(),
+            d.wiki_path(),
+            d.log_path().to_bare_string(),
+            d.schema_path().to_bare_string(),
+            d.required_properties.join(", ")
+        ),
+        Err(e) => {
+            let message = e.user_message().unwrap_or_else(|| e.to_string());
+            format!(
+                "wiki: declaration error: {}",
+                message.replace(['\r', '\n'], " ")
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -278,7 +305,8 @@ mod tests {
         assert_eq!(lines[1], "date keys: (none)");
         assert_eq!(lines[2], "semantic search: none");
         assert!(lines[3].starts_with("hint: "), "{text}");
-        assert_eq!(lines.len(), 4, "{text}");
+        assert_eq!(lines[4], "wiki: not declared");
+        assert_eq!(lines.len(), 5, "{text}");
     }
 
     #[tokio::test]
@@ -350,7 +378,8 @@ mod tests {
                 hint.contains("not run") || hint.contains("Do not run"),
                 "{text}"
             );
-            assert_eq!(text.lines().count(), 4, "the hint is one line: {text}");
+            // The hint line, then the wiki line.
+            assert_eq!(text.lines().count(), 5, "the hint is one line: {text}");
         }
     }
 
@@ -378,6 +407,80 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[1], "date keys: journal, due, property:journal");
         assert_eq!(lines[2], "semantic search: full");
-        assert_eq!(lines.len(), 3, "no hint when ready: {text}");
+        // No hint when ready: the wiki line follows the semantic search line.
+        assert_eq!(lines[3], "wiki: not declared");
+        assert_eq!(lines.len(), 4, "{text}");
+    }
+
+    /// The lines of the reply that tell about the wiki.
+    fn wiki_lines(text: &str) -> Vec<&str> {
+        text.lines().filter(|l| l.starts_with("wiki")).collect()
+    }
+
+    #[tokio::test]
+    async fn vault_info_with_a_default_declaration_lists_the_wiki_facts() {
+        let dir = TempDir::new().unwrap();
+        let vault = open_vault(&dir).await;
+        vault
+            .wiki_init(kimun_core::WikiInitOptions::default())
+            .await
+            .unwrap();
+        let handler = KimunHandler::new(vault).with_server_env(no_install_env());
+        let text = info_text(&handler).await;
+        assert_eq!(
+            wiki_lines(&text),
+            [
+                "wiki: declared",
+                "wiki sources: /sources",
+                "wiki pages: /wiki",
+                "wiki log: /wiki/log",
+                "wiki schema: /wiki/schema",
+                "wiki required properties: summary, sources, updated",
+            ],
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn vault_info_shows_custom_folders_as_absolute_paths() {
+        let dir = TempDir::new().unwrap();
+        let vault = open_vault(&dir).await;
+        vault
+            .wiki_init(kimun_core::WikiInitOptions {
+                sources: Some(VaultPath::new("./raw")),
+                wiki: Some(VaultPath::new("./notes/wiki")),
+            })
+            .await
+            .unwrap();
+        let handler = KimunHandler::new(vault).with_server_env(no_install_env());
+        let text = info_text(&handler).await;
+        let lines = wiki_lines(&text);
+        assert!(lines.contains(&"wiki sources: /raw"), "{text}");
+        assert!(lines.contains(&"wiki pages: /notes/wiki"), "{text}");
+        assert!(lines.contains(&"wiki schema: /notes/wiki/schema"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn vault_info_with_a_broken_declaration_says_so_and_keeps_the_rest() {
+        let dir = TempDir::new().unwrap();
+        let vault = open_vault(&dir).await;
+        vault
+            .wiki_init(kimun_core::WikiInitOptions::default())
+            .await
+            .unwrap();
+        std::fs::write(
+            dir.path().join(".kimun").join("wiki.toml"),
+            "not_a_known_key = 1\n",
+        )
+        .unwrap();
+        let handler = KimunHandler::new(vault).with_server_env(no_install_env());
+        let text = info_text(&handler).await;
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], "date keys: (none)");
+        assert_eq!(lines[2], "semantic search: none");
+        let wiki = wiki_lines(&text);
+        assert_eq!(wiki.len(), 1, "{text}");
+        assert!(wiki[0].starts_with("wiki: declaration error: "), "{text}");
+        assert!(wiki[0].len() > "wiki: declaration error: ".len(), "{text}");
     }
 }

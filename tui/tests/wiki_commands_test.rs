@@ -244,3 +244,37 @@ async fn wiki_stamp_lists_a_skipped_source_and_exits_one() {
     assert!(out.contains("skipped  /sources/b  "), "stdout: {out}");
     assert!(stderr(&stamp).is_empty(), "stderr: {}", stderr(&stamp));
 }
+
+#[tokio::test]
+async fn wiki_clip_refuses_http() {
+    let f = Fixture::new().await;
+    f.kimun(&["wiki", "init"]);
+    let out = f.kimun(&["wiki", "clip", "http://example.com/page"]);
+    assert_eq!(out.status.code(), Some(2), "stdout: {}", stdout(&out));
+    assert!(stderr(&out).contains("https"), "stderr: {}", stderr(&out));
+}
+
+#[tokio::test]
+async fn wiki_clip_refuses_a_loopback_https_address() {
+    let f = Fixture::new().await;
+    f.kimun(&["wiki", "init"]);
+    let out = f.kimun(&["wiki", "clip", "https://127.0.0.1:9/page"]);
+    assert_eq!(out.status.code(), Some(2), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains("private or local network"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[tokio::test]
+async fn wiki_clip_without_a_declaration_exits_two() {
+    let f = Fixture::new().await;
+    let out = f.kimun(&["wiki", "clip", "https://example.com/page"]);
+    assert_eq!(out.status.code(), Some(2), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains("wiki init"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}

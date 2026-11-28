@@ -4,9 +4,15 @@
 mod address;
 mod extract;
 mod fetch;
+#[cfg(test)]
+pub(crate) mod test_server;
 
 use std::fmt;
 use std::time::Duration;
+
+use kimun_core::error::VaultError;
+use kimun_core::nfs::VaultPath;
+use kimun_core::{NoteVault, SaveSourceRequest};
 
 pub(crate) use address::check_url;
 pub use address::is_public_address;
@@ -97,6 +103,123 @@ impl fmt::Display for ClipError {
 
 impl std::error::Error for ClipError {}
 
+/// What a clip saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipOutcome {
+    /// The note that was written.
+    pub path: VaultPath,
+    /// The title the page gave, or the host of its address.
+    pub title: String,
+}
+
+/// Why `clip_url` failed: the page could not be used, or the vault refused it.
+#[derive(Debug)]
+pub enum ClipFailure {
+    Clip(ClipError),
+    Vault(VaultError),
+}
+
+impl fmt::Display for ClipFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Clip(e) => e.fmt(f),
+            Self::Vault(e) => match e.user_message() {
+                Some(message) => f.write_str(&message),
+                None => e.fmt(f),
+            },
+        }
+    }
+}
+
+impl std::error::Error for ClipFailure {}
+
+impl From<ClipError> for ClipFailure {
+    fn from(e: ClipError) -> Self {
+        Self::Clip(e)
+    }
+}
+
+impl From<VaultError> for ClipFailure {
+    fn from(e: VaultError) -> Self {
+        Self::Vault(e)
+    }
+}
+
+/// The time the conversion of a fetched page may take. The converter bounds
+/// its own parse time, and this is the backstop for anything it does not see.
+const CONVERT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The time added to the fetch limit before the whole fetch is given up. The
+/// fetch bounds itself, but the name lookup is not timed by the HTTP client.
+const FETCH_SLACK: Duration = Duration::from_secs(5);
+
+/// Run `work` on a blocking thread and give up after `limit`. The thread is
+/// not stopped: it ends when `work` returns, so a stuck call leaks a thread.
+async fn blocking_within<T: Send + 'static>(
+    limit: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ClipError> {
+    match tokio::time::timeout(limit, tokio::task::spawn_blocking(work)).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_)) => Err(ClipError::Network("the clip task failed".to_string())),
+        Err(_) => Err(ClipError::Timeout),
+    }
+}
+
+/// Fetch `url`, turn the page into markdown, and save it as a source note.
+///
+/// The wiki declaration is read first, so a vault without a wiki fails before
+/// any request leaves the machine.
+pub async fn clip_url(
+    vault: &NoteVault,
+    url: &str,
+    policy: &FetchPolicy,
+) -> Result<ClipOutcome, ClipFailure> {
+    if vault.wiki_declaration().await?.is_none() {
+        return Err(VaultError::WikiNotDeclared.into());
+    }
+    let (fetch_url, fetch_policy) = (url.to_string(), policy.clone());
+    let fetched = blocking_within(policy.total_timeout + FETCH_SLACK, move || {
+        fetch(&fetch_url, &fetch_policy)
+    })
+    .await??;
+    let content_type = fetched.content_type.clone();
+    let final_url = fetched.final_url.clone();
+    let article = blocking_within(CONVERT_TIMEOUT, move || {
+        extract_markdown(&fetched.body, content_type.as_deref(), &final_url)
+    })
+    .await??;
+    let title = article.title.clone().or_else(|| host_of(url));
+    let path = vault
+        .save_source(&SaveSourceRequest {
+            url: url.to_string(),
+            title: article.title,
+            content_type: media_type(fetched.content_type.as_deref()),
+            markdown: article.markdown,
+        })
+        .await?;
+    Ok(ClipOutcome {
+        path,
+        title: title.unwrap_or_default(),
+    })
+}
+
+/// The media type of a `Content-Type` header, without parameters. A missing
+/// header counts as HTML, which is what `extract_markdown` sniffs for.
+fn media_type(header: Option<&str>) -> String {
+    header
+        .and_then(|h| h.split(';').next())
+        .map(|m| m.trim().to_ascii_lowercase())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "text/html".to_string())
+}
+
+fn host_of(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +263,124 @@ mod tests {
                 .to_string()
                 .contains("10.0.0.1")
         );
+    }
+
+    use super::test_server::{ok_page, reply, serve};
+    use kimun_core::VaultConfig;
+    use kimun_core::system::SystemPath;
+    use tempfile::TempDir;
+
+    async fn wiki_vault(declared: bool) -> (NoteVault, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let vault = NoteVault::new(VaultConfig::new(
+            SystemPath::try_absolute(dir.path()).unwrap(),
+        ))
+        .await
+        .unwrap();
+        vault.validate_and_init().await.unwrap();
+        if declared {
+            vault
+                .wiki_init(kimun_core::WikiInitOptions::default())
+                .await
+                .unwrap();
+        }
+        (vault, dir)
+    }
+
+    fn article() -> String {
+        let para = "This is a long paragraph about the topic, with enough words to look like \
+                    real content, and a few commas, here and there. ";
+        format!(
+            "<html><head><title>My Post</title></head><body><article><h1>Big Heading</h1>\
+             <p>{p}</p><p>{p}</p></article></body></html>",
+            p = para.repeat(3)
+        )
+    }
+
+    #[tokio::test]
+    async fn clip_url_saves_a_source_from_an_html_page() {
+        let (vault, _dir) = wiki_vault(true).await;
+        let server = serve(false, |_| vec![ok_page(&article())]);
+        let url = format!("{}/post", server.base);
+        let outcome = clip_url(&vault, &url, &FetchPolicy::for_tests())
+            .await
+            .unwrap();
+        assert_eq!(outcome.title, "My Post");
+        assert!(
+            outcome.path.to_bare_string().starts_with("/sources/"),
+            "{}",
+            outcome.path.to_bare_string()
+        );
+        let text = vault.get_note_text(&outcome.path).await.unwrap();
+        assert!(text.contains("Big Heading"), "{text}");
+        assert!(text.contains(&format!("source_url: {url}")), "{text}");
+        assert!(text.contains("content_type: text/html"), "{text}");
+        assert!(!text.contains("charset"), "{text}");
+        let report = vault.wiki_check().await.unwrap();
+        assert_eq!(report.problems(), 0, "{:?}", report.findings);
+    }
+
+    #[tokio::test]
+    async fn clip_url_saves_markdown_as_is() {
+        let (vault, _dir) = wiki_vault(true).await;
+        let page = reply(
+            "200 OK",
+            &["Content-Type: text/markdown"],
+            b"# Notes\n\n[[x]] <b>raw</b>\n",
+        );
+        let server = serve(false, |_| vec![page]);
+        let url = format!("{}/notes.md", server.base);
+        let outcome = clip_url(&vault, &url, &FetchPolicy::for_tests())
+            .await
+            .unwrap();
+        let text = vault.get_note_text(&outcome.path).await.unwrap();
+        assert!(text.contains("[[x]] <b>raw</b>"), "{text}");
+        assert!(text.contains("content_type: text/markdown"), "{text}");
+        // No page title: the host stands in for it.
+        assert_eq!(outcome.title, "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn clip_url_on_a_vault_without_a_declaration_is_wiki_not_declared_and_fetches_nothing() {
+        let (vault, _dir) = wiki_vault(false).await;
+        let server = serve(false, |_| vec![ok_page(&article())]);
+        let url = format!("{}/post", server.base);
+        let err = clip_url(&vault, &url, &FetchPolicy::for_tests())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ClipFailure::Vault(VaultError::WikiNotDeclared)),
+            "{err:?}"
+        );
+        assert_eq!(server.accepted(), 0);
+    }
+
+    #[tokio::test]
+    async fn clip_url_with_an_unsupported_type_saves_nothing() {
+        let (vault, _dir) = wiki_vault(true).await;
+        let before = vault.wiki_check().await.unwrap().notes_checked;
+        let page = reply("200 OK", &["Content-Type: image/png"], b"\x89PNG");
+        let server = serve(false, |_| vec![page]);
+        let url = format!("{}/cat.png", server.base);
+        let err = clip_url(&vault, &url, &FetchPolicy::for_tests())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ClipFailure::Clip(ClipError::UnsupportedType(_))),
+            "{err:?}"
+        );
+        assert_eq!(vault.wiki_check().await.unwrap().notes_checked, before);
+    }
+
+    #[tokio::test]
+    async fn blocking_work_that_runs_too_long_is_a_timeout() {
+        let slow = blocking_within(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_millis(500));
+            1
+        })
+        .await;
+        assert_eq!(slow, Err(ClipError::Timeout));
+        let fast = blocking_within(Duration::from_secs(5), || 7).await;
+        assert_eq!(fast, Ok(7));
     }
 }

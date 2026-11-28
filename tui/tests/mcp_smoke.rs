@@ -118,6 +118,11 @@ fn mcp_smoke_tools_list() {
         "get_outlinks",
         "rename_note",
         "move_note",
+        "wiki_init",
+        "wiki_check",
+        "wiki_catalogue",
+        "wiki_stamp",
+        "wiki_clip",
     ];
     for tool in &expected_tools {
         assert!(

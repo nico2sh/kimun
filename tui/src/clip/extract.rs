@@ -5,6 +5,8 @@
 //! the attributes in one tag and the parse time, and it drops unsafe link and
 //! image targets. This module maps its answers to [`ClipError`].
 
+use std::time::Duration;
+
 use page2md::{Converter, Error as ConvertError};
 
 use super::ClipError;
@@ -15,6 +17,12 @@ const MAX_TITLE_CHARS: usize = 200;
 /// The largest HTML body that is converted, in bytes. The fetch cap bounds
 /// memory. This cap bounds conversion time, which grows with size.
 const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
+
+/// The time page2md may spend parsing one page. A normal 1.5 MB article takes
+/// about 0.1 s in a release build, so this leaves a wide margin on a slow or
+/// busy machine. A hostile page still ends here, and the 30 s limit in
+/// `clip_url` stays as the backstop for the work after the parse.
+const PARSE_BUDGET: Duration = Duration::from_secs(10);
 
 /// A page turned into markdown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +71,8 @@ fn html_to_article(body: &str, url: &str) -> Result<Article, ClipError> {
     }
     let mut builder = Converter::builder()
         .extract_main_content(true)
-        .max_input_bytes(MAX_HTML_BYTES);
+        .max_input_bytes(MAX_HTML_BYTES)
+        .time_budget(PARSE_BUDGET);
     // A page address that does not parse is not worth failing for: links stay as written.
     if let Ok(base) = url.parse() {
         builder = builder.base_url(base);
@@ -369,7 +378,7 @@ mod tests {
             "&".repeat(180_000),
             "</object>".repeat(140)
         );
-        assert!(bounded(body).is_ok());
+        bounded(body).unwrap();
     }
 
     #[test]
@@ -379,7 +388,7 @@ mod tests {
             "<article><p>An introduction, long enough to read.</p>\
              <pre><code>{code}</code></pre></article>"
         );
-        assert!(bounded(body).is_ok());
+        bounded(body).unwrap();
     }
 
     #[test]

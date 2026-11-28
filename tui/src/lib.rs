@@ -11,9 +11,10 @@ pub mod components;
 pub mod keys;
 pub mod logic;
 pub mod rag;
-// Self-contained modules with no dependency on the rest of kimün. Each was its
-// own workspace crate and is kept extractable: nothing inside them may name
-// `crate::` outside their own subtree (enforced in .github/workflows/check.yml).
+// Self-contained modules with no dependency on the rest of kimün. `ropetext` and
+// `server_client` were workspace crates, and `clip` follows the same rule from the
+// start. Each is kept extractable: nothing inside them may name `crate::` outside
+// their own subtree (enforced in .github/workflows/check.yml).
 pub mod clip;
 pub mod ropetext;
 pub mod server_client;

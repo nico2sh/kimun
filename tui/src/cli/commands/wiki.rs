@@ -1,6 +1,6 @@
 // tui/src/cli/commands/wiki.rs
 //
-// `kimun wiki`: set up, check, list and stamp a wiki. The work is core's.
+// `kimun wiki`: set up, check, list, stamp and clip into a wiki. The work is core's.
 // This file parses the folder flags and prints the reports.
 
 use clap::Subcommand;
@@ -10,8 +10,9 @@ use kimun_core::{
     Catalogue, NoteVault, Severity, StampReport, WikiInitOptions, WikiInitReport, WikiReport,
 };
 
-use crate::cli::CheckFailed;
 use crate::cli::output::OutputFormat;
+use crate::cli::{CheckFailed, UserError};
+use crate::clip::{ClipFailure, ClipOutcome, FetchPolicy, clip_url};
 
 /// The widest a summary gets in the text listing, in characters.
 const SUMMARY_WIDTH: usize = 100;
@@ -44,6 +45,11 @@ pub enum WikiSubcommand {
     /// If a source cannot be stamped, the command skips it, prints it, and
     /// exits with code 1.
     Stamp,
+    /// Save a web page as a source. Needs an https address.
+    Clip {
+        /// The address of the page
+        url: String,
+    },
 }
 
 pub async fn run(subcommand: WikiSubcommand, vault: &NoteVault) -> Result<()> {
@@ -81,6 +87,17 @@ pub async fn run(subcommand: WikiSubcommand, vault: &NoteVault) -> Result<()> {
             }
             Ok(())
         }
+        WikiSubcommand::Clip { url } => {
+            let outcome = match clip_url(vault, &url, &FetchPolicy::strict()).await {
+                Ok(outcome) => outcome,
+                // A vault error keeps its type, so a missing wiki declaration
+                // gets the same message and exit code as in the other commands.
+                Err(ClipFailure::Vault(e)) => return Err(e.into()),
+                Err(ClipFailure::Clip(e)) => return Err(UserError(e.to_string()).into()),
+            };
+            print!("{}", clip_text(&outcome));
+            Ok(())
+        }
         WikiSubcommand::Stamp => {
             let report = vault.wiki_stamp().await?;
             print!("{}", stamp_text(&report));
@@ -93,7 +110,16 @@ pub async fn run(subcommand: WikiSubcommand, vault: &NoteVault) -> Result<()> {
     }
 }
 
-fn init_text(report: &WikiInitReport) -> String {
+/// What `wiki clip` prints after a page is saved.
+pub(crate) fn clip_text(outcome: &ClipOutcome) -> String {
+    format!(
+        "Saved {}\nTitle: {}\n",
+        outcome.path.to_bare_string(),
+        outcome.title
+    )
+}
+
+pub(crate) fn init_text(report: &WikiInitReport) -> String {
     report
         .entries
         .iter()
@@ -107,7 +133,7 @@ fn init_text(report: &WikiInitReport) -> String {
         .collect()
 }
 
-fn check_text(report: &WikiReport) -> String {
+pub(crate) fn check_text(report: &WikiReport) -> String {
     if report.findings.is_empty() {
         return format!(
             "The wiki is clean. {} checked.\n",
@@ -162,7 +188,7 @@ fn one_line(summary: &str) -> String {
     format!("{}...", cut.trim_end())
 }
 
-fn catalogue_text(catalogue: &Catalogue) -> String {
+pub(crate) fn catalogue_text(catalogue: &Catalogue) -> String {
     let mut out = String::new();
     for e in &catalogue.entries {
         let summary = e.summary.as_deref().map(one_line).unwrap_or_default();
@@ -187,7 +213,7 @@ fn catalogue_text(catalogue: &Catalogue) -> String {
     out
 }
 
-fn stamp_text(report: &StampReport) -> String {
+pub(crate) fn stamp_text(report: &StampReport) -> String {
     if report.stamped.is_empty() && report.skipped.is_empty() {
         return "Nothing to stamp.\n".to_string();
     }
