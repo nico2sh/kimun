@@ -760,3 +760,142 @@ fn the_palette_lists_the_tab_commands_with_their_chords(cx: &mut TestAppContext)
         ]
     );
 }
+
+// ---- the "Set up wiki" row -------------------------------------------------
+
+const SET_UP_WIKI: &str = "Set up wiki";
+
+/// The `Set up wiki` entry of the open palette: its run and block reason.
+fn wiki_row(shell: &Shell, cx: &mut TestAppContext) -> Option<(PaletteRun, Option<&'static str>)> {
+    cx.read(|cx| {
+        let palette = palette(&shell.workspace, cx)?;
+        let palette = palette.read(cx);
+        palette
+            .entries()
+            .iter()
+            .find(|e| e.label() == SET_UP_WIKI)
+            .map(|e| (e.run().clone(), e.blocked()))
+    })
+}
+
+/// A window on a fresh vault, with the palette open on the row.
+fn wiki_palette(
+    cx: &mut TestAppContext,
+    rt: &tokio::runtime::Runtime,
+    v: &crate::test_vault::TestVault,
+) -> (super::start_tests::Started, Shell) {
+    let started = open_started(
+        cx,
+        vault_start(v, FirstNote::Note(VaultPath::new("a.md"))),
+        v.settings.clone(),
+    );
+    drive(rt, cx, |cx| {
+        started.text(cx) == "alpha" && !started.indexing(cx)
+    });
+    let shell = Shell {
+        handle: started.handle,
+        workspace: started.workspace.clone(),
+    };
+    open_palette(&shell, cx);
+    (started, shell)
+}
+
+/// Run the row with the keyboard and wait for its flash.
+fn run_wiki_row(
+    started: &super::start_tests::Started,
+    shell: &Shell,
+    rt: &tokio::runtime::Runtime,
+    cx: &mut TestAppContext,
+) -> String {
+    type_text(shell, "set up wiki", cx);
+    assert_eq!(
+        visible(shell, cx).first().map(String::as_str),
+        Some(SET_UP_WIKI)
+    );
+    press(shell, "enter", cx);
+    drive(rt, cx, |cx| started.flash(cx).is_some());
+    started.flash(cx).unwrap()
+}
+
+#[gpui_kit::test]
+fn the_palette_has_a_set_up_wiki_row(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha")], &[]));
+    let (_started, shell) = wiki_palette(cx, &rt, &v);
+    assert_eq!(
+        wiki_row(&shell, cx),
+        Some((PaletteRun::WikiSetup, None)),
+        "a vault is open, so the row runs"
+    );
+}
+
+#[gpui_kit::test]
+fn the_row_is_blocked_without_a_vault_with_the_no_workspace_reason(cx: &mut TestAppContext) {
+    let shell = open_default(cx, "hello");
+    open_palette(&shell, cx);
+    assert_eq!(
+        wiki_row(&shell, cx),
+        Some((PaletteRun::WikiSetup, Some(NO_WORKSPACE)))
+    );
+}
+
+#[gpui_kit::test]
+fn the_row_creates_a_wiki_and_flashes_what_it_created(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha")], &[]));
+    let (started, shell) = wiki_palette(cx, &rt, &v);
+    let flash = run_wiki_row(&started, &shell, &rt, cx);
+    assert_eq!(
+        flash,
+        "Wiki set up: created .kimun/wiki.toml, folder /sources, folder /wiki, \
+         note /wiki/schema.md, note /wiki/log.md."
+    );
+    let root = v.workspace.clone().into_path_buf();
+    assert!(root.join("sources").is_dir());
+    assert!(root.join("wiki").join("log.md").is_file());
+    // FILES lists the new folders without a reopen (the GUI has no watcher).
+    drive(&rt, cx, |cx| {
+        super::reopen_tests::files_rows(&started, cx).contains(&"sources/".to_string())
+    });
+}
+
+#[gpui_kit::test]
+fn the_row_on_a_wiki_flashes_already_a_wiki(cx: &mut TestAppContext) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha")], &[]));
+    rt.block_on(v.vault.wiki_init(kimun_core::WikiInitOptions::default()))
+        .unwrap();
+    let (started, shell) = wiki_palette(cx, &rt, &v);
+    let flash = run_wiki_row(&started, &shell, &rt, cx);
+    assert_eq!(
+        flash,
+        "This vault is already a wiki. Change its folders in Preferences, Wiki."
+    );
+}
+
+#[gpui_kit::test]
+fn the_row_on_a_broken_declaration_flashes_the_fix_message_and_changes_nothing(
+    cx: &mut TestAppContext,
+) {
+    let rt = runtime();
+    let _guard = rt.enter();
+    let v = rt.block_on(test_vault(&[("a.md", "alpha")], &[]));
+    let root = v.workspace.clone().into_path_buf();
+    std::fs::create_dir_all(root.join(".kimun")).unwrap();
+    std::fs::write(root.join(".kimun").join("wiki.toml"), "not = [valid").unwrap();
+    let (started, shell) = wiki_palette(cx, &rt, &v);
+    let flash = run_wiki_row(&started, &shell, &rt, cx);
+    assert_eq!(
+        flash,
+        "The wiki declaration has a mistake. Fix it in Preferences, Wiki."
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".kimun").join("wiki.toml")).unwrap(),
+        "not = [valid"
+    );
+    assert!(!root.join("wiki").exists());
+    assert!(!root.join("sources").exists());
+}

@@ -412,6 +412,7 @@ impl PreferencesView {
             || self.ws.task.is_some()
             || self.remote_working()
             || self.keyboard_file_working()
+            || self.wiki.running()
     }
 
     /// Whether one of the section's text fields has the keyboard (the New

@@ -1075,7 +1075,7 @@ pub fn reindex_target(s: &AppSettings) -> Option<(SystemPath, Option<IndexFile>)
     Some((workspace, cache))
 }
 
-fn vault_config(workspace: SystemPath, cache: Option<IndexFile>) -> VaultConfig {
+pub(crate) fn vault_config(workspace: SystemPath, cache: Option<IndexFile>) -> VaultConfig {
     let config = VaultConfig::new(workspace);
     match cache {
         Some(index) => config.with_index(index),

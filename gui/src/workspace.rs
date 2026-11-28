@@ -4132,6 +4132,8 @@ mod preferences_remote_images_tests;
 #[cfg(test)]
 mod preferences_tests;
 #[cfg(test)]
+mod preferences_wiki_tests;
+#[cfg(test)]
 mod preferences_workspaces_tests;
 #[cfg(test)]
 mod preset_tests;

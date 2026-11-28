@@ -463,7 +463,7 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
     let v = vault(&rt);
     let s = with_prefs(cx, &rt, &v);
     let mut seen = vec![s.pf_read(cx, |v| v.section())];
-    for _ in 0..9 {
+    for _ in 0..10 {
         s.pf_press("down", cx);
         seen.push(s.pf_read(cx, |v| v.section()));
     }
@@ -475,6 +475,7 @@ fn the_sections_walk_with_keys_and_clicks(cx: &mut TestAppContext) {
             Section::Display,
             Section::Sorting,
             Section::Indexing,
+            Section::Wiki,
             Section::Editor,
             Section::Server,
             Section::RemoteImages,

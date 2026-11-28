@@ -47,6 +47,8 @@ use kimun_notes::logic::layout_tree::RailPosition;
 use kimun_notes::logic::list::{ListRow, fuzzy_rank};
 use kimun_notes::logic::nav::DrawerView;
 use kimun_notes::logic::palette::palette_rows;
+use kimun_notes::logic::preferences as prefs;
+use kimun_notes::logic::wiki_settings::{self, PaletteOutcome};
 
 use super::Workspace;
 use super::files::ClickPolicy;
@@ -78,6 +80,8 @@ pub(crate) enum PaletteRun {
     /// "Move view to…" for the focused slot
     /// ([`Workspace::open_move_chooser`]); no chord does it.
     MoveViewTo,
+    /// Set up a wiki with the default layout; no chord does it.
+    WikiSetup,
 }
 
 /// The move chooser's row: after the move rows, before splitting (its
@@ -89,6 +93,25 @@ pub(crate) const ONE_TAB: &str = "Only one tab is open";
 
 /// Why the row for the rail's current position does nothing.
 const RAIL_ALREADY_HERE: &str = "The rail is already there";
+
+/// The label of the row that sets up a wiki.
+const SET_UP_WIKI: &str = "Set up wiki";
+
+/// The notice for what the Set up wiki row did.
+fn wiki_setup_message(result: Result<PaletteOutcome, String>) -> String {
+    match result {
+        Ok(PaletteOutcome::Created(what)) => {
+            format!("Wiki set up: created {}.", what.join(", "))
+        }
+        Ok(PaletteOutcome::AlreadyAWiki) => {
+            "This vault is already a wiki. Change its folders in Preferences, Wiki.".into()
+        }
+        Ok(PaletteOutcome::BrokenDeclaration(_)) => {
+            "The wiki declaration has a mistake. Fix it in Preferences, Wiki.".into()
+        }
+        Err(text) => text,
+    }
+}
 
 /// One row of the palette.
 #[derive(Debug, Clone)]
@@ -466,10 +489,18 @@ impl Workspace {
             blocked: (self.rail == rail).then_some(RAIL_ALREADY_HERE),
             run: PaletteRun::RailAt(rail),
         });
+        let wiki_row = std::iter::once(PaletteEntry {
+            label: SET_UP_WIKI.into(),
+            hint: None,
+            sequence: None,
+            blocked: self.active_state().notes.is_none().then_some(NO_WORKSPACE),
+            run: PaletteRun::WikiSetup,
+        });
         leaves
             .chain(chords)
             .chain(presets)
             .chain(rail_rows)
+            .chain(wiki_row)
             .collect()
     }
 
@@ -563,7 +594,39 @@ impl Workspace {
                 Some(slot) => self.open_move_chooser(slot, window, cx),
                 None => self.flash("Focus a slot to move its view", cx),
             },
+            PaletteRun::WikiSetup => self.run_wiki_setup(window, cx),
         }
         cx.notify();
+    }
+}
+
+impl Workspace {
+    /// Run the Set up wiki row: `setup_defaults` off the UI thread, then
+    /// flash what it did.
+    fn run_wiki_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self
+            .settings
+            .as_ref()
+            .and_then(|s| prefs::reindex_target(&s.read().unwrap_or_else(|e| e.into_inner())));
+        let Some((workspace, cache)) = target else {
+            self.flash(NO_WORKSPACE, cx);
+            return;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let result = match tokio::spawn(wiki_settings::setup_defaults(workspace, cache)).await {
+                Ok(result) => result,
+                Err(e) => Err(e.to_string()),
+            };
+            this.update(cx, |workspace, cx| {
+                // The GUI has no file watcher: FILES learns of the new
+                // folders only here.
+                if matches!(result, Ok(wiki_settings::PaletteOutcome::Created(_))) {
+                    workspace.index_rebuilt(cx);
+                }
+                workspace.flash(wiki_setup_message(result), cx)
+            })
+            .ok();
+        })
+        .detach();
     }
 }

@@ -83,7 +83,9 @@ fn names(s: &AppSettings) -> Vec<String> {
 }
 
 /// A window with no vault (`OpenFailed`) over a config with no workspace.
-fn no_workspace(cx: &mut TestAppContext) -> (Started, SharedSettings, PathBuf, tempfile::TempDir) {
+pub(super) fn no_workspace(
+    cx: &mut TestAppContext,
+) -> (Started, SharedSettings, PathBuf, tempfile::TempDir) {
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let config = root.join("config.toml");
@@ -347,6 +349,7 @@ fn workspaces_and_indexing_sit_in_the_tui_order(cx: &mut TestAppContext) {
             Section::Display,
             Section::Sorting,
             Section::Indexing,
+            Section::Wiki,
             Section::Editor,
             Section::Server,
             Section::RemoteImages,

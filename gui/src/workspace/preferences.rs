@@ -7,8 +7,8 @@
 //!
 //! **Layout.** A section list on the left (Workspaces, Appearance, Display,
 //! Sorting, Indexing, Editor, Server: the TUI's order, and like the TUI they
-//! open on Workspaces; then Remote images and Keyboard, which the TUI does
-//! not have),
+//! open on Workspaces; Wiki after Indexing, and Remote images and Keyboard at
+//! the end, which the TUI does not have),
 //! the selected section's controls on the right, a
 //! footer with `Cancel` and `Save`. In a narrow window the section list
 //! becomes a row of section tabs above the controls, so the controls keep
@@ -19,6 +19,9 @@
 //! is asked for. A vault whose files differ only by case (found by a
 //! reindex, or by the window opening it) is shown in a panel over the
 //! sections.
+//!
+//! **Wiki** ([`wiki`]) acts at once too: its button applies the wiki
+//! declaration to the vault, outside the draft.
 //!
 //! **Remote images** ([`remote_images`]) acts at once too: a removed host is
 //! written as it is removed, and the image cache is emptied as asked.
@@ -98,6 +101,7 @@ use kimun_notes::logic::preferences::SavePlan;
 
 pub(crate) mod keyboard;
 pub(crate) mod remote_images;
+pub(crate) mod wiki;
 pub(crate) mod workspaces;
 use crate::input;
 use crate::theme;
@@ -197,6 +201,7 @@ pub(crate) enum Section {
     Display,
     Sorting,
     Indexing,
+    Wiki,
     Editor,
     Server,
     RemoteImages,
@@ -204,12 +209,13 @@ pub(crate) enum Section {
 }
 
 impl Section {
-    pub(crate) const ALL: [Section; 9] = [
+    pub(crate) const ALL: [Section; 10] = [
         Section::Workspaces,
         Section::Appearance,
         Section::Display,
         Section::Sorting,
         Section::Indexing,
+        Section::Wiki,
         Section::Editor,
         Section::Server,
         Section::RemoteImages,
@@ -220,6 +226,7 @@ impl Section {
         match self {
             Section::Workspaces => "Workspaces",
             Section::Indexing => "Indexing",
+            Section::Wiki => "Wiki",
             Section::Appearance => "Appearance",
             Section::Display => "Display",
             Section::Sorting => "Sorting",
@@ -234,6 +241,7 @@ impl Section {
         match self {
             Section::Workspaces => "workspaces",
             Section::Indexing => "indexing",
+            Section::Wiki => "wiki",
             Section::Appearance => "appearance",
             Section::Display => "display",
             Section::Sorting => "sorting",
@@ -294,7 +302,8 @@ pub(crate) enum PreferencesEvent {
     /// the window to another vault (the current workspace's new folder, the
     /// first workspace): leave, back to `theme`, and enter it.
     Reopen { theme: Theme },
-    /// The open workspace was reindexed: pick the new index up.
+    /// The open workspace's index changed (a reindex, a wiki apply): pick
+    /// the new index up.
     Reindexed,
     /// The current workspace is called `0` now.
     Renamed(String),
@@ -453,6 +462,8 @@ pub(crate) struct PreferencesView {
     ws: workspaces::Workspaces,
     /// Preferences > Indexing, the reindex under way and its panels.
     index: workspaces::Indexing,
+    /// Preferences > Wiki ([`wiki`]).
+    wiki: wiki::WikiPane,
     /// Preferences > Remote images ([`remote_images`]).
     remote: remote_images::RemoteSection,
     /// Preferences > Keyboard ([`keyboard`]).
@@ -563,6 +574,7 @@ impl PreferencesView {
             content_scroll: ScrollHandle::new(),
             ws: workspaces::Workspaces::new(cx.focus_handle().tab_stop(true)),
             index: workspaces::Indexing::new(),
+            wiki: wiki::WikiPane::new(window, cx),
             remote: remote_images::RemoteSection::new(cx.focus_handle().tab_stop(true)),
             keyboard: keyboard::KeyboardSection::new(
                 cx.focus_handle(),
@@ -787,6 +799,7 @@ impl PreferencesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let entering_wiki = section == Section::Wiki && self.section != Section::Wiki;
         self.section = section;
         self.keyboard.leave(window, cx);
         window.focus(&self.sections_focus, cx);
@@ -797,6 +810,10 @@ impl PreferencesView {
         if section == Section::RemoteImages {
             // The cache size: read in the background each time it shows.
             self.read_remote_size(cx);
+        }
+        if entering_wiki {
+            // The declaration: read in the background each time it opens.
+            self.wiki_reload(window, cx);
         }
         if section == Section::Appearance
             && let Some(model) = self.model.as_ref()
@@ -1173,6 +1190,9 @@ impl PreferencesView {
         } else if self.keyboard_field_focused(window, cx) {
             self.keyboard_field_enter(window, cx);
             cx.stop_propagation();
+        } else if self.wiki_field_focused(window, cx) {
+            self.wiki_apply(window, cx);
+            cx.stop_propagation();
         }
     }
 
@@ -1189,6 +1209,9 @@ impl PreferencesView {
             cx.stop_propagation();
         } else if self.keyboard_field_focused(window, cx) {
             self.keyboard_field_escape(window, cx);
+            cx.stop_propagation();
+        } else if self.wiki_field_focused(window, cx) {
+            self.cancel(false, window, cx);
             cx.stop_propagation();
         }
     }
@@ -1267,6 +1290,7 @@ impl PreferencesView {
         if self.server_focused(window, cx)
             || self.ws_field_focused(window, cx)
             || self.keyboard_field_focused(window, cx)
+            || self.wiki_field_focused(window, cx)
         {
             return false;
         }
@@ -2342,6 +2366,7 @@ impl PreferencesView {
                 match self.section {
                     Section::Workspaces => self.render_workspaces(window, cx),
                     Section::Indexing => self.render_indexing(cx),
+                    Section::Wiki => self.render_wiki(cx),
                     Section::Appearance => self.render_appearance(model, window, cx),
                     Section::Display => self.render_display(model, window, cx),
                     Section::Sorting => self.render_sorting(model, cx),
@@ -2496,6 +2521,10 @@ impl Render for PreferencesView {
         if self.section == Section::Display {
             // A draft family set outside the dropdown gets its entry.
             self.sync_font_choices(window, cx);
+        }
+        if self.section == Section::Wiki {
+            // A workspace change names another vault: read it.
+            self.wiki_follow_vault(window, cx);
         }
         let t = theme::current(cx);
         let narrow = window.viewport_size().width < window.rem_size() * NARROW_REMS;
@@ -2658,7 +2687,7 @@ impl Workspace {
     /// The open workspace's index was rebuilt on a throwaway vault (the same
     /// index file): the views over it load again, as after the startup's
     /// indexing (`VaultIndexed`), and FILES lists its folder again.
-    fn index_rebuilt(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn index_rebuilt(&mut self, cx: &mut Context<Self>) {
         self.refresh_note_counts();
         self.invalidate_views(cx);
         if let Some(files) = self.files.clone() {

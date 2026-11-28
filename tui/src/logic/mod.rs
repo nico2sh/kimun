@@ -27,6 +27,7 @@ pub mod query;
 pub mod saved_search;
 pub mod view_registry;
 pub mod views;
+pub mod wiki_settings;
 
 pub mod message;
 pub mod nav;
